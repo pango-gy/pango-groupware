@@ -17,8 +17,8 @@ use crate::session::use_session;
 use crate::text;
 use crate::ui::{
     report_error, report_form_error, report_success, resource_view, Avatar, Badge, Button,
-    ButtonKind, Card, ConfirmModal, EmptyState, FormError, Icon, IconName, Modal, PageHeader,
-    SecretReveal, SelectField, TextField, Toggle, Tone,
+    ButtonKind, Card, Checkbox, ConfirmModal, EmptyState, FormError, Icon, IconName, Modal,
+    PageHeader, SecretReveal, SelectField, TextField, Tone,
 };
 
 use self::logic::{MemberActions, ProfileForm, StatusForm};
@@ -739,7 +739,7 @@ pub fn AdminMembers() -> Element {
                 options: department_filter,
                 onchange: move |value| department.set(value),
             }
-            Toggle {
+            Checkbox {
                 label: "퇴사·정지 포함",
                 checked: include_inactive(),
                 onchange: move |value| include_inactive.set(value),

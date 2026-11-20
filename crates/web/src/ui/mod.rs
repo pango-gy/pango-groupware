@@ -485,11 +485,49 @@ pub fn MonthCalendar(
     }
 }
 
-/// 되돌리기 어려운 동작의 확인 단계. 내용(`children`)에 무엇이 바뀌는지 적는다.
+/// 지금 시각(브라우저 시계). 목록의 상대 시각 표시에만 쓴다.
+pub fn now() -> pango_core::time::Timestamp {
+    let millis = js_sys::Date::now() as i64;
+    pango_core::time::Timestamp::from_millis(millis)
+        .unwrap_or_else(|_| pango_core::time::Timestamp::from_utc(chrono::DateTime::UNIX_EPOCH))
+}
+
+/// 라벨이 붙은 체크 상자.
+#[component]
+pub fn Checkbox(
+    #[props(into)] label: String,
+    checked: bool,
+    onchange: EventHandler<bool>,
+    #[props(into, default)] hint: String,
+    #[props(default)] disabled: bool,
+) -> Element {
+    rsx! {
+        label { class: "check",
+            input {
+                class: "check-input",
+                r#type: "checkbox",
+                checked,
+                disabled,
+                onchange: move |event| onchange.call(event.checked()),
+            }
+            span { class: "check-text",
+                span { class: "check-label", "{label}" }
+                if !hint.is_empty() {
+                    small { class: "field-hint", "{hint}" }
+                }
+            }
+        }
+    }
+}
+
+/// 되돌리기 어려운 동작 앞의 확인 단계.
+///
+/// 한 줄 설명이면 `message`를, 더 자세한 안내가 필요하면 내용(`children`)을 준다.
 #[component]
 pub fn ConfirmModal(
     #[props(into)] title: String,
-    #[props(into)] confirm_label: String,
+    #[props(into, default)] message: String,
+    #[props(into, default = "확인".to_owned())] confirm_label: String,
     /// 확인 버튼을 위험 색으로.
     #[props(default)]
     danger: bool,
@@ -500,7 +538,12 @@ pub fn ConfirmModal(
 ) -> Element {
     rsx! {
         Modal { title, onclose: move |_| oncancel.call(()),
-            div { class: "confirm-body", {children} }
+            div { class: "confirm-body",
+                if !message.is_empty() {
+                    p { class: "confirm-message", "{message}" }
+                }
+                {children}
+            }
             div { class: "modal-actions",
                 Button { kind: ButtonKind::Secondary, onclick: move |_| oncancel.call(()), "취소" }
                 Button {
@@ -514,24 +557,81 @@ pub fn ConfirmModal(
     }
 }
 
-/// 켜고 끄는 선택(체크 상자 + 라벨).
+/// 목록 아래의 "더 보기" 버튼.
 #[component]
-pub fn Toggle(
-    #[props(into)] label: String,
-    checked: bool,
-    onchange: EventHandler<bool>,
-    #[props(default)] disabled: bool,
-) -> Element {
+pub fn LoadMore(#[props(default)] busy: bool, onclick: EventHandler<()>) -> Element {
     rsx! {
-        label { class: "toggle",
-            input {
-                r#type: "checkbox",
-                checked,
-                disabled,
-                onchange: move |event| onchange.call(event.checked()),
-            }
-            span { "{label}" }
+        div { class: "load-more",
+            Button { kind: ButtonKind::Secondary, busy, onclick: move |_| onclick.call(()), "더 보기" }
         }
+    }
+}
+
+/// 커서 목록에서 첫 페이지 뒤에 이어 붙인 부분. 첫 페이지는 `use_resource`가 맡고,
+/// 첫 페이지를 다시 불러올 때(필터 변경 등) [`MorePages::reset`]으로 비운다.
+pub struct MorePages<T: 'static> {
+    items: Signal<Vec<T>>,
+    /// 마지막으로 이어 붙인 페이지의 다음 커서. 아직 안 붙였으면 `None`.
+    after: Signal<Option<Option<String>>>,
+    busy: Signal<bool>,
+}
+
+impl<T: 'static> Clone for MorePages<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T: 'static> Copy for MorePages<T> {}
+
+pub fn use_more_pages<T: 'static>() -> MorePages<T> {
+    MorePages {
+        items: use_signal(Vec::new),
+        after: use_signal(|| None),
+        busy: use_signal(|| false),
+    }
+}
+
+/// 다음에 불러올 커서. 이어 붙인 페이지가 있으면 그 커서가, 없으면 첫 페이지의 커서가 기준이다.
+pub fn next_cursor(first: Option<&str>, later: Option<Option<String>>) -> Option<String> {
+    match later {
+        Some(cursor) => cursor,
+        None => first.map(str::to_owned),
+    }
+}
+
+impl<T: Clone + serde::de::DeserializeOwned + 'static> MorePages<T> {
+    pub fn reset(mut self) {
+        self.items.set(Vec::new());
+        self.after.set(None);
+    }
+
+    pub fn items(&self) -> Vec<T> {
+        self.items.read().clone()
+    }
+
+    pub fn busy(&self) -> bool {
+        *self.busy.read()
+    }
+
+    pub fn cursor(&self, first: &pango_api::Page<T>) -> Option<String> {
+        next_cursor(first.next_cursor.as_deref(), self.after.read().clone())
+    }
+
+    /// 다음 페이지를 불러와 붙인다. `path`는 인코딩된 커서로 요청 경로를 만든다.
+    pub async fn load(mut self, cursor: String, path: impl Fn(&str) -> String) {
+        if self.busy() {
+            return;
+        }
+        self.busy.set(true);
+        match crate::api::get::<pango_api::Page<T>>(&path(&crate::api::encode(&cursor))).await {
+            Ok(page) => {
+                self.items.write().extend(page.items);
+                self.after.set(Some(page.next_cursor));
+            }
+            Err(error) => report_error(&error),
+        }
+        self.busy.set(false);
     }
 }
 
@@ -592,5 +692,25 @@ pub fn report_form_error(error: &ApiError, mut target: Signal<String>) {
     } else {
         target.set(String::new());
         report_error(error);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn next_cursor_prefers_the_latest_page() {
+        assert_eq!(next_cursor(None, None), None);
+        assert_eq!(next_cursor(Some("a"), None), Some("a".into()));
+        assert_eq!(
+            next_cursor(Some("a"), Some(Some("b".into()))),
+            Some("b".into())
+        );
+        assert_eq!(
+            next_cursor(Some("a"), Some(None)),
+            None,
+            "마지막 페이지까지 왔다"
+        );
     }
 }

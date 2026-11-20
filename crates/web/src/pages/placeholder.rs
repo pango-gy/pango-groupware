@@ -28,8 +28,6 @@ placeholders! {
     LeaveNew => "휴가 신청",
     ApprovalList => "결재",
     ApprovalNew => "새 결재 문서",
-    Notices => "공지",
-    Notifications => "알림",
     Team => "팀 현황",
 }
 
@@ -37,10 +35,4 @@ placeholders! {
 pub fn ApprovalDetail(id: String) -> Element {
     let _ = id;
     rsx! { ComingSoon { title: "결재 문서" } }
-}
-
-#[component]
-pub fn NoticeDetail(id: String) -> Element {
-    let _ = id;
-    rsx! { ComingSoon { title: "공지" } }
 }
