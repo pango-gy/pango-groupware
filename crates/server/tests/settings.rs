@@ -162,7 +162,7 @@ async fn valid_update_bumps_version_and_audits_changed_keys() {
     );
     assert_eq!(
         detail["changed"]["work_start"],
-        json!({ "before": "09:00", "after": "08:30" })
+        json!({ "from": "09:00", "to": "08:30" })
     );
 }
 

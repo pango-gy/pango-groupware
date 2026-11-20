@@ -17,10 +17,10 @@ use pango_core::time::Timestamp;
 use pango_core::DomainError;
 use pango_db::settings::{self, CompanySettings, Holiday};
 use pango_db::{codec, Conn};
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use super::support::{
-    audit, found, require_current_admin, require_updated, Audit, AuthContext, Company,
+    audit, found, require_current_admin, require_updated, Audit, AuthContext, Changes, Company,
 };
 use crate::error::{ServiceError, ServiceResult};
 use crate::state::AppState;
@@ -89,11 +89,12 @@ fn settings_from(
     Ok(Company::from_settings(settings)?.settings)
 }
 
-/// 바뀐 설정 항목만 `{항목: {before, after}}`로 모은다. 감사 로그의 `detail`에 쓴다.
+/// 바뀐 설정 항목만 다른 수정 요청과 같은 모양([`Changes`]: `{항목: {from, to}}`)으로 모은다.
+/// 감사 로그의 `detail`에 쓴다.
 fn changed_keys(
     before: &CompanySettingsInput,
     after: &CompanySettingsInput,
-) -> ServiceResult<Value> {
+) -> ServiceResult<Changes> {
     let as_map = |value: &CompanySettingsInput| match serde_json::to_value(value) {
         Ok(Value::Object(map)) => Ok(map),
         Ok(_) => Err(ServiceError::internal(
@@ -102,14 +103,11 @@ fn changed_keys(
         Err(error) => Err(ServiceError::internal(error)),
     };
     let (before, after) = (as_map(before)?, as_map(after)?);
-    let changed: Map<String, Value> = after
-        .into_iter()
-        .filter_map(|(key, new)| {
-            let old = before.get(&key).cloned().unwrap_or(Value::Null);
-            (old != new).then(|| (key, serde_json::json!({ "before": old, "after": new })))
-        })
-        .collect();
-    Ok(Value::Object(changed))
+    let mut changes = Changes::default();
+    for (key, new) in &after {
+        changes.field(key, before.get(key).unwrap_or(&Value::Null), new);
+    }
+    Ok(changes)
 }
 
 /// 모든 구성원에게 공개하는 회사 정보.
@@ -154,7 +152,7 @@ pub async fn update(
                     action: "settings.update",
                     target_type: "company_settings",
                     target_id: None,
-                    detail: Some(serde_json::json!({ "changed": changed })),
+                    detail: Some(changed.into_detail()),
                     ctx: Some(ctx),
                 },
             )
