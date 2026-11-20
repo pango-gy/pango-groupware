@@ -10,6 +10,7 @@ use pango_core::leave::LeaveRequestStatus;
 
 use crate::api::{self, ApiResult};
 use crate::format;
+use crate::pages::admin::logic::can_edit_personal_records;
 use crate::pages::leave::logic as leave_logic;
 use crate::route::Route;
 use crate::session::{use_session, use_toasts};
@@ -81,6 +82,7 @@ pub fn AdminLeave() -> Element {
 
 #[component]
 fn BalancesTab(balances: Resource<ApiResult<Vec<MemberBalance>>>, today: NaiveDate) -> Element {
+    let me = use_session().me().map(|me| (me.id, me.role));
     let mut target = use_signal(|| None::<MemberBalance>);
     let mut balances = balances;
     rsx! {
@@ -118,14 +120,18 @@ fn BalancesTab(balances: Resource<ApiResult<Vec<MemberBalance>>>, today: NaiveDa
                                                 {format::leave_days(row.balance.remaining.quarters())}
                                             }
                                             td { class: "num",
-                                                Button {
-                                                    kind: ButtonKind::Secondary,
-                                                    small: true,
-                                                    onclick: {
-                                                        let row = row.clone();
-                                                        move |_| target.set(Some(row.clone()))
-                                                    },
-                                                    "조정"
+                                                if me.is_none_or(|(id, role)| can_edit_personal_records(id, role, row.member_id)) {
+                                                    Button {
+                                                        kind: ButtonKind::Secondary,
+                                                        small: true,
+                                                        onclick: {
+                                                            let row = row.clone();
+                                                            move |_| target.set(Some(row.clone()))
+                                                        },
+                                                        "조정"
+                                                    }
+                                                } else {
+                                                    small { class: "field-hint", {text::OWN_RECORD_HINT} }
                                                 }
                                             }
                                         }
@@ -248,6 +254,8 @@ fn AdjustModal(
 
 #[component]
 fn RequestsTab() -> Element {
+    let me = use_session().me().map(|me| (me.id, me.role));
+    let mut toasts = use_toasts();
     let mut status = use_signal(String::new);
     let more = use_more_pages::<LeaveRequestDto>();
     let mut confirm = use_signal(|| None::<LeaveRequestDto>);
@@ -264,9 +272,14 @@ fn RequestsTab() -> Element {
         }
         busy.set(true);
         let path = format!("/admin/leave/requests/{id}/cancel");
+        // 결과가 어느 쪽이든(취소·대리 반려, 이미 끝난 신청) 목록을 다시 읽어 줄 상태를 맞춘다.
         match api::post::<_, LeaveRequestDto>(&path, &Empty {}).await {
-            Ok(_) => report_success("휴가를 취소했습니다. 연차가 복원되었습니다."),
-            Err(error) => report_error(&error),
+            Ok(done) => report_success(logic::admin_cancel_done_message(done.status)),
+            Err(error) => toasts.error(logic::admin_cancel_error_message(
+                &error.code,
+                error.field.as_deref(),
+                error.reason.as_deref(),
+            )),
         }
         confirm.set(None);
         first.restart();
@@ -316,14 +329,18 @@ fn RequestsTab() -> Element {
                                     div { class: "list-row-side",
                                         Link { to: Route::ApprovalDetail { id: item.document_id.to_string() }, "결재 문서" }
                                         if logic::admin_can_cancel(item.status) {
-                                            Button {
-                                                kind: ButtonKind::Secondary,
-                                                small: true,
-                                                onclick: {
-                                                    let item = item.clone();
-                                                    move |_| confirm.set(Some(item.clone()))
-                                                },
-                                                "취소"
+                                            if me.is_none_or(|(id, role)| can_edit_personal_records(id, role, item.member_id)) {
+                                                Button {
+                                                    kind: ButtonKind::Secondary,
+                                                    small: true,
+                                                    onclick: {
+                                                        let item = item.clone();
+                                                        move |_| confirm.set(Some(item.clone()))
+                                                    },
+                                                    "취소"
+                                                }
+                                            } else {
+                                                small { class: "field-hint", {text::OWN_RECORD_HINT} }
                                             }
                                         }
                                     }
@@ -731,10 +748,44 @@ pub(crate) mod logic {
 
     pub fn admin_cancel_message(request: &LeaveRequestDto) -> String {
         let period = period_label(request.start_date, request.end_date);
+        let document = match request.status {
+            LeaveRequestStatus::Pending => {
+                " 결재 중인 문서는 회수되고, 이미 누군가 결재했다면 관리자 대리 반려로 끝나 신청이 반려 상태가 됩니다."
+            }
+            _ => " 승인된 결재 문서는 그대로 남습니다.",
+        };
         format!(
-            "{}님의 {period} {}을(를) 취소합니다. 사용한 연차는 복원되고, 결재 중이면 결재 문서가 회수됩니다.",
+            "{}님의 {period} {}을(를) 취소합니다. 사용한 연차는 복원됩니다.{document}",
             request.member_name, request.leave_type_name
         )
+    }
+
+    /// 관리자 취소의 결과 문구. 회수할 수 없는 결재 중 문서는 서버가 대리 반려로 끝내므로
+    /// 신청이 `rejected`로 돌아온다.
+    pub fn admin_cancel_done_message(status: LeaveRequestStatus) -> &'static str {
+        match status {
+            LeaveRequestStatus::Canceled => "휴가를 취소했습니다. 연차가 복원되었습니다.",
+            LeaveRequestStatus::Rejected => {
+                "결재가 이미 진행된 신청이라 결재 문서를 대리 반려로 끝냈습니다. 신청은 반려 상태가 되고 연차가 복원되었습니다."
+            }
+            LeaveRequestStatus::Pending | LeaveRequestStatus::Approved => {
+                "처리했습니다. 목록에서 신청 상태를 확인해 주세요."
+            }
+        }
+    }
+
+    /// 관리자 취소 실패 문구.
+    pub fn admin_cancel_error_message(
+        code: &str,
+        field: Option<&str>,
+        reason: Option<&str>,
+    ) -> String {
+        match code {
+            "document_already_closed" => {
+                "이미 처리가 끝난 신청입니다. 목록을 새로 고쳤으니 상태를 확인해 주세요.".into()
+            }
+            _ => text::error_message(code, field, reason),
+        }
     }
 
     pub fn sorted_types(mut list: Vec<LeaveTypeDto>) -> Vec<LeaveTypeDto> {
@@ -979,7 +1030,34 @@ pub(crate) mod logic {
 
         #[test]
         fn cancel_message_names_the_member() {
-            assert!(admin_cancel_message(&request("a")).contains("a님"));
+            let approved = admin_cancel_message(&request("a"));
+            assert!(approved.contains("a님"));
+            assert!(!approved.contains("대리 반려"));
+            let pending = LeaveRequestDto {
+                status: LeaveRequestStatus::Pending,
+                ..request("b")
+            };
+            assert!(admin_cancel_message(&pending).contains("대리 반려"));
+        }
+
+        #[test]
+        fn cancel_outcomes_and_failures_have_their_own_wording() {
+            let canceled = admin_cancel_done_message(LeaveRequestStatus::Canceled);
+            let rejected = admin_cancel_done_message(LeaveRequestStatus::Rejected);
+            assert!(canceled.contains("취소했습니다"));
+            assert!(rejected.contains("반려"));
+            assert_ne!(canceled, rejected);
+            for status in LeaveRequestStatus::ALL {
+                assert!(!admin_cancel_done_message(*status).is_empty());
+            }
+            assert_ne!(
+                admin_cancel_error_message("document_already_closed", None, None),
+                text::error_message("document_already_closed", None, None)
+            );
+            assert_eq!(
+                admin_cancel_error_message("forbidden", None, None),
+                text::error_message("forbidden", None, None)
+            );
         }
 
         #[test]

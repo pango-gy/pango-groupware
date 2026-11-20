@@ -1,5 +1,6 @@
 //! 구성원 관리: 목록·추가·정보 수정·상태/역할 변경·비밀번호 초기화.
 
+use chrono::NaiveDate;
 use dioxus::prelude::*;
 use pango_api::auth::Me;
 use pango_api::org::{
@@ -16,17 +17,38 @@ use crate::org_tree;
 use crate::session::use_session;
 use crate::text;
 use crate::ui::{
-    loaded_or_empty, report_error, report_form_error, report_success, resource_view, Avatar, Badge,
-    Button, ButtonKind, Card, Checkbox, ConfirmModal, EmptyState, FormError, Icon, IconName, Modal,
-    PageHeader, SecretReveal, SelectField, TextField, Tone,
+    loaded_or_empty, report_error, report_success, resource_view, today, Avatar, Badge, Button,
+    ButtonKind, Card, Checkbox, ConfirmModal, DateField, EmptyState, FormError, Icon, IconName,
+    Modal, PageHeader, SecretReveal, SelectField, TextField, Tone,
 };
 
-use self::logic::{MemberActions, ProfileForm, StatusForm};
+use self::logic::{FormErrors, MemberActions, ProfileForm, StatusForm};
+
+/// 서버 오류를 폼에 반영한다. 검증 오류는 해당 칸(입사일·퇴사일) 또는 폼 위에, 그 밖은 토스트로.
+fn show_failure(failure: &api::ApiError, mut errors: Signal<FormErrors>) {
+    if failure.code == "validation_failed" {
+        errors.set(logic::route_error(
+            failure.field.as_deref(),
+            failure.message(),
+        ));
+    } else {
+        errors.set(FormErrors::default());
+        report_error(failure);
+    }
+}
+
+/// 화면 검증 오류를 폼에 반영한다.
+fn show_invalid(invalid: &pango_core::error::DomainError, mut errors: Signal<FormErrors>) {
+    errors.set(logic::route_error(
+        logic::error_field(invalid),
+        text::domain_error_message(invalid),
+    ));
+}
 
 pub mod logic {
     //! 구성원 관리 화면의 판단과 변환(순수 함수).
 
-    use chrono::NaiveDate;
+    use chrono::{Months, NaiveDate};
     use pango_api::auth::Me;
     use pango_api::org::{
         ChangeStatusRequest, CreateMemberRequest, MemberDetail, UpdateMemberRequest,
@@ -34,7 +56,10 @@ pub mod logic {
     use pango_core::authz::Role;
     use pango_core::error::{DomainError, DomainResult, ValidationReason};
     use pango_core::id::{DepartmentId, PositionId};
-    use pango_core::member::MemberStatus;
+    use pango_core::member::{
+        validate_hired_on, validate_retired_on, MemberStatus, EARLIEST_HIRE_DATE,
+        HIRE_DATE_LEAD_MONTHS,
+    };
     use pango_core::text::{Email, LoginId, PersonName, Phone};
 
     use crate::format::{self, optional_date};
@@ -101,6 +126,63 @@ pub mod logic {
         optional_date(field, raw)?.ok_or(DomainError::validation(field, ValidationReason::Empty))
     }
 
+    /// 새로 정하는 입사일의 입력 범위 `(min, max)`: 1950-01-01부터 회사 기준 오늘의 1년 뒤까지.
+    /// 서버 `member::validate_hired_on`과 같다.
+    pub fn hired_on_bounds(today: NaiveDate) -> (NaiveDate, NaiveDate) {
+        let latest = today
+            .checked_add_months(Months::new(HIRE_DATE_LEAD_MONTHS))
+            .unwrap_or(today);
+        (EARLIEST_HIRE_DATE, latest)
+    }
+
+    /// 입사일 확인. 서버처럼 이미 저장된 값을 그대로 두는 수정은 확인하지 않는다(예전 값 때문에
+    /// 다른 정보조차 고칠 수 없게 되지 않도록).
+    fn checked_hired_on(
+        hired_on: NaiveDate,
+        current: Option<NaiveDate>,
+        today: NaiveDate,
+    ) -> DomainResult<NaiveDate> {
+        if current == Some(hired_on) {
+            Ok(hired_on)
+        } else {
+            validate_hired_on(hired_on, today)
+        }
+    }
+
+    /// 폼에 나눠 보여 줄 오류. 날짜 오류는 그 입력 칸 아래에, 그 밖은 폼 위에 둔다.
+    #[derive(Debug, Clone, Default, PartialEq, Eq)]
+    pub struct FormErrors {
+        pub top: String,
+        pub hired_on: String,
+        pub retired_on: String,
+    }
+
+    /// 검증 오류 문구를 `field`에 따라 자리에 놓는다(서버 오류의 `field`와 화면 검증의 필드가 같다).
+    pub fn route_error(field: Option<&str>, message: String) -> FormErrors {
+        match field {
+            Some("hired_on") => FormErrors {
+                hired_on: message,
+                ..FormErrors::default()
+            },
+            Some("retired_on") => FormErrors {
+                retired_on: message,
+                ..FormErrors::default()
+            },
+            _ => FormErrors {
+                top: message,
+                ..FormErrors::default()
+            },
+        }
+    }
+
+    /// 화면 검증 오류의 필드.
+    pub fn error_field(error: &DomainError) -> Option<&'static str> {
+        match error {
+            DomainError::Validation { field, .. } => Some(field),
+            _ => None,
+        }
+    }
+
     /// 구성원 추가·정보 수정 폼. 모든 값은 입력 그대로의 문자열이다.
     #[derive(Debug, Clone, Default, PartialEq, Eq)]
     pub struct ProfileForm {
@@ -140,8 +222,13 @@ pub mod logic {
             }
         }
 
-        /// 서버와 같은 규칙(`pango_core::text`)으로 미리 확인한다. 빈 선택 값은 `None`.
-        fn profile(&self) -> DomainResult<Profile> {
+        /// 서버와 같은 규칙(`pango_core::text`, `member::validate_hired_on`)으로 미리 확인한다.
+        /// 빈 선택 값은 `None`. `current_hired_on`은 수정할 때 저장된 입사일이다.
+        fn profile(
+            &self,
+            current_hired_on: Option<NaiveDate>,
+            today: NaiveDate,
+        ) -> DomainResult<Profile> {
             Ok(Profile {
                 name: PersonName::parse(&self.name)?.into_string(),
                 email: optional_text(&self.email, Email::parse, |e| e.as_str().to_owned())?,
@@ -152,13 +239,18 @@ pub mod logic {
                     DepartmentId::parse,
                 )?,
                 position_id: optional_id(&self.position_id, "position_id", PositionId::parse)?,
-                hired_on: required_date(&self.hired_on, "hired_on")?,
+                hired_on: checked_hired_on(
+                    required_date(&self.hired_on, "hired_on")?,
+                    current_hired_on,
+                    today,
+                )?,
             })
         }
 
-        pub fn to_create(&self) -> DomainResult<CreateMemberRequest> {
+        /// `today`는 회사 시간대의 오늘이다.
+        pub fn to_create(&self, today: NaiveDate) -> DomainResult<CreateMemberRequest> {
             let login_id = LoginId::parse(self.login_id.trim())?;
-            let p = self.profile()?;
+            let p = self.profile(None, today)?;
             Ok(CreateMemberRequest {
                 login_id: login_id.as_str().to_owned(),
                 name: p.name,
@@ -170,8 +262,13 @@ pub mod logic {
             })
         }
 
-        pub fn to_update(&self, version: i64) -> DomainResult<UpdateMemberRequest> {
-            let p = self.profile()?;
+        pub fn to_update(
+            &self,
+            version: i64,
+            current_hired_on: NaiveDate,
+            today: NaiveDate,
+        ) -> DomainResult<UpdateMemberRequest> {
+            let p = self.profile(Some(current_hired_on), today)?;
             Ok(UpdateMemberRequest {
                 version,
                 name: p.name,
@@ -211,10 +308,17 @@ pub mod logic {
                     != current.retired_on
         }
 
-        /// 퇴사일은 퇴사로 바꿀 때만 보낸다(그 밖에 보내면 서버가 거부한다).
-        pub fn to_request(&self, version: i64) -> DomainResult<ChangeStatusRequest> {
+        /// 퇴사일은 퇴사로 바꿀 때만 보낸다(그 밖에 보내면 서버가 거부한다). 입사일보다 이를 수
+        /// 없다(`member::validate_retired_on`). 비우면 서버가 오늘로 기록한다.
+        pub fn to_request(
+            &self,
+            version: i64,
+            hired_on: NaiveDate,
+        ) -> DomainResult<ChangeStatusRequest> {
             let retired_on = if self.status == MemberStatus::Retired {
                 optional_date("retired_on", &self.retired_on)?
+                    .map(|date| validate_retired_on(date, hired_on))
+                    .transpose()?
             } else {
                 None
             };
@@ -367,6 +471,15 @@ pub mod logic {
             );
         }
 
+        /// 테스트의 회사 기준 오늘.
+        fn today() -> NaiveDate {
+            NaiveDate::from_ymd_opt(2026, 11, 20).unwrap_or_default()
+        }
+
+        fn d(value: &str) -> NaiveDate {
+            value.parse().unwrap_or_default()
+        }
+
         fn filled() -> ProfileForm {
             ProfileForm {
                 login_id: " Gildong.Hong ".into(),
@@ -381,7 +494,7 @@ pub mod logic {
 
         #[test]
         fn create_request_normalizes_and_drops_empty_values() {
-            let request = filled().to_create().expect("valid");
+            let request = filled().to_create(today()).expect("valid");
             assert_eq!(request.login_id, "gildong.hong");
             assert_eq!(request.name, "홍길동");
             assert_eq!(request.email, None);
@@ -504,7 +617,7 @@ pub mod logic {
                 ),
             ];
             for (form, field) in cases {
-                assert_eq!(field_of(form.to_create()), Some(field), "{form:?}");
+                assert_eq!(field_of(form.to_create(today())), Some(field), "{form:?}");
             }
         }
 
@@ -515,12 +628,12 @@ pub mod logic {
                 name: "가".repeat(50),
                 ..filled()
             };
-            assert!(ok.to_create().is_ok());
+            assert!(ok.to_create(today()).is_ok());
             assert!(ProfileForm {
                 login_id: "a".repeat(32),
                 ..filled()
             }
-            .to_create()
+            .to_create(today())
             .is_ok());
         }
 
@@ -531,7 +644,9 @@ pub mod logic {
             detail.summary.department_id = Some(dept);
             detail.summary.email = Some("a@example.com".into());
             let form = ProfileForm::from_detail(&detail);
-            let request = form.to_update(detail.version).expect("valid");
+            let request = form
+                .to_update(detail.version, detail.hired_on, today())
+                .expect("valid");
             assert_eq!(request.version, 3);
             assert_eq!(request.department_id, Some(dept));
             assert_eq!(request.email.as_deref(), Some("a@example.com"));
@@ -541,7 +656,7 @@ pub mod logic {
                 login_id: String::new(),
                 ..form
             }
-            .to_update(1)
+            .to_update(1, detail.hired_on, today())
             .is_ok());
         }
 
@@ -554,17 +669,124 @@ pub mod logic {
             form.status = MemberStatus::Suspended;
             form.retired_on = "2026-03-31".into();
             assert!(form.is_change(&detail));
-            assert_eq!(form.to_request(3).expect("valid").retired_on, None);
+            assert_eq!(
+                form.to_request(3, detail.hired_on)
+                    .expect("valid")
+                    .retired_on,
+                None
+            );
 
             form.status = MemberStatus::Retired;
-            let request = form.to_request(3).expect("valid");
+            let request = form.to_request(3, detail.hired_on).expect("valid");
             assert_eq!(request.retired_on, NaiveDate::from_ymd_opt(2026, 3, 31));
             assert_eq!(request.version, 3);
 
             form.retired_on = String::new();
-            assert_eq!(form.to_request(3).expect("valid").retired_on, None);
+            assert_eq!(
+                form.to_request(3, detail.hired_on)
+                    .expect("valid")
+                    .retired_on,
+                None
+            );
             form.retired_on = "31/03/2026".into();
-            assert_eq!(field_of(form.to_request(3)), Some("retired_on"));
+            assert_eq!(
+                field_of(form.to_request(3, detail.hired_on)),
+                Some("retired_on")
+            );
+        }
+
+        #[test]
+        fn hired_on_follows_the_server_bounds() {
+            let (min, max) = hired_on_bounds(today());
+            assert_eq!(min, d("1950-01-01"));
+            assert_eq!(max, d("2027-11-20"));
+            // 윤일에서 1년 뒤는 2월 28일이다(서버와 같은 달 단위 계산).
+            assert_eq!(hired_on_bounds(d("2028-02-29")).1, d("2029-02-28"));
+            for ok in ["1950-01-01", "2026-11-20", "2027-11-20"] {
+                let form = ProfileForm {
+                    hired_on: ok.into(),
+                    ..filled()
+                };
+                assert!(form.to_create(today()).is_ok(), "{ok}");
+            }
+            for bad in ["1949-12-31", "2027-11-21", "1900-01-01", "2100-01-01"] {
+                let form = ProfileForm {
+                    hired_on: bad.into(),
+                    ..filled()
+                };
+                assert_eq!(
+                    form.to_create(today()).err(),
+                    Some(DomainError::validation(
+                        "hired_on",
+                        ValidationReason::OutOfRange
+                    )),
+                    "{bad}"
+                );
+            }
+            // 표기 범위를 벗어난 해(0202년)는 형식 오류지만 같은 칸에 붙는다.
+            let typo = ProfileForm {
+                hired_on: "0202-03-02".into(),
+                ..filled()
+            };
+            assert_eq!(field_of(typo.to_create(today())), Some("hired_on"));
+        }
+
+        #[test]
+        fn unchanged_hired_on_is_not_rechecked_on_update() {
+            let mut detail = target(Role::Member);
+            detail.hired_on = d("1949-06-01");
+            let form = ProfileForm::from_detail(&detail);
+            assert!(form.to_update(3, detail.hired_on, today()).is_ok());
+            let moved = ProfileForm {
+                hired_on: "1949-06-02".into(),
+                ..form
+            };
+            assert_eq!(
+                field_of(moved.to_update(3, detail.hired_on, today())),
+                Some("hired_on")
+            );
+        }
+
+        #[test]
+        fn retired_on_cannot_precede_hired_on() {
+            let detail = target(Role::Member);
+            let mut form = StatusForm::from_detail(&detail);
+            form.status = MemberStatus::Retired;
+            form.retired_on = detail.hired_on.to_string();
+            assert!(form.to_request(3, detail.hired_on).is_ok(), "당일 퇴사");
+            form.retired_on = "2024-03-01".into();
+            assert_eq!(
+                form.to_request(3, detail.hired_on).err(),
+                Some(DomainError::validation(
+                    "retired_on",
+                    ValidationReason::Inconsistent
+                ))
+            );
+            // 퇴사가 아니면 퇴사일을 보지 않는다.
+            form.status = MemberStatus::Suspended;
+            assert!(form.to_request(3, detail.hired_on).is_ok());
+        }
+
+        #[test]
+        fn date_errors_land_next_to_their_fields() {
+            assert_eq!(
+                route_error(Some("hired_on"), "a".into()),
+                FormErrors {
+                    hired_on: "a".into(),
+                    ..FormErrors::default()
+                }
+            );
+            assert_eq!(route_error(Some("retired_on"), "b".into()).retired_on, "b");
+            assert_eq!(route_error(Some("name"), "c".into()).top, "c");
+            assert_eq!(route_error(None, "d".into()).top, "d");
+            assert_eq!(
+                error_field(&DomainError::validation(
+                    "hired_on",
+                    ValidationReason::OutOfRange
+                )),
+                Some("hired_on")
+            );
+            assert_eq!(error_field(&DomainError::Forbidden), None);
         }
 
         #[test]
@@ -803,9 +1025,15 @@ fn ProfileFields(
     #[props(default)]
     with_login_id: bool,
     #[props(default)] disabled: bool,
+    /// 회사 기준 오늘(입사일 입력 범위의 기준).
+    today: NaiveDate,
+    /// 입사일 칸 아래에 보일 오류.
+    #[props(into, default)]
+    hired_on_error: String,
 ) -> Element {
     let mut form = form;
     let current = form();
+    let (min_hired, max_hired) = logic::hired_on_bounds(today);
     rsx! {
         if with_login_id {
             TextField {
@@ -860,10 +1088,13 @@ fn ProfileFields(
                 onchange: move |value| form.write().position_id = value,
             }
         }
-        TextField {
+        DateField {
             label: "입사일",
-            kind: "date",
             value: current.hired_on.clone(),
+            min: min_hired.to_string(),
+            max: max_hired.to_string(),
+            hint: "1950. 1. 1.부터 오늘의 1년 뒤까지 입력할 수 있습니다.",
+            error: hired_on_error,
             required: true,
             disabled,
             oninput: move |value| form.write().hired_on = value,
@@ -878,8 +1109,9 @@ fn MemberCreateModal(
     onclose: EventHandler<()>,
     oncreated: EventHandler<IssuedCredentials>,
 ) -> Element {
+    let today = today(use_session().zone());
     let form = use_signal(ProfileForm::default);
-    let mut error = use_signal(String::new);
+    let mut errors = use_signal(FormErrors::default);
     let mut busy = use_signal(|| false);
 
     let submit = move |event: FormEvent| async move {
@@ -887,15 +1119,15 @@ fn MemberCreateModal(
         if busy() {
             return;
         }
-        let request = match form.read().to_create() {
+        let request = match form.read().to_create(today) {
             Ok(request) => request,
             Err(invalid) => {
-                error.set(text::domain_error_message(&invalid));
+                show_invalid(&invalid, errors);
                 return;
             }
         };
         busy.set(true);
-        error.set(String::new());
+        errors.set(FormErrors::default());
         // 멱등성 키를 보내지 않는다. 서버가 임시 비밀번호가 담긴 응답을 저장하지 않으려고
         // 키를 쓰지 않기 때문이다. 같은 요청을 다시 보내면 `login_id_taken`으로 거부된다.
         let result = api::post::<_, IssuedCredentials>("/admin/members", &request).await;
@@ -905,15 +1137,22 @@ fn MemberCreateModal(
                 report_success("구성원을 추가했습니다.");
                 oncreated.call(credentials);
             }
-            Err(failure) => report_form_error(&failure, error),
+            Err(failure) => show_failure(&failure, errors),
         }
     };
 
     rsx! {
         Modal { title: "구성원 추가", onclose,
             form { class: "form", onsubmit: submit, novalidate: true,
-                FormError { message: error() }
-                ProfileFields { form, departments, positions, with_login_id: true }
+                FormError { message: errors().top }
+                ProfileFields {
+                    form,
+                    departments,
+                    positions,
+                    with_login_id: true,
+                    today,
+                    hired_on_error: errors().hired_on,
+                }
                 p { class: "field-hint", "역할은 구성원으로 만들어집니다. 임시 비밀번호는 추가한 직후 한 번만 보여 드립니다." }
                 div { class: "modal-actions",
                     Button { kind: ButtonKind::Secondary, onclick: move |_| onclose.call(()), "취소" }
@@ -950,7 +1189,8 @@ fn MemberDetailModal(
     let mut form = use_signal(|| ProfileForm::from_detail(&member));
     let mut status = use_signal(|| StatusForm::from_detail(&member));
     let mut role = use_signal(|| member.role);
-    let mut error = use_signal(String::new);
+    let today = today(use_session().zone());
+    let mut errors = use_signal(FormErrors::default);
     let mut busy = use_signal(|| false);
     let mut pending = use_signal(|| None::<Pending>);
 
@@ -964,7 +1204,7 @@ fn MemberDetailModal(
     };
     // 실패 처리. 다른 사람이 먼저 고쳤으면 최신 값을 다시 읽는다.
     let fail = move |failure: api::ApiError| async move {
-        report_form_error(&failure, error);
+        show_failure(&failure, errors);
         if failure.code == "version_conflict" {
             let id = current.peek().summary.id;
             match fetch_member(id).await {
@@ -979,19 +1219,19 @@ fn MemberDetailModal(
         if busy() {
             return;
         }
-        let (id, version) = {
+        let (id, version, hired_on) = {
             let m = current.read();
-            (m.summary.id, m.version)
+            (m.summary.id, m.version, m.hired_on)
         };
-        let request = match form.read().to_update(version) {
+        let request = match form.read().to_update(version, hired_on, today) {
             Ok(request) => request,
             Err(invalid) => {
-                error.set(text::domain_error_message(&invalid));
+                show_invalid(&invalid, errors);
                 return;
             }
         };
         busy.set(true);
-        error.set(String::new());
+        errors.set(FormErrors::default());
         let result = api::patch::<_, MemberDetail>(&format!("/admin/members/{id}"), &request).await;
         busy.set(false);
         match result {
@@ -1007,20 +1247,20 @@ fn MemberDetailModal(
         if busy() {
             return;
         }
-        let (id, version) = {
+        let (id, version, hired_on) = {
             let m = current.read();
-            (m.summary.id, m.version)
+            (m.summary.id, m.version, m.hired_on)
         };
-        let request = match status.read().to_request(version) {
+        let request = match status.read().to_request(version, hired_on) {
             Ok(request) => request,
             Err(invalid) => {
                 pending.set(None);
-                error.set(text::domain_error_message(&invalid));
+                show_invalid(&invalid, errors);
                 return;
             }
         };
         busy.set(true);
-        error.set(String::new());
+        errors.set(FormErrors::default());
         let result =
             api::post::<_, MemberDetail>(&format!("/admin/members/{id}/status"), &request).await;
         busy.set(false);
@@ -1047,7 +1287,7 @@ fn MemberDetailModal(
             role: role(),
         };
         busy.set(true);
-        error.set(String::new());
+        errors.set(FormErrors::default());
         let result =
             api::post::<_, MemberDetail>(&format!("/admin/members/{id}/role"), &request).await;
         busy.set(false);
@@ -1123,7 +1363,7 @@ fn MemberDetailModal(
                         }
                     }
                 }
-                FormError { message: error() }
+                FormError { message: errors().top }
                 if let Some(reason) = restriction {
                     p { class: "notice", role: "note", "{reason}" }
                 }
@@ -1136,6 +1376,8 @@ fn MemberDetailModal(
                             departments,
                             positions,
                             disabled: !actions.edit_profile,
+                            today,
+                            hired_on_error: errors().hired_on,
                         }
                         if actions.edit_profile {
                             div { class: "modal-actions",
@@ -1160,11 +1402,12 @@ fn MemberDetailModal(
                                 },
                             }
                             if next_status == MemberStatus::Retired {
-                                TextField {
+                                DateField {
                                     label: "퇴사일",
-                                    kind: "date",
                                     value: status.read().retired_on.clone(),
-                                    hint: "비워 두면 오늘 날짜로 기록됩니다.",
+                                    min: detail.hired_on.to_string(),
+                                    hint: "비워 두면 오늘 날짜로 기록됩니다. 입사일보다 이를 수 없습니다.",
+                                    error: errors().retired_on,
                                     oninput: move |value| status.write().retired_on = value,
                                 }
                             }
