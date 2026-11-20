@@ -1102,10 +1102,25 @@ body:has(.action-bar) .toasts { bottom: calc(24px + var(--action-bar-h) + env(sa
   width: 28px; height: 28px; border: 0; border-radius: 50%; background: none; cursor: pointer;
   font-size: 12px; color: var(--grey-800); font-feature-settings: "tnum";
 }
+.cal-mini-day { position: relative; }
 .cal-mini-day:hover { background: var(--grey-100); }
-.calendar-cell-outside .cal-mini-day { color: var(--grey-600); }
+.cal-mini-sun { color: var(--red-strong); }
+.cal-mini-sat { color: var(--blue-strong); }
+.calendar-cell-outside .cal-mini-day { color: var(--grey-400); }
+/* 주 보기에서 보고 있는 주: 칸 사이를 이어 한 줄 띠로 보인다. */
+.calendar-mini .calendar-cell:has(.cal-mini-in-week) { background: var(--grey-100); }
+.calendar-mini .calendar-row > .calendar-cell:has(.cal-mini-in-week):first-child { border-radius: 14px 0 0 14px; }
+.calendar-mini .calendar-row > .calendar-cell:has(.cal-mini-in-week):last-child { border-radius: 0 14px 14px 0; }
+.cal-mini-in-week:hover { background: var(--grey-200); }
+/* 일정이 있는 날은 숫자 아래 작은 점. */
+.cal-mini-busy::after {
+  content: ""; position: absolute; left: 50%; bottom: 3px; width: 4px; height: 4px; margin-left: -2px;
+  border-radius: 50%; background: var(--grey-400);
+}
 .cal-mini-today { color: var(--blue-strong); font-weight: 700; }
+.cal-mini-today::after { background: var(--blue); }
 .cal-mini-selected, .cal-mini-selected:hover { background: var(--blue); color: var(--on-blue); font-weight: 600; }
+.cal-mini-selected::after { background: var(--on-blue); }
 .cal-list { display: flex; flex-direction: column; gap: 2px; }
 .cal-list-title { margin: 8px 0 2px; font-size: 13px; font-weight: 600; color: var(--grey-600); }
 .cal-list-title:first-child { margin-top: 0; }
@@ -1121,6 +1136,12 @@ body:has(.action-bar) .toasts { bottom: calc(24px + var(--action-bar-h) + env(sa
 /* 월 보기: 막대는 시작 칸에서 오른쪽 칸들 위로 늘어난다(지나는 칸은 같은 높이의 빈자리를 둔다). */
 .cal-month .calendar-cell { min-height: max(112px, calc((100dvh - 230px) / 6)); padding: 0; }
 .cal-month .calendar-cell-outside { background: var(--grey-50); }
+.cal-month .calendar-cell:has(.cal-day-today) { background: color-mix(in srgb, var(--blue-weak) 55%, transparent); }
+.cal-month .cal-day { height: 100%; cursor: pointer; }
+@media (hover: hover) {
+  .cal-month .calendar-cell:hover:not(:has(.cal-day-today)) { background: var(--grey-50); }
+  .cal-month .calendar-cell-outside:hover { background: var(--grey-100); }
+}
 .cal-day { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 4px 0 6px; }
 .cal-day-head { display: flex; align-items: center; gap: 4px; min-width: 0; padding: 0 4px; }
 .cal-date {
@@ -1288,6 +1309,9 @@ body:has(.action-bar) .toasts { bottom: calc(24px + var(--action-bar-h) + env(sa
   .cal-nav .btn { margin-left: 2px; }
   .cal-main > .empty, .cal-main > .skeleton, .cal-agenda { padding: 0 calc(16px + env(safe-area-inset-right)) 0 calc(16px + env(safe-area-inset-left)); }
   .cal-month .calendar-cell { min-height: 76px; }
+  /* 칸 안 일정은 손가락으로 집기에 작다. 칸 전체를 누르면 그날 목록(일정마다 큰 줄)이 뜬다. */
+  .cal-month .cal-bar, .cal-month .cal-line, .cal-month .cal-chip, .cal-month .cal-more { pointer-events: none; }
+  .cal-month .cal-line-time, .cal-month .cal-bar-time { display: none; }
   .cal-day-head { justify-content: center; padding: 0 2px; }
   .cal-holiday-name { display: none; }
   .cal-week-day .cal-holiday-name { display: block; font-size: 10px; }
