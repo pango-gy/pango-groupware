@@ -284,14 +284,16 @@ pub(crate) mod logic {
             .collect()
     }
 
-    /// 기안자 표시: `홍길동 · 개발팀`.
-    pub fn drafter_line(detail: &DocumentDetail) -> String {
-        match detail.drafter_department_name.as_deref().map(str::trim) {
-            Some(department) if !department.is_empty() => {
-                format!("{} · {department}", detail.drafter_name)
-            }
-            _ => detail.drafter_name.clone(),
-        }
+    /// 기안자 표시: 이름, (있으면) 부서.
+    pub fn drafter_line(detail: &DocumentDetail) -> Vec<String> {
+        let department = detail
+            .drafter_department_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|department| !department.is_empty());
+        std::iter::once(detail.drafter_name.clone())
+            .chain(department.map(str::to_owned))
+            .collect()
     }
 }
 
@@ -312,12 +314,12 @@ enum Act {
 impl Act {
     const fn done_message(self) -> &'static str {
         match self {
-            Self::Approve => "승인했습니다.",
-            Self::Reject => "반려했습니다.",
-            Self::Withdraw => "회수했습니다.",
-            Self::Delete => "삭제했습니다.",
-            Self::Submit => "상신했습니다.",
-            Self::AdminReject => "관리자 권한으로 반려했습니다.",
+            Self::Approve => "승인했어요.",
+            Self::Reject => "반려했어요.",
+            Self::Withdraw => "회수했어요.",
+            Self::Delete => "삭제했어요.",
+            Self::Submit => "상신했어요.",
+            Self::AdminReject => "관리자 권한으로 반려했어요.",
         }
     }
 }
@@ -454,10 +456,10 @@ pub fn ApprovalDetail(id: String) -> Element {
             return rsx! {
                 PageHeader { title: "결재 문서" }
                 EmptyState {
-                    title: "문서를 찾을 수 없습니다.",
-                    hint: "삭제되었거나 볼 수 있는 문서가 아닙니다.",
+                    title: "문서를 찾을 수 없어요.",
+                    hint: "삭제되었거나 볼 수 있는 문서가 아니에요.",
                     icon: IconName::Document,
-                    Link { class: "btn btn-secondary btn-sm", to: Route::ApprovalList {}, "결재함으로" }
+                    Link { class: "btn btn-grey btn-sm", to: Route::ApprovalList {}, "결재함으로" }
                 }
             };
         }
@@ -489,9 +491,9 @@ pub fn ApprovalDetail(id: String) -> Element {
                 if actions.admin_reject {
                     Card { title: "관리자 동작",
                         p { class: "field-hint",
-                            "차례인 결재자가 퇴사·정지했거나 처리할 수 없어 문서가 멈춰 있을 때만 씁니다."
+                            "차례인 결재자가 퇴사·정지했거나 처리할 수 없어 문서가 멈춰 있을 때만 써요."
                         }
-                        div { class: "card-actions",
+                        div { class: "panel-actions",
                             Button {
                                 kind: ButtonKind::Danger,
                                 disabled: busy(),
@@ -525,7 +527,7 @@ pub fn ApprovalDetail(id: String) -> Element {
                         }
                         CharCount { count: note().chars().count(), max: Comment::RULE.max_chars }
                         div { class: "modal-actions",
-                            Button { kind: ButtonKind::Secondary, disabled: busy(), onclick: move |_| dialog.set(None), "취소" }
+                            Button { kind: ButtonKind::Grey, disabled: busy(), onclick: move |_| dialog.set(None), "취소" }
                             Button { busy: busy(), onclick: move |_| { spawn(run(Act::Approve)); }, "승인" }
                         }
                     }
@@ -534,7 +536,7 @@ pub fn ApprovalDetail(id: String) -> Element {
             Some(Act::Reject) => rsx! {
                 Modal { title: "반려", onclose: close,
                     div { class: "form",
-                        p { class: "confirm-message", "반려하면 문서가 바로 종료되고 되돌릴 수 없습니다." }
+                        p { class: "confirm-message", "반려하면 문서가 바로 종료되고 되돌릴 수 없어요." }
                         FormError { message: dialog_error() }
                         TextArea {
                             label: "반려 사유",
@@ -546,7 +548,7 @@ pub fn ApprovalDetail(id: String) -> Element {
                         }
                         CharCount { count: note().chars().count(), max: pango_core::text::Reason::RULE.max_chars }
                         div { class: "modal-actions",
-                            Button { kind: ButtonKind::Secondary, disabled: busy(), onclick: move |_| dialog.set(None), "취소" }
+                            Button { kind: ButtonKind::Grey, disabled: busy(), onclick: move |_| dialog.set(None), "취소" }
                             Button { kind: ButtonKind::Danger, busy: busy(), onclick: move |_| { spawn(run(Act::Reject)); }, "반려" }
                         }
                     }
@@ -563,10 +565,10 @@ pub fn ApprovalDetail(id: String) -> Element {
                     Modal { title: "관리자 대리 반려", onclose: close,
                         div { class: "form",
                             p { class: "confirm-message",
-                                "{pending}님의 결재 차례에서 문서를 반려로 끝냅니다. 차례인 결재자가 퇴사·정지했거나 처리할 수 없을 때만 사용하세요."
+                                "{pending}님의 결재 차례에서 문서를 반려로 끝내요. 차례인 결재자가 퇴사·정지했거나 처리할 수 없을 때만 사용하세요."
                             }
                             p { class: "field-hint",
-                                "되돌릴 수 없습니다. 휴가 신청이면 연차가 복원되고, 기안자와 결재자에게 알림이 가며 감사 로그에 남습니다."
+                                "되돌릴 수 없어요. 휴가 신청이면 연차가 복원되고, 기안자와 결재자에게 알림이 가며 감사 로그에 남아요."
                             }
                             FormError { message: dialog_error() }
                             TextArea {
@@ -579,7 +581,7 @@ pub fn ApprovalDetail(id: String) -> Element {
                             }
                             CharCount { count: note().chars().count(), max: pango_core::text::Reason::RULE.max_chars }
                             div { class: "modal-actions",
-                                Button { kind: ButtonKind::Secondary, disabled: busy(), onclick: move |_| dialog.set(None), "취소" }
+                                Button { kind: ButtonKind::Grey, disabled: busy(), onclick: move |_| dialog.set(None), "취소" }
                                 Button { kind: ButtonKind::Danger, busy: busy(), onclick: move |_| { spawn(run(Act::AdminReject)); }, "대리 반려" }
                             }
                         }
@@ -588,9 +590,9 @@ pub fn ApprovalDetail(id: String) -> Element {
             }
             Some(act @ (Act::Withdraw | Act::Delete | Act::Submit)) => {
                 let (title, message, label, danger) = match act {
-                    Act::Withdraw => ("문서 회수", "회수하면 결재가 중단되고 문서는 회수 상태로 종료됩니다. 휴가 신청이라면 신청도 함께 취소됩니다.", "회수", true),
-                    Act::Delete => ("임시저장 문서 삭제", "삭제한 문서는 되돌릴 수 없습니다.", "삭제", true),
-                    _ => ("상신", "상신하면 첫 번째 결재자에게 문서가 전달됩니다. 상신한 뒤에는 내용을 고칠 수 없습니다.", "상신", false),
+                    Act::Withdraw => ("문서 회수", "회수하면 결재가 중단되고 문서는 회수 상태로 종료돼요. 휴가 신청이라면 신청도 함께 취소돼요.", "회수", true),
+                    Act::Delete => ("임시저장 문서 삭제", "삭제한 문서는 되돌릴 수 없어요.", "삭제", true),
+                    _ => ("상신", "상신하면 첫 번째 결재자에게 문서가 전달돼요. 상신한 뒤에는 내용을 고칠 수 없어요.", "상신", false),
                 };
                 rsx! {
                     ConfirmModal {
@@ -626,10 +628,10 @@ fn DocumentView(
     rsx! {
         PageHeader {
             title: detail.title.clone(),
-            subtitle: detail.doc_no.clone().unwrap_or_else(|| "문서 번호는 상신할 때 붙습니다.".into()),
+            description: detail.doc_no.clone().unwrap_or_else(|| "문서 번호는 상신할 때 붙어요.".into()),
         }
         Card {
-            div { class: "doc-head",
+            div { class: "badge-row panel-note",
                 Badge { tone: text::document_status_tone(detail.status), {text::document_status_label(detail.status)} }
                 if detail.my_turn {
                     Badge { tone: Tone::Warning, "내 차례" }
@@ -642,7 +644,11 @@ fn DocumentView(
                 dt { "양식" }
                 dd { "{detail.form_name}" }
                 dt { "기안자" }
-                dd { "{drafter}" }
+                dd { class: "detail-inline",
+                    for part in drafter {
+                        span { key: "{part}", "{part}" }
+                    }
+                }
                 dt { "작성" }
                 dd { {format::datetime(detail.created_at, tz)} }
                 if let Some(at) = detail.submitted_at {
@@ -657,7 +663,7 @@ fn DocumentView(
         }
         if !rows.is_empty() {
             Card { title: "신청 내용",
-                dl { class: "detail-list detail-list-flush",
+                dl { class: "detail-list",
                     for (label , value) in rows {
                         div { key: "{label}", class: "detail-pair",
                             dt { "{label}" }
@@ -680,14 +686,14 @@ fn DocumentView(
                         current: step.status == StepStatus::Pending,
                         div { class: "timeline-head",
                             strong { "{step.order}. {step.approver_name}" }
-                            span { class: "timeline-meta", {text::step_kind_label(step.kind)} }
+                            span { class: "meta", {text::step_kind_label(step.kind)} }
                             Badge { tone: text::step_status_tone(step.status), {text::step_status_label(step.status)} }
                         }
                         if let Some(at) = step.acted_at {
-                            small { class: "timeline-meta", {format::datetime(at, tz)} }
+                            small { class: "meta", {format::datetime(at, tz)} }
                         }
                         if let Some((_, note)) = proxy.as_ref().filter(|(order, _)| *order == step.order) {
-                            small { class: "timeline-meta", "{note}" }
+                            small { class: "meta", "{note}" }
                         }
                         if let Some(comment) = step.comment.as_ref().filter(|c| !c.trim().is_empty()) {
                             p { class: "timeline-comment", "{comment}" }
@@ -722,9 +728,9 @@ fn DocumentView(
                         TimelineItem { key: "{index}",
                             div { class: "timeline-head",
                                 strong { "{event.actor_name}" }
-                                span { class: "timeline-meta", "{verb}" }
+                                span { class: "meta", "{verb}" }
                             }
-                            small { class: "timeline-meta", {format::datetime(event.created_at, tz)} }
+                            small { class: "meta", {format::datetime(event.created_at, tz)} }
                             if let Some(comment) = event.comment.as_ref().filter(|c| !c.trim().is_empty()) {
                                 p { class: "timeline-comment", "{comment}" }
                             }
@@ -747,13 +753,13 @@ fn ActionBar(
     rsx! {
         div { class: "action-bar", role: "toolbar", "aria-label": "문서 동작",
             if actions.delete {
-                Button { kind: ButtonKind::Ghost, disabled: busy, onclick: move |_| onact.call(Act::Delete), "삭제" }
+                Button { kind: ButtonKind::Danger, disabled: busy, onclick: move |_| onact.call(Act::Delete), "삭제" }
             }
             if actions.withdraw {
-                Button { kind: ButtonKind::Secondary, disabled: busy, onclick: move |_| onact.call(Act::Withdraw), "회수" }
+                Button { kind: ButtonKind::Grey, disabled: busy, onclick: move |_| onact.call(Act::Withdraw), "회수" }
             }
             if actions.edit {
-                Button { kind: ButtonKind::Secondary, disabled: busy, onclick: move |_| onedit.call(()), "수정" }
+                Button { kind: ButtonKind::Grey, disabled: busy, onclick: move |_| onedit.call(()), "수정" }
             }
             if actions.submit {
                 Button { disabled: busy, onclick: move |_| onact.call(Act::Submit), "상신" }
@@ -1199,7 +1205,7 @@ mod tests {
             vec![
                 ("근무일", "어제".to_owned()),
                 ("근무 형태", "moon".to_owned()),
-                ("요청 당시 기록", "내용을 표시할 수 없습니다.".to_owned()),
+                ("요청 당시 기록", "내용을 표시할 수 없어요.".to_owned()),
             ],
             "시각은 밀리초 숫자만, 범위를 넘는 값은 건너뛴다"
         );
@@ -1215,10 +1221,10 @@ mod tests {
     fn drafter_line_includes_department_when_present() {
         let p = people();
         let mut doc = detail(&p, DocumentStatus::Draft, [StepStatus::Waiting; 2]);
-        assert_eq!(drafter_line(&doc), "기안자 · 개발팀");
+        assert_eq!(drafter_line(&doc), vec!["기안자", "개발팀"]);
         doc.drafter_department_name = Some(" ".into());
-        assert_eq!(drafter_line(&doc), "기안자");
+        assert_eq!(drafter_line(&doc), vec!["기안자"]);
         doc.drafter_department_name = None;
-        assert_eq!(drafter_line(&doc), "기안자");
+        assert_eq!(drafter_line(&doc), vec!["기안자"]);
     }
 }

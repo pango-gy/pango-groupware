@@ -18,7 +18,7 @@ use crate::text;
 use crate::ui::{
     report_error, report_success, resource_view, today, use_initial_tab, use_more_pages, Badge,
     Button, ButtonKind, Card, Checkbox, ConfirmModal, DateField, EmptyState, FormError, IconName,
-    LoadMore, Modal, PageHeader, SelectField, Tabs, TextArea, TextField, Tone,
+    LoadMore, Meta, Modal, PageHeader, SelectField, Tabs, TextArea, TextField, Tone,
 };
 
 const TAB_BALANCES: &str = "balances";
@@ -61,13 +61,13 @@ pub fn AdminLeave() -> Element {
     rsx! {
         PageHeader {
             title: "휴가 관리",
-            subtitle: "연차는 입사일 기준으로 매일 자동 부여됩니다. 바로 반영하려면 부여를 실행하세요.",
+            description: "연차는 입사일 기준으로 매일 자동 부여돼요. 바로 반영하려면 부여를 실행해 주세요.",
             actions: rsx! {
-                Button { kind: ButtonKind::Secondary, busy: running(), onclick: run_accrual, "연차 부여 실행" }
+                Button { kind: ButtonKind::Weak, busy: running(), onclick: run_accrual, "연차 부여 실행" }
             },
         }
         if let Some(result) = last_run() {
-            p { class: "leave-notice", role: "status", {logic::accrual_message(&result)} }
+            p { class: "callout callout-success", role: "status", {logic::accrual_message(&result)} }
         }
         Tabs { tabs, active: tab(), onselect: move |key| tab.set(key) }
         match tab().as_str() {
@@ -90,11 +90,11 @@ fn BalancesTab(balances: Resource<ApiResult<Vec<MemberBalance>>>, today: NaiveDa
             let rows = logic::sorted_balances(rows);
             rsx! {
                 if rows.is_empty() {
-                    EmptyState { title: "재직 중인 구성원이 없습니다.", icon: IconName::People }
+                    EmptyState { title: "재직 중인 구성원이 없어요.", icon: IconName::People }
                 } else {
                     Card {
                         div { class: "table-wrap",
-                            table { class: "table leave-table",
+                            table { class: "table table-nowrap",
                                 thead {
                                     tr {
                                         th { "구성원" }
@@ -110,19 +110,19 @@ fn BalancesTab(balances: Resource<ApiResult<Vec<MemberBalance>>>, today: NaiveDa
                                             td {
                                                 strong { "{row.member_name}" }
                                                 if let Some(department) = &row.department_name {
-                                                    small { class: "leave-cell-sub", "{department}" }
+                                                    small { class: "cell-sub", "{department}" }
                                                 }
                                             }
                                             td { class: "num", {format::leave_days(row.balance.granted.quarters())} }
                                             td { class: "num", {format::leave_days(row.balance.used.quarters())} }
                                             td {
-                                                class: if row.balance.remaining.is_negative() { "num leave-negative" } else { "num" },
+                                                class: if row.balance.remaining.is_negative() { "num ink-danger" } else { "num" },
                                                 {format::leave_days(row.balance.remaining.quarters())}
                                             }
                                             td { class: "num",
                                                 if me.is_none_or(|(id, role)| can_edit_personal_records(id, role, row.member_id)) {
                                                     Button {
-                                                        kind: ButtonKind::Secondary,
+                                                        kind: ButtonKind::Grey,
                                                         small: true,
                                                         onclick: {
                                                             let row = row.clone();
@@ -198,7 +198,7 @@ fn AdjustModal(
             Ok(balance) => {
                 key.set(api::new_idempotency_key());
                 report_success(format!(
-                    "조정했습니다. 잔여 {}",
+                    "조정했어요. 잔여 {}",
                     format::leave_days(balance.balance.remaining.quarters())
                 ));
                 ondone.call(());
@@ -212,7 +212,7 @@ fn AdjustModal(
         Modal { title: "{member.member_name} 연차 조정", onclose: move |_| onclose.call(()),
             form { class: "form", onsubmit: submit,
                 p { class: "field-hint",
-                    "현재 잔여 {format::leave_days(member.balance.remaining.quarters())}. 더하려면 양수, 빼려면 음수(예: -0.5)를 입력합니다."
+                    "현재 잔여 {format::leave_days(member.balance.remaining.quarters())}. 더하려면 양수, 빼려면 음수(예: -0.5)를 입력해요."
                 }
                 FormError { message: error() }
                 TextField {
@@ -229,7 +229,7 @@ fn AdjustModal(
                     label: "적용일",
                     value: effective_on(),
                     required: true,
-                    hint: "더하는 조정은 이날부터 쓸 수 있고, 빼는 조정은 이날 사용한 것으로 계산됩니다.",
+                    hint: "더하는 조정은 이날부터 쓸 수 있고, 빼는 조정은 이날 사용한 것으로 계산돼요.",
                     oninput: move |value: String| effective_on.set(value),
                 }
                 TextArea {
@@ -238,11 +238,11 @@ fn AdjustModal(
                     rows: 3,
                     required: true,
                     maxlength: 1000,
-                    placeholder: "조정 사유(구성원의 사용 내역에 보입니다)",
+                    placeholder: "조정 사유(구성원의 사용 내역에 보여요)",
                     oninput: move |value: String| memo.set(value),
                 }
                 div { class: "modal-actions",
-                    Button { kind: ButtonKind::Ghost, onclick: move |_| onclose.call(()), "닫기" }
+                    Button { kind: ButtonKind::Grey, onclick: move |_| onclose.call(()), "닫기" }
                     Button { submit: true, busy: busy(), disabled: !can_submit, "조정" }
                 }
             }
@@ -297,70 +297,77 @@ fn RequestsTab() -> Element {
             .collect();
 
     rsx! {
-        div { class: "filters leave-filters",
-            SelectField {
-                label: "상태",
-                value: status(),
-                options: status_options,
-                onchange: move |value: String| status.set(value),
+        Card {
+            div { class: "toolbar",
+                SelectField {
+                    label: "상태",
+                    value: status(),
+                    options: status_options,
+                    onchange: move |value: String| status.set(value),
+                }
             }
-        }
-        {resource_view(first, move |page: Page<LeaveRequestDto>| {
-            let next = more.cursor(&page);
-            let items: Vec<LeaveRequestDto> = more.all(page.items, |item| item.id);
-            rsx! {
-                if items.is_empty() {
-                    EmptyState { title: "조건에 맞는 신청이 없습니다.", icon: IconName::Calendar }
-                } else {
-                    Card {
-                        ul { class: "list",
-                            for item in items {
-                                li { key: "{item.id}", class: "list-row leave-row",
-                                    div { class: "list-row-main",
-                                        div { class: "leave-row-title",
-                                            strong { "{item.member_name}" }
-                                            Badge { tone: text::leave_status_tone(item.status), {text::leave_status_label(item.status)} }
+            {resource_view(first, move |page: Page<LeaveRequestDto>| {
+                let next = more.cursor(&page);
+                let items: Vec<LeaveRequestDto> = more.all(page.items, |item| item.id);
+                rsx! {
+                    if items.is_empty() {
+                        EmptyState { title: "조건에 맞는 신청이 없어요.", icon: IconName::Calendar }
+                    } else {
+                        Fragment {
+                            ul { class: "list",
+                                for item in items {
+                                    li { key: "{item.id}", class: "list-row list-row-top",
+                                        div { class: "list-row-main",
+                                            div { class: "row-title",
+                                                strong { "{item.member_name}" }
+                                                Badge { tone: text::leave_status_tone(item.status), {text::leave_status_label(item.status)} }
+                                            }
+                                            Meta {
+                                                items: vec![
+                                                    item.leave_type_name.clone(),
+                                                    leave_logic::period_label(item.start_date, item.end_date),
+                                                    text::leave_unit_label(item.unit).to_owned(),
+                                                    format::leave_days(item.amount.quarters()),
+                                                ],
+                                            }
+                                            p { class: "row-reason", "{item.reason}" }
                                         }
-                                        small {
-                                            "{item.leave_type_name} · {leave_logic::period_label(item.start_date, item.end_date)} · {text::leave_unit_label(item.unit)} · {format::leave_days(item.amount.quarters())}"
-                                        }
-                                        p { class: "leave-row-reason", "{item.reason}" }
-                                    }
-                                    div { class: "list-row-side",
-                                        Link { to: Route::ApprovalDetail { id: item.document_id.to_string() }, "결재 문서" }
-                                        if logic::admin_can_cancel(item.status) {
-                                            if me.is_none_or(|(id, role)| can_edit_personal_records(id, role, item.member_id)) {
-                                                Button {
-                                                    kind: ButtonKind::Secondary,
-                                                    small: true,
-                                                    onclick: {
-                                                        let item = item.clone();
-                                                        move |_| confirm.set(Some(item.clone()))
-                                                    },
-                                                    "취소"
+                                        div { class: "list-row-side",
+                                            Link { to: Route::ApprovalDetail { id: item.document_id.to_string() }, "결재 문서" }
+                                            if logic::admin_can_cancel(item.status) {
+                                                if me.is_none_or(|(id, role)| can_edit_personal_records(id, role, item.member_id)) {
+                                                    Button {
+                                                        kind: ButtonKind::Grey,
+                                                        small: true,
+                                                        onclick: {
+                                                            let item = item.clone();
+                                                            move |_| confirm.set(Some(item.clone()))
+                                                        },
+                                                        "취소"
+                                                    }
+                                                } else {
+                                                    small { class: "field-hint", {text::OWN_RECORD_HINT} }
                                                 }
-                                            } else {
-                                                small { class: "field-hint", {text::OWN_RECORD_HINT} }
                                             }
                                         }
                                     }
                                 }
                             }
-                        }
-                        LoadMore {
-                            has_more: next.is_some(),
-                            busy: more.busy(),
-                            onclick: move |_| {
-                                if let Some(cursor) = next.clone() {
-                                    let current = status();
-                                    spawn(more.load(cursor, move |c| logic::requests_path(&current, Some(c))));
-                                }
-                            },
+                            LoadMore {
+                                has_more: next.is_some(),
+                                busy: more.busy(),
+                                onclick: move |_| {
+                                    if let Some(cursor) = next.clone() {
+                                        let current = status();
+                                        spawn(more.load(cursor, move |c| logic::requests_path(&current, Some(c))));
+                                    }
+                                },
+                            }
                         }
                     }
                 }
-            }
-        })}
+            })}
+        }
         if let Some(target) = confirm() {
             ConfirmModal {
                 title: "휴가 취소",
@@ -387,44 +394,48 @@ fn TypesTab() -> Element {
     let mut types =
         use_resource(|| async { api::get::<Vec<LeaveTypeDto>>("/admin/leave/types").await });
     rsx! {
-        div { class: "leave-toolbar",
-            p { class: "field-hint", "결재 중인 신청이 있는 종류는 끌 수 없습니다. 차감 여부는 만든 뒤 바꿀 수 없습니다." }
-            Button { small: true, onclick: move |_| editing.set(Some(None)), "종류 추가" }
-        }
-        {resource_view(types, move |list: Vec<LeaveTypeDto>| rsx! {
-            if list.is_empty() {
-                EmptyState { title: "휴가 종류가 없습니다.", icon: IconName::List }
-            } else {
-                Card {
-                    ul { class: "list",
-                        for item in logic::sorted_types(list) {
-                            li { key: "{item.id}", class: "list-row",
-                                div { class: "list-row-main",
-                                    div { class: "leave-row-title",
-                                        strong { "{item.name}" }
-                                        if !item.active {
-                                            Badge { tone: Tone::Neutral, "꺼짐" }
+        Card {
+            div { class: "toolbar",
+                p { class: "field-hint", "결재 중인 신청이 있는 종류는 끌 수 없어요. 차감 여부는 만든 뒤 바꿀 수 없어요." }
+                div { class: "toolbar-end",
+                    Button { kind: ButtonKind::Weak, onclick: move |_| editing.set(Some(None)), "종류 추가" }
+                }
+            }
+            {resource_view(types, move |list: Vec<LeaveTypeDto>| rsx! {
+                if list.is_empty() {
+                    EmptyState { title: "휴가 종류가 없어요.", icon: IconName::List }
+                } else {
+                    Fragment {
+                        ul { class: "list",
+                            for item in logic::sorted_types(list) {
+                                li { key: "{item.id}", class: "list-row",
+                                    div { class: "list-row-main",
+                                        div { class: "row-title",
+                                            strong { "{item.name}" }
+                                            if !item.active {
+                                                Badge { tone: Tone::Neutral, "꺼짐" }
+                                            }
                                         }
+                                        Meta { items: logic::type_summary(&item) }
                                     }
-                                    small { {logic::type_summary(&item)} }
-                                }
-                                div { class: "list-row-side",
-                                    Button {
-                                        kind: ButtonKind::Secondary,
-                                        small: true,
-                                        onclick: {
-                                            let item = item.clone();
-                                            move |_| editing.set(Some(Some(item.clone())))
-                                        },
-                                        "수정"
+                                    div { class: "list-row-side",
+                                        Button {
+                                            kind: ButtonKind::Grey,
+                                            small: true,
+                                            onclick: {
+                                                let item = item.clone();
+                                                move |_| editing.set(Some(Some(item.clone())))
+                                            },
+                                            "수정"
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                 }
-            }
-        })}
+            })}
+        }
         if let Some(target) = editing() {
             TypeModal {
                 existing: target,
@@ -493,9 +504,9 @@ fn TypeModal(
                 Ok(_) => {
                     key.set(api::new_idempotency_key());
                     report_success(if creating {
-                        "휴가 종류를 추가했습니다."
+                        "휴가 종류를 추가했어요."
                     } else {
-                        "저장했습니다."
+                        "저장했어요."
                     });
                     ondone.call(());
                 }
@@ -533,7 +544,7 @@ fn TypeModal(
                 TextField {
                     label: "코드",
                     value: current.code.clone(),
-                    hint: if creating { "영문 소문자·숫자·_ (예: family_event). 만든 뒤 바꿀 수 없습니다." } else { "만든 뒤 바꿀 수 없습니다." },
+                    hint: if creating { "영문 소문자·숫자·_ (예: family_event). 만든 뒤 바꿀 수 없어요." } else { "만든 뒤 바꿀 수 없어요." },
                     disabled: !creating,
                     required: true,
                     maxlength: 32,
@@ -544,7 +555,7 @@ fn TypeModal(
                     label: "연차 잔여에서 차감",
                     checked: current.deducts_balance,
                     disabled: !creating,
-                    hint: if creating { "만든 뒤에는 바꿀 수 없습니다." } else { "만든 뒤에는 바꿀 수 없습니다(읽기 전용)." },
+                    hint: if creating { "만든 뒤에는 바꿀 수 없어요." } else { "만든 뒤에는 바꿀 수 없어요(읽기 전용)." },
                     onchange: move |value: bool| form.write().deducts_balance = value,
                 }
                 Checkbox {
@@ -556,7 +567,7 @@ fn TypeModal(
                     Checkbox {
                         label: "사용",
                         checked: current.active,
-                        hint: "끄면 새 신청에서 고를 수 없습니다.",
+                        hint: "끄면 새 신청에서 고를 수 없어요.",
                         onchange: move |value: bool| form.write().active = value,
                     }
                 }
@@ -564,12 +575,12 @@ fn TypeModal(
                     label: "정렬 순서",
                     kind: "number",
                     value: current.sort_order.clone(),
-                    hint: "작을수록 앞에 나옵니다.",
+                    hint: "작을수록 앞에 나와요.",
                     maxlength: 6,
                     oninput: move |value: String| form.write().sort_order = value,
                 }
                 div { class: "modal-actions",
-                    Button { kind: ButtonKind::Ghost, onclick: move |_| onclose.call(()), "닫기" }
+                    Button { kind: ButtonKind::Grey, onclick: move |_| onclose.call(()), "닫기" }
                     Button { submit: true, busy: busy(), if creating { "추가" } else { "저장" } }
                 }
             }
@@ -611,8 +622,8 @@ pub(crate) mod logic {
                 Self::Empty => "조정 일수를 입력해 주세요.",
                 Self::NotNumber => "숫자로 입력해 주세요(예: 1, 0.5, -0.25).",
                 Self::NotQuarter => "0.25일 단위로 입력해 주세요.",
-                Self::Zero => "0일은 조정할 수 없습니다.",
-                Self::OutOfRange => "한 번에 100일까지 조정할 수 있습니다.",
+                Self::Zero => "0일은 조정할 수 없어요.",
+                Self::OutOfRange => "한 번에 100일까지 조정할 수 있어요.",
             }
         }
     }
@@ -688,7 +699,7 @@ pub(crate) mod logic {
             return Err("메모를 입력해 주세요.");
         }
         if memo.chars().count() > 1_000 {
-            return Err("메모는 1,000자까지 쓸 수 있습니다.");
+            return Err("메모는 1,000자까지 쓸 수 있어요.");
         }
         Ok(AdjustLeaveRequest {
             member_id,
@@ -718,12 +729,12 @@ pub(crate) mod logic {
     pub fn accrual_message(result: &AccrualRunResult) -> String {
         if result.grants_inserted == 0 {
             format!(
-                "재직 구성원 {}명을 확인했습니다. 새로 부여할 연차는 없습니다.",
+                "재직 구성원 {}명을 확인했어요. 새로 부여할 연차는 없어요.",
                 result.members
             )
         } else {
             format!(
-                "재직 구성원 {}명을 확인해 {}건을 새로 부여했습니다.",
+                "재직 구성원 {}명을 확인해 {}건을 새로 부여했어요.",
                 result.members, result.grants_inserted
             )
         }
@@ -750,12 +761,12 @@ pub(crate) mod logic {
         let period = period_label(request.start_date, request.end_date);
         let document = match request.status {
             LeaveRequestStatus::Pending => {
-                " 결재 중인 문서는 회수되고, 이미 누군가 결재했다면 관리자 대리 반려로 끝나 신청이 반려 상태가 됩니다."
+                " 결재 중인 문서는 회수되고, 이미 누군가 결재했다면 관리자 대리 반려로 끝나 신청이 반려 상태가 돼요."
             }
-            _ => " 승인된 결재 문서는 그대로 남습니다.",
+            _ => " 승인된 결재 문서는 그대로 남아요.",
         };
         format!(
-            "{}님의 {period} {}을(를) 취소합니다. 사용한 연차는 복원됩니다.{document}",
+            "{}님의 {period} {}을(를) 취소해요. 사용한 연차는 복원돼요.{document}",
             request.member_name, request.leave_type_name
         )
     }
@@ -764,12 +775,12 @@ pub(crate) mod logic {
     /// 신청이 `rejected`로 돌아온다.
     pub fn admin_cancel_done_message(status: LeaveRequestStatus) -> &'static str {
         match status {
-            LeaveRequestStatus::Canceled => "휴가를 취소했습니다. 연차가 복원되었습니다.",
+            LeaveRequestStatus::Canceled => "휴가를 취소했어요. 연차가 복원되었어요.",
             LeaveRequestStatus::Rejected => {
-                "결재가 이미 진행된 신청이라 결재 문서를 대리 반려로 끝냈습니다. 신청은 반려 상태가 되고 연차가 복원되었습니다."
+                "결재가 이미 진행된 신청이라 결재 문서를 대리 반려로 끝냈어요. 신청은 반려 상태가 되고 연차가 복원되었어요."
             }
             LeaveRequestStatus::Pending | LeaveRequestStatus::Approved => {
-                "처리했습니다. 목록에서 신청 상태를 확인해 주세요."
+                "처리했어요. 목록에서 신청 상태를 확인해 주세요."
             }
         }
     }
@@ -782,7 +793,7 @@ pub(crate) mod logic {
     ) -> String {
         match code {
             "document_already_closed" => {
-                "이미 처리가 끝난 신청입니다. 목록을 새로 고쳤으니 상태를 확인해 주세요.".into()
+                "이미 처리가 끝난 신청이에요. 목록을 새로 고쳤으니 상태를 확인해 주세요.".into()
             }
             _ => text::error_message(code, field, reason),
         }
@@ -793,7 +804,8 @@ pub(crate) mod logic {
         list
     }
 
-    pub fn type_summary(item: &LeaveTypeDto) -> String {
+    /// 휴가 종류 줄의 보조 정보: 코드, 차감 여부, (되면) 반차 가능.
+    pub fn type_summary(item: &LeaveTypeDto) -> Vec<String> {
         [
             Some(item.code.as_str()),
             Some(if item.deducts_balance {
@@ -805,16 +817,16 @@ pub(crate) mod logic {
         ]
         .into_iter()
         .flatten()
-        .collect::<Vec<_>>()
-        .join(" · ")
+        .map(str::to_owned)
+        .collect()
     }
 
     pub fn type_error_message(code: &str, field: Option<&str>, reason: Option<&str>) -> String {
         match code {
             "in_use" => {
-                "결재 중인 신청이 있어 끌 수 없습니다. 신청이 끝난 뒤 다시 시도해 주세요.".into()
+                "결재 중인 신청이 있어 끌 수 없어요. 신청이 끝난 뒤 다시 시도해 주세요.".into()
             }
-            "already_exists" => "같은 코드의 휴가 종류가 이미 있습니다.".into(),
+            "already_exists" => "같은 코드의 휴가 종류가 이미 있어요.".into(),
             _ => text::error_message(code, field, reason),
         }
     }
@@ -857,7 +869,7 @@ pub(crate) mod logic {
             if name.is_empty() {
                 Err("이름을 입력해 주세요.")
             } else if name.chars().count() > 50 {
-                Err("이름은 50자까지 쓸 수 있습니다.")
+                Err("이름은 50자까지 쓸 수 있어요.")
             } else {
                 Ok(name.to_owned())
             }
@@ -1044,7 +1056,7 @@ pub(crate) mod logic {
         fn cancel_outcomes_and_failures_have_their_own_wording() {
             let canceled = admin_cancel_done_message(LeaveRequestStatus::Canceled);
             let rejected = admin_cancel_done_message(LeaveRequestStatus::Rejected);
-            assert!(canceled.contains("취소했습니다"));
+            assert!(canceled.contains("취소했어요"));
             assert!(rejected.contains("반려"));
             assert_ne!(canceled, rejected);
             for status in LeaveRequestStatus::ALL {
@@ -1128,7 +1140,7 @@ pub(crate) mod logic {
                 members: 3,
                 grants_inserted: 0,
             };
-            assert!(accrual_message(&none).contains("없습니다"));
+            assert!(accrual_message(&none).contains("없어요"));
             let some = AccrualRunResult {
                 members: 3,
                 grants_inserted: 2,
@@ -1149,7 +1161,10 @@ pub(crate) mod logic {
                 sort_order: 0,
                 version: 1,
             };
-            assert_eq!(type_summary(&t), "annual · 연차 차감 · 반차·반반차 가능");
+            assert_eq!(
+                type_summary(&t),
+                vec!["annual", "연차 차감", "반차·반반차 가능"]
+            );
         }
     }
 }

@@ -9,7 +9,10 @@ use crate::format;
 use crate::route::Route;
 use crate::session::use_session;
 use crate::text;
-use crate::ui::{now, resource_view, Card, EmptyState, Icon, IconName, PageHeader, Stat, StatLink};
+use crate::ui::{
+    now, resource_view, Card, EmptyState, Icon, IconName, Meta, PageHeader, PanelLink, Stat,
+    StatLink,
+};
 
 use super::audit::logic as audit_logic;
 
@@ -21,23 +24,27 @@ pub fn AdminHome() -> Element {
     let at = now();
 
     rsx! {
-        PageHeader { title: "관리 홈" }
+        PageHeader { title: "관리 홈", description: "오늘 챙길 예외와 대기 중인 일을 모았어요." }
         {resource_view(dashboard, move |data: AdminDashboard| {
             let today = logic::today_view(&data.today);
             rsx! {
-                div { class: "home-grid",
-                    Card { title: "오늘 출근 현황 · {format::date_md(data.today.date)}", class: "home-span",
-                        if let Some(note) = today.note {
-                            p { class: "today-meta home-note", "{note}" }
-                        }
-                        div { class: "att-stats dash-stats",
-                            for tile in today.tiles {
-                                Stat { key: "{tile.label}", label: tile.label, value: tile.value, tone: tile.tone }
-                            }
+                Card {
+                    title: "오늘 출근 현황",
+                    action: rsx! {
+                        span { class: "text-sub", {format::date_md(data.today.date)} }
+                    },
+                    if let Some(note) = today.note {
+                        p { class: "text-sub panel-note", "{note}" }
+                    }
+                    div { class: "stats",
+                        for tile in today.tiles {
+                            Stat { key: "{tile.label}", label: tile.label, value: tile.value, tone: tile.tone }
                         }
                     }
-                    Card { title: "처리할 일", class: "home-card",
-                        div { class: "home-stats",
+                }
+                div { class: "grid-2",
+                    Card { title: "처리할 일",
+                        div { class: "stats",
                             for item in logic::pending_items(&data.pending) {
                                 StatLink {
                                     key: "{item.tile.label}",
@@ -54,19 +61,18 @@ pub fn AdminHome() -> Element {
                     Card {
                         title: "퇴근 누락 (최근 7일)",
                         action: rsx! {
-                            Link { class: "card-link", to: Route::AdminAttendance {}, "근태 관리" }
+                            PanelLink { to: Route::AdminAttendance {}, label: "근태 관리" }
                         },
-                        class: "home-card",
                         MissingList { items: data.missing_clock_out.clone() }
                     }
                     Card {
                         title: "최근 감사 로그",
                         action: rsx! {
-                            Link { class: "card-link", to: Route::AdminAudit {}, "전체 보기" }
+                            PanelLink { to: Route::AdminAudit {}, label: "전체 보기" }
                         },
-                        class: "home-span",
+                        class: "grid-span",
                         if data.recent_audit.is_empty() {
-                            EmptyState { title: "기록된 작업이 없습니다.", icon: IconName::List }
+                            EmptyState { title: "기록된 작업이 없어요.", icon: IconName::List }
                         } else {
                             ul { class: "list",
                                 for entry in data.recent_audit.iter() {
@@ -79,7 +85,7 @@ pub fn AdminHome() -> Element {
             }
         })}
         Card { title: "관리 화면",
-            div { class: "menu-list dash-links",
+            div { class: "menu-list menu-grid",
                 for item in logic::quick_links() {
                     Link { key: "{item.label}", class: "menu-row", to: item.to.clone(),
                         Icon { name: item.icon }
@@ -96,7 +102,7 @@ pub fn AdminHome() -> Element {
 fn MissingList(items: Vec<MissingClockOut>) -> Element {
     if items.is_empty() {
         return rsx! {
-            EmptyState { title: "최근 7일 동안 퇴근 누락이 없습니다.", icon: IconName::Clock }
+            EmptyState { title: "최근 7일 동안 퇴근 누락이 없어요.", icon: IconName::Clock }
         };
     }
     rsx! {
@@ -106,7 +112,7 @@ fn MissingList(items: Vec<MissingClockOut>) -> Element {
                     Link { class: "row-link", to: Route::AdminAttendance {},
                         span { class: "list-row-main",
                             strong { "{item.name}" }
-                            small { {logic::missing_line(item.department_name.as_deref(), &item.dates)} }
+                            Meta { items: logic::missing_meta(item.department_name.as_deref(), &item.dates) }
                         }
                         Icon { name: IconName::Chevron }
                     }
@@ -123,9 +129,9 @@ fn AuditLine(entry: AuditEntryDto, when: String) -> Element {
             Link { class: "row-link", to: Route::AdminAudit {},
                 span { class: "list-row-main",
                     strong { title: "{entry.action}", {text::audit_action_label(&entry.action)} }
-                    small { "{audit_logic::actor_text(&entry)} · {audit_logic::target_text(&entry)}" }
+                    Meta { items: vec![audit_logic::actor_text(&entry), audit_logic::target_text(&entry)] }
                 }
-                small { class: "nowrap dash-when", "{when}" }
+                small { class: "nowrap text-sub", "{when}" }
             }
         }
     }
@@ -173,7 +179,7 @@ mod logic {
         if !today.is_working_day {
             return TodayView {
                 note: Some(format!(
-                    "{}은 근무일이 아니라 미출근·지각을 세지 않습니다.",
+                    "{}은 근무일이 아니라 미출근·지각을 세지 않아요.",
                     format::date_md(today.date)
                 )),
                 tiles: base
@@ -231,8 +237,8 @@ mod logic {
         ]
     }
 
-    /// `개발팀 · 3월 2일 (월), 2월 27일 (금) 외 2일`. 날짜는 서버가 준 순서(최근 먼저) 그대로.
-    pub fn missing_line(department: Option<&str>, dates: &[NaiveDate]) -> String {
+    /// 부서(있으면)와 누락 날짜 `3월 2일 (월), 2월 27일 (금) 외 2일`. 날짜는 서버가 준 순서(최근 먼저) 그대로.
+    pub fn missing_meta(department: Option<&str>, dates: &[NaiveDate]) -> Vec<String> {
         let mut shown: Vec<String> = dates
             .iter()
             .take(DATES_SHOWN)
@@ -246,10 +252,13 @@ mod logic {
         if rest > 0 {
             days.push_str(&format!(" 외 {rest}일"));
         }
-        match department.map(str::trim).filter(|name| !name.is_empty()) {
-            Some(name) => format!("{name} · {days}"),
-            None => days,
-        }
+        department
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+            .into_iter()
+            .chain([days])
+            .collect()
     }
 
     /// 관리 화면 바로 가기(관리 홈 자신은 뺀다).
@@ -335,7 +344,7 @@ mod logic {
         }
 
         #[test]
-        fn missing_line_caps_dates() {
+        fn missing_meta_caps_dates() {
             let days: Vec<_> = [
                 "2026-03-06",
                 "2026-03-05",
@@ -347,15 +356,18 @@ mod logic {
             .map(date)
             .collect();
             assert_eq!(
-                missing_line(Some("개발팀"), &days),
-                "개발팀 · 3월 6일 (금), 3월 5일 (목), 3월 4일 (수) 외 2일"
+                missing_meta(Some("개발팀"), &days),
+                vec!["개발팀", "3월 6일 (금), 3월 5일 (목), 3월 4일 (수) 외 2일"]
             );
-            assert_eq!(missing_line(None, &days[..1]), "3월 6일 (금)");
+            assert_eq!(missing_meta(None, &days[..1]), vec!["3월 6일 (금)"]);
             assert_eq!(
-                missing_line(Some("  "), &days[..3]),
-                "3월 6일 (금), 3월 5일 (목), 3월 4일 (수)"
+                missing_meta(Some("  "), &days[..3]),
+                vec!["3월 6일 (금), 3월 5일 (목), 3월 4일 (수)"]
             );
-            assert_eq!(missing_line(Some("인사팀"), &[]), "인사팀 · 날짜 정보 없음");
+            assert_eq!(
+                missing_meta(Some("인사팀"), &[]),
+                vec!["인사팀", "날짜 정보 없음"]
+            );
         }
 
         #[test]

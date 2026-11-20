@@ -63,11 +63,11 @@ pub fn AdminAudit() -> Element {
         .collect();
 
     rsx! {
-        PageHeader { title: "감사 로그", subtitle: "관리 작업과 로그인 기록입니다. 최신순으로 보입니다." }
+        PageHeader { title: "감사 로그", description: "관리 작업과 로그인 기록이에요. 최신순으로 보여요." }
         Card {
-            form { class: "form", onsubmit: apply,
+            form { onsubmit: apply,
                 FormError { message: filter_error() }
-                div { class: "audit-filters",
+                div { class: "toolbar",
                     TextField {
                         label: "시작일",
                         kind: "date",
@@ -78,7 +78,7 @@ pub fn AdminAudit() -> Element {
                         label: "종료일",
                         kind: "date",
                         value: until(),
-                        hint: "종료일 당일까지 포함합니다.",
+                        hint: "종료일 당일까지 포함해요.",
                         oninput: move |value| until.set(value),
                     }
                     SelectField {
@@ -99,20 +99,19 @@ pub fn AdminAudit() -> Element {
                     } else {
                         MemberPicker { label: "행위자", onpick: move |member| actor.set(Some(member)) }
                     }
-                }
-                div { class: "card-actions",
-                    Button { submit: true, "조회" }
+                    div { class: "toolbar-end",
+                        Button { submit: true, "조회" }
+                    }
                 }
             }
-        }
         {resource_view(entries, move |page: Page<AuditEntryDto>| {
             let cursor = more.cursor(&page);
             let items: Vec<AuditEntryDto> = more.all(page.items, |item| item.id);
             rsx! {
                 if items.is_empty() {
-                    EmptyState { title: "조건에 맞는 기록이 없습니다.", icon: IconName::List }
+                    EmptyState { title: "조건에 맞는 기록이 없어요.", icon: IconName::List }
                 } else {
-                    Card {
+                    Fragment {
                         div { class: "table-wrap",
                             table { class: "table table-stack",
                                 thead {
@@ -152,6 +151,7 @@ pub fn AdminAudit() -> Element {
                 }
             }
         })}
+        }
         if let Some(full) = detail() {
             Modal { title: "상세 내용", onclose: move |_| detail.set(None),
                 pre { class: "code-block", code { "{full}" } }
@@ -174,7 +174,7 @@ fn AuditRow(entry: AuditEntryDto, when: String, onopen: EventHandler<String>) ->
                 code { class: "audit-detail", "{preview}" }
                 if truncated {
                     Button {
-                        kind: ButtonKind::Ghost,
+                        kind: ButtonKind::Grey,
                         small: true,
                         onclick: move |_| onopen.call(full.clone()),
                         "전체 보기"
@@ -233,7 +233,7 @@ pub mod logic {
         let until = date_of(&filters.until, "종료일")?;
         if let (Some(from), Some(until)) = (from, until) {
             if until < from {
-                return Err("종료일이 시작일보다 빠릅니다.".to_owned());
+                return Err("종료일이 시작일보다 빨라요.".to_owned());
             }
         }
         let mut pairs = base_pairs();
@@ -358,7 +358,7 @@ pub mod logic {
             };
             assert_eq!(
                 query_pairs(&reversed, seoul()),
-                Err("종료일이 시작일보다 빠릅니다.".into())
+                Err("종료일이 시작일보다 빨라요.".into())
             );
             for bad in ["2026-3-2", "2026-02-30", "x", "1' OR '1'='1"] {
                 let filters = AuditFilters {

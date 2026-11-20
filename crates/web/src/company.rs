@@ -34,6 +34,16 @@ impl Company {
         )
     }
 
+    /// 회사 근무 시작·종료 시각(하루 막대의 근무 시간대). 모르면 09:00~18:00.
+    pub fn work_hours(&self) -> (MinuteOfDay, MinuteOfDay) {
+        work_hours(self.settings.read().as_ref())
+    }
+
+    /// 근무일 전환 시각(하루 막대의 축 시작). 모르면 자정.
+    pub fn day_cutoff(&self) -> MinuteOfDay {
+        day_cutoff(self.settings.read().as_ref())
+    }
+
     /// 기록이 없는 날의 정정 요청 기본값 `(출근, 퇴근)`(`datetime-local` 값). 모르면 빈 값.
     pub fn default_times(&self, date: NaiveDate) -> (String, String) {
         default_times(date, self.settings.read().as_ref())
@@ -80,6 +90,12 @@ pub fn is_day_off(week: WorkWeek, date: NaiveDate) -> bool {
     !week.contains(date.weekday())
 }
 
+/// 근무 시작·종료 시각. 설정이 없으면 서버 기본값(09:00~18:00).
+pub fn work_hours(settings: Option<&PublicCompanySettings>) -> (MinuteOfDay, MinuteOfDay) {
+    let fallback = |hour| MinuteOfDay::from_hm(hour, 0).unwrap_or(MinuteOfDay::MIDNIGHT);
+    settings.map_or((fallback(9), fallback(18)), |s| (s.work_start, s.work_end))
+}
+
 fn day_cutoff(settings: Option<&PublicCompanySettings>) -> MinuteOfDay {
     settings.map_or(MinuteOfDay::MIDNIGHT, |s| s.day_cutoff)
 }
@@ -120,6 +136,14 @@ pub fn default_times(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn work_hours_fall_back_to_nine_to_six() {
+        let hm = |value: &str| MinuteOfDay::parse(value).expect("time");
+        assert_eq!(work_hours(None), (hm("09:00"), hm("18:00")));
+        let night = settings(0b001_1111, "22:00", "07:00", "12:00");
+        assert_eq!(work_hours(Some(&night)), (hm("22:00"), hm("07:00")));
+    }
 
     fn settings(workdays: u8, start: &str, end: &str, cutoff: &str) -> PublicCompanySettings {
         PublicCompanySettings {

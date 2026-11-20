@@ -12,8 +12,8 @@ use crate::route::Route;
 use crate::session::use_session;
 use crate::text;
 use crate::ui::{
-    now, resource_view, use_more_pages, Badge, Card, EmptyState, IconName, LoadMore, PageHeader,
-    Tabs, Tone,
+    now, resource_view, use_more_pages, Badge, Card, EmptyState, IconName, LoadMore, Meta,
+    PageHeader, Tabs, Tone,
 };
 
 /// 결재 화면들이 함께 쓰는 순수 함수.
@@ -75,16 +75,16 @@ pub(crate) mod logic {
 
     pub fn empty_title(mailbox: Mailbox) -> &'static str {
         match mailbox {
-            Mailbox::Todo => "결재할 문서가 없습니다.",
-            Mailbox::Upcoming => "곧 차례가 올 문서가 없습니다.",
-            Mailbox::Drafted => "기안한 문서가 없습니다.",
-            Mailbox::Done => "처리한 문서가 없습니다.",
-            Mailbox::Reference => "참조로 받은 문서가 없습니다.",
+            Mailbox::Todo => "결재할 문서가 없어요.",
+            Mailbox::Upcoming => "곧 차례가 올 문서가 없어요.",
+            Mailbox::Drafted => "기안한 문서가 없어요.",
+            Mailbox::Done => "처리한 문서가 없어요.",
+            Mailbox::Reference => "참조로 받은 문서가 없어요.",
         }
     }
 
-    /// 목록 한 줄의 보조 문구: `품의서 · 홍길동 · 2026-000123 · 현재 김결재`.
-    pub fn row_meta(doc: &DocumentSummary) -> String {
+    /// 목록 한 줄의 보조 정보: 양식, 기안자, 문서 번호, (진행 중이면) 현재 결재자.
+    pub fn row_meta(doc: &DocumentSummary) -> Vec<String> {
         let current = match (doc.status, &doc.current_approver_name) {
             (DocumentStatus::InProgress, Some(name)) if !name.is_empty() => {
                 Some(format!("현재 {name}"))
@@ -100,8 +100,7 @@ pub(crate) mod logic {
         .into_iter()
         .flatten()
         .filter(|part| !part.trim().is_empty())
-        .collect::<Vec<_>>()
-        .join(" · ")
+        .collect()
     }
 }
 
@@ -132,6 +131,7 @@ pub fn ApprovalList() -> Element {
     rsx! {
         PageHeader {
             title: "결재",
+            description: "결재할 문서와 내가 올린 문서를 확인해요.",
             actions: rsx! {
                 Link { class: "btn btn-primary", to: Route::ApprovalNew {}, "새 문서" }
             },
@@ -183,14 +183,14 @@ pub fn ApprovalList() -> Element {
 pub(crate) fn DocumentRow(doc: DocumentSummary, now: Timestamp, tz: chrono_tz::Tz) -> Element {
     rsx! {
         Link {
-            class: "list-row doc-row",
+            class: "list-row list-row-top",
             to: Route::ApprovalDetail { id: doc.id.to_string() },
             div { class: "list-row-main",
                 strong { "{doc.title}" }
-                small { {logic::row_meta(&doc)} }
+                Meta { items: logic::row_meta(&doc) }
             }
             div { class: "list-row-side",
-                span { class: "doc-badges",
+                span { class: "badge-row",
                     if doc.my_turn {
                         Badge { tone: Tone::Warning, "내 차례" }
                     }
@@ -293,24 +293,24 @@ mod tests {
     fn row_meta_skips_missing_parts() {
         assert_eq!(
             row_meta(&summary()),
-            "품의서 · 홍길동 · 2026-000001 · 현재 김결재"
+            vec!["품의서", "홍길동", "2026-000001", "현재 김결재"]
         );
         let draft = DocumentSummary {
             doc_no: None,
             status: DocumentStatus::Draft,
             ..summary()
         };
-        assert_eq!(row_meta(&draft), "품의서 · 홍길동");
+        assert_eq!(row_meta(&draft), vec!["품의서", "홍길동"]);
         let odd = DocumentSummary {
             drafter_name: String::new(),
             current_approver_name: Some(String::new()),
             ..summary()
         };
-        assert_eq!(row_meta(&odd), "품의서 · 2026-000001");
+        assert_eq!(row_meta(&odd), vec!["품의서", "2026-000001"]);
         let closed = DocumentSummary {
             status: DocumentStatus::Approved,
             ..summary()
         };
-        assert!(!row_meta(&closed).contains("현재"));
+        assert!(!row_meta(&closed).iter().any(|part| part.contains("현재")));
     }
 }

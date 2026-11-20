@@ -1,4 +1,4 @@
-//! 로그인 후 화면의 뼈대: 데스크톱은 좌측 사이드바, 모바일은 상단 바 + 하단 탭.
+//! 로그인 후 화면의 뼈대: 데스크톱은 좌측 사이드바(상단 바 없음), 모바일은 앱 바 + 하단 탭.
 
 use dioxus::prelude::*;
 use pango_api::auth::Me;
@@ -9,7 +9,7 @@ use crate::company::use_company;
 use crate::route::Route;
 use crate::session::{self, use_session, SessionState};
 use crate::text;
-use crate::ui::{Avatar, EmptyState, ErrorState, Icon, IconName, Spinner};
+use crate::ui::{Avatar, EmptyState, ErrorState, Icon, IconName, Skeleton};
 
 /// 메뉴 한 줄.
 #[derive(Clone, PartialEq)]
@@ -119,10 +119,7 @@ fn Sidebar(me: Me) -> Element {
     let logout = move |_| session::logout(session, nav);
     rsx! {
         aside { class: "sidebar",
-            div { class: "brand",
-                span { class: "brand-mark", "P" }
-                span { class: "brand-name", "{me.company_name}" }
-            }
+            p { class: "sidebar-company", title: "{me.company_name}", "{me.company_name}" }
             nav { class: "nav", "aria-label": "주 메뉴",
                 for (title , items) in nav_sections(&me) {
                     if !title.is_empty() {
@@ -133,19 +130,21 @@ fn Sidebar(me: Me) -> Element {
                     }
                 }
             }
-            NavLink { item: item(Route::Notifications {}, "알림", IconName::Bell) }
             div { class: "sidebar-footer",
-                Link { class: "profile-chip", to: Route::Profile {},
-                    Avatar { name: me.name.clone() }
-                    span { class: "profile-chip-text",
-                        strong { "{me.name}" }
-                        small {
-                            {me.position_name.clone().unwrap_or_else(|| text::role_label(me.role).to_owned())}
+                NavLink { item: item(Route::Notifications {}, "알림", IconName::Bell) }
+                div { class: "sidebar-account",
+                    Link { class: "profile-chip", to: Route::Profile {},
+                        Avatar { name: me.name.clone(), seed: me.id.to_string() }
+                        span { class: "profile-chip-text",
+                            strong { "{me.name}" }
+                            small {
+                                {me.position_name.clone().unwrap_or_else(|| text::role_label(me.role).to_owned())}
+                            }
                         }
                     }
-                }
-                button { class: "icon-btn", r#type: "button", "aria-label": "로그아웃", onclick: logout,
-                    Icon { name: IconName::Logout }
+                    button { class: "icon-btn", r#type: "button", "aria-label": "로그아웃", onclick: logout,
+                        Icon { name: IconName::Logout }
+                    }
                 }
             }
         }
@@ -153,12 +152,12 @@ fn Sidebar(me: Me) -> Element {
 }
 
 #[component]
-fn TopBar(me: Me) -> Element {
+fn AppBar(me: Me) -> Element {
     let unread = use_badges().notifications();
     rsx! {
-        header { class: "topbar",
-            span { class: "topbar-title", "{me.company_name}" }
-            div { class: "topbar-actions",
+        header { class: "appbar",
+            span { class: "appbar-title", "{me.company_name}" }
+            div { class: "appbar-actions",
                 Link {
                     class: "icon-btn icon-btn-badged",
                     to: Route::Notifications {},
@@ -169,7 +168,7 @@ fn TopBar(me: Me) -> Element {
                     }
                 }
                 Link { class: "icon-btn", to: Route::Profile {}, "aria-label": "내 정보",
-                    Avatar { name: me.name.clone() }
+                    Avatar { name: me.name.clone(), seed: me.id.to_string() }
                 }
             }
         }
@@ -237,7 +236,7 @@ pub fn Shell() -> Element {
             };
         }
         Gate::Wait | Gate::Login | Gate::ChangePassword => {
-            return rsx! { div { class: "boot", Spinner {} } };
+            return rsx! { div { class: "boot", Skeleton { title: true } } };
         }
     };
     let allowed = route_allowed(&route, &me.capabilities);
@@ -245,16 +244,16 @@ pub fn Shell() -> Element {
         div { class: "shell",
             Sidebar { me: me.clone() }
             div { class: "shell-main",
-                TopBar { me }
+                AppBar { me }
                 main { class: "content",
                     if allowed {
                         Outlet::<Route> {}
                     } else {
                         EmptyState {
-                            title: "권한이 없습니다",
-                            hint: "이 화면을 볼 권한이 없습니다. 권한이 바뀌었다면 관리자에게 문의해 주세요.",
+                            title: "이 화면을 볼 권한이 없어요",
+                            hint: "권한이 바뀌었다면 관리자에게 문의해 주세요.",
                             icon: IconName::Shield,
-                            Link { class: "btn btn-secondary", to: Route::Home {}, "홈으로" }
+                            Link { class: "btn btn-grey", to: Route::Home {}, "홈으로" }
                         }
                     }
                 }

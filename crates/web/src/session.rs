@@ -185,7 +185,7 @@ pub fn logout_outcome(result: &ApiResult<Empty>) -> LogoutOutcome {
         Ok(_) => LogoutOutcome::SignedOut,
         Err(error) if error.is_unauthenticated() => LogoutOutcome::SignedOut,
         Err(error) => LogoutOutcome::StillSignedIn(format!(
-            "로그아웃하지 못했습니다. 아직 로그인된 상태이니 다시 시도해 주세요. ({})",
+            "로그아웃하지 못했어요. 아직 로그인된 상태이니 다시 시도해 주세요. ({})",
             error.message()
         )),
     }

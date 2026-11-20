@@ -3,6 +3,7 @@
 //! 월별 기록(`MonthAttendance`)은 팀 현황 화면이 구성원 한 명의 달을 보여 줄 때도 그대로 쓴다.
 //! 오늘 카드(`TodayBody`)는 홈도 함께 쓴다.
 
+use chrono::NaiveDate;
 use dioxus::prelude::*;
 use pango_api::attendance::{
     AttendanceEventDto, AttendanceRecordDto, CorrectionDto, MonthRecords, MonthlySummaryDto,
@@ -20,11 +21,12 @@ use crate::route::Route;
 use crate::session::{use_session, use_toasts};
 use crate::text;
 use crate::ui::approval_line::line_problem;
+use crate::ui::workday_bar;
 use crate::ui::{
     report_error, report_success, resource_view, use_line_draft, use_more_pages,
     ApprovalLineEditor, ApproverEntry, Badge, Button, ButtonKind, Card, ConfirmModal, EmptyState,
-    FormError, IconName, LoadMore, Modal, MonthSwitcher, PageHeader, SelectField, Spinner, Stat,
-    TextArea, TextField, Tone,
+    FormError, IconName, LoadMore, Meta, Modal, MonthSwitcher, PageHeader, SelectField, Skeleton,
+    Stat, TextArea, TextField, Timeline, TimelineItem, Tone, WeekProgress, WorkdayBar,
 };
 
 use logic::{CorrectionSlot, CorrectionTarget, DayRow, MonthEndpoint, TodayStage};
@@ -36,8 +38,8 @@ pub fn Attendance() -> Element {
     let mut revision = use_signal(|| 0_u32);
     let mut corrections = use_signal(|| 0_u32);
     rsx! {
-        PageHeader { title: "근태" }
-        Card { title: "오늘", class: "today-card",
+        PageHeader { title: "근태", description: "출퇴근을 기록하고, 틀린 기록은 정정을 요청해요." }
+        Card { title: "오늘 근무", class: "today-card",
             {resource_view(today, move |state: TodayResponse| rsx! {
                 TodayBody {
                     state,
@@ -65,6 +67,7 @@ pub fn Attendance() -> Element {
 pub fn TodayBody(state: TodayResponse, onchange: EventHandler<()>) -> Element {
     let session = use_session();
     let tz = session.zone();
+    let company = use_company();
     let mut now = use_signal(crate::ui::now);
     let mut work_type = use_signal(|| WorkType::Office);
     let mut note = use_signal(String::new);
@@ -89,7 +92,7 @@ pub fn TodayBody(state: TodayResponse, onchange: EventHandler<()>) -> Element {
         match result {
             Ok(_) => {
                 note.set(String::new());
-                report_success("출근했습니다.");
+                report_success("출근했어요.");
             }
             Err(error) => report_error(&error),
         }
@@ -104,7 +107,7 @@ pub fn TodayBody(state: TodayResponse, onchange: EventHandler<()>) -> Element {
         let result = api::post::<_, AttendanceRecordDto>("/attendance/clock-out", &Empty {}).await;
         busy.set(false);
         match result {
-            Ok(_) => report_success("퇴근했습니다. 수고하셨습니다."),
+            Ok(_) => report_success("퇴근했어요. 수고하셨어요."),
             Err(error) => report_error(&error),
         }
         now.set(crate::ui::now());
@@ -115,92 +118,144 @@ pub fn TodayBody(state: TodayResponse, onchange: EventHandler<()>) -> Element {
     let day_note = logic::day_note(state.is_working_day, state.holiday_name.as_deref());
     let hours = logic::expected_hours(state.expected_start, state.expected_end);
     let status = state.evaluation.status;
+    // 전날 시작한 야간 근무를 닫는 중이면 그 근무일의 막대를 그린다.
+    let bar_date = state
+        .record
+        .as_ref()
+        .map_or(state.work_date, |r| r.work_date);
+    let bar = workday_bar::day_bar(&logic::day_input(
+        bar_date,
+        state.record.as_ref(),
+        &state.evaluation,
+        (state.expected_start, state.expected_end),
+        company.day_cutoff(),
+        now(),
+        tz,
+    ));
+    let cells = logic::record_cells(bar_date, state.record.as_ref(), &state.evaluation, tz);
+    let live_minutes = logic::live_minutes(&stage, now());
     rsx! {
         div { class: "today-head",
-            div {
+            div { class: "today-when",
                 p { class: "today-date", {format::date_md(state.work_date)} }
-                p { class: "today-meta",
-                    "근무 시간 {hours}"
-                    if let Some(day_note) = day_note {
-                        " · {day_note}"
-                    }
-                }
+                Meta { items: vec![format!("근무 시간 {hours}"), day_note.unwrap_or_default()] }
             }
             Badge { tone: text::day_status_tone(status), {text::day_status_label(status)} }
         }
-        {match stage {
-            TodayStage::ClockIn => rsx! {
-                div { class: "chip-group", role: "group", "aria-label": "근무 형태",
-                    for option in WorkType::ALL.iter().copied() {
-                        button {
-                            key: "{option.as_str()}",
-                            r#type: "button",
-                            class: if option == work_type() { "chip chip-active" } else { "chip" },
-                            "aria-pressed": option == work_type(),
+        div { class: "today-main",
+            {match stage {
+                TodayStage::ClockIn => rsx! {
+                    div { class: "today-entry",
+                        div { class: "chip-group", role: "group", "aria-label": "근무 형태",
+                            for option in WorkType::ALL.iter().copied() {
+                                button {
+                                    key: "{option.as_str()}",
+                                    r#type: "button",
+                                    class: if option == work_type() { "chip chip-active" } else { "chip" },
+                                    "aria-pressed": option == work_type(),
+                                    disabled: busy(),
+                                    onclick: move |_| work_type.set(option),
+                                    {text::work_type_label(option)}
+                                }
+                            }
+                        }
+                        TextField {
+                            label: "메모 (선택)",
+                            value: note(),
+                            placeholder: "예: 오전 외근 후 복귀",
+                            maxlength: logic::NOTE_MAX_CHARS,
                             disabled: busy(),
-                            onclick: move |_| work_type.set(option),
-                            {text::work_type_label(option)}
+                            oninput: move |value| note.set(value),
                         }
                     }
-                }
-                TextField {
-                    label: "메모 (선택)",
-                    value: note(),
-                    placeholder: "예: 오전 외근 후 복귀",
-                    maxlength: logic::NOTE_MAX_CHARS,
-                    disabled: busy(),
-                    oninput: move |value| note.set(value),
-                }
-                div { class: "clock-action",
-                    Button { block: true, busy: busy(), onclick: clock_in, "출근하기" }
-                }
-            },
-            TodayStage::Working { clock_in_at, work_type, overnight } => rsx! {
-                div { class: "today-working",
-                    p { class: "today-elapsed",
-                        "근무 중 "
-                        strong { {format::duration_minutes(format::elapsed_minutes(clock_in_at, now()))} }
+                    div { class: "today-action",
+                        Button { block: true, large: true, busy: busy(), onclick: clock_in, "출근" }
                     }
-                    p { class: "today-meta",
-                        if overnight {
-                            "출근 {format::datetime(clock_in_at, tz)} · 전날 시작한 근무"
-                        } else {
-                            "출근 {format::time_hm(clock_in_at, tz)}"
+                },
+                TodayStage::Working { clock_in_at, work_type, overnight } => rsx! {
+                    div { class: "figure",
+                        span { class: "figure-label", "근무 중" }
+                        strong { class: "figure-value tnum",
+                            {format::duration_minutes(format::elapsed_minutes(clock_in_at, now()))}
                         }
-                        " · {text::work_type_label(work_type)}"
+                        Meta {
+                            items: vec![
+                                if overnight {
+                                    format!("출근 {}", format::datetime(clock_in_at, tz))
+                                } else {
+                                    format!("출근 {}", format::time_hm(clock_in_at, tz))
+                                },
+                                if overnight { "전날 시작한 근무".to_owned() } else { String::new() },
+                                text::work_type_label(work_type).to_owned(),
+                            ],
+                        }
                     }
-                }
-                div { class: "clock-action",
-                    Button { block: true, busy: busy(), onclick: clock_out, "퇴근하기" }
-                }
-            },
-            TodayStage::Finished { clock_in_at, clock_out_at, worked_minutes, work_type } => rsx! {
-                dl { class: "today-summary",
-                    div {
-                        dt { "출근" }
-                        dd { {format::time_hm(clock_in_at, tz)} }
+                    div { class: "today-action",
+                        Button { block: true, large: true, busy: busy(), onclick: clock_out, "퇴근" }
                     }
-                    div {
-                        dt { "퇴근" }
-                        dd { {format::time_hm(clock_out_at, tz)} }
+                },
+                TodayStage::Finished { clock_in_at, clock_out_at, worked_minutes, work_type } => rsx! {
+                    div { class: "stats today-done",
+                        Stat { label: "출근", value: format::time_hm(clock_in_at, tz) }
+                        Stat { label: "퇴근", value: format::time_hm(clock_out_at, tz) }
+                        Stat { label: "근무", value: format::duration_minutes(worked_minutes) }
+                        Stat { label: "형태", value: text::work_type_label(work_type) }
                     }
-                    div {
-                        dt { "근무" }
-                        dd { {format::duration_minutes(worked_minutes)} }
+                },
+                TodayStage::MissedClockOut { clock_in_at } => rsx! {
+                    p { class: "text-sub",
+                        "{format::datetime(clock_in_at, tz)} 출근 기록이 퇴근 없이 끝났어요. 근태 화면의 월별 기록에서 정정을 요청해 주세요."
                     }
-                    div {
-                        dt { "형태" }
-                        dd { {text::work_type_label(work_type)} }
-                    }
-                }
-                p { class: "today-meta", "오늘 근무를 마쳤습니다." }
-            },
-            TodayStage::MissedClockOut { clock_in_at } => rsx! {
-                p { class: "today-meta",
-                    "{format::datetime(clock_in_at, tz)} 출근 기록이 퇴근 없이 끝났습니다. 근태 화면의 월별 기록에서 정정을 요청해 주세요."
-                }
-            },
-        }}
+                },
+            }}
+        }
+        WorkdayBar {
+            bar,
+            summary: logic::bar_summary(&hours, &cells),
+            clock_in_label: logic::clock_in_flag(&cells),
+        }
+        WeekLine {
+            work_date: state.work_date,
+            live_minutes,
+            stamp: logic::record_stamp(state.record.as_ref()),
+        }
+    }
+}
+
+/// 이번 주 누적 근무시간. 이번 달 기록을 읽고, 주가 달을 넘을 때만 이웃한 달을 하나 더 읽는다.
+///
+/// `stamp`가 바뀌면(출퇴근 직후) 다시 읽는다. 읽는 중이거나 읽지 못하면 자리만 비워 둔다
+/// (오늘 카드의 나머지는 그대로 쓸 수 있어야 한다).
+#[component]
+fn WeekLine(
+    work_date: ReadSignal<NaiveDate>,
+    live_minutes: u32,
+    stamp: ReadSignal<String>,
+) -> Element {
+    let days = use_resource(move || async move {
+        let _ = stamp();
+        let (first, second) = workday_bar::week_months(workday_bar::week_of(work_date()));
+        let path = |month| logic::month_path(MonthEndpoint::Records, month, None);
+        let mut days = api::get::<MonthRecords>(&path(first)).await?.days;
+        if let Some(second) = second {
+            days.extend(api::get::<MonthRecords>(&path(second)).await?.days);
+        }
+        Ok::<_, api::ApiError>(days)
+    });
+    let minutes = match &*days.read() {
+        Some(Ok(days)) => Some(workday_bar::week_minutes(
+            logic::worked_days(days),
+            workday_bar::week_of(work_date()),
+            live_minutes,
+        )),
+        _ => None,
+    };
+    rsx! {
+        div { class: "today-week",
+            if let Some(minutes) = minutes {
+                WeekProgress { minutes }
+            }
+        }
     }
 }
 
@@ -261,7 +316,7 @@ pub fn MonthAttendance(
                 MonthSwitcher { month: month(), onchange: move |next| month.set(next) }
             },
             {resource_view(summary, |dto: MonthlySummaryDto| rsx! {
-                div { class: "att-stats",
+                div { class: "stats month-stats",
                     for tile in logic::summary_tiles(&dto.summary) {
                         Stat { key: "{tile.label}", label: tile.label, value: tile.value, tone: tile.tone }
                     }
@@ -270,11 +325,11 @@ pub fn MonthAttendance(
             {resource_view(records, move |list: MonthRecords| {
                 let rows: Vec<DayRow> = list.days.iter().map(|day| logic::day_row(day, tz)).collect();
                 if rows.is_empty() {
-                    return rsx! { EmptyState { title: "이 달의 기록이 없습니다.", icon: IconName::Clock } };
+                    return rsx! { EmptyState { title: "이 달의 기록이 없어요.", icon: IconName::Clock } };
                 }
                 rsx! {
-                    div { class: "table-wrap att-desktop",
-                        table { class: "table att-table",
+                    div { class: "table-wrap only-desktop",
+                        table { class: "table table-nowrap",
                             thead {
                                 tr {
                                     th { "날짜" }
@@ -290,7 +345,7 @@ pub fn MonthAttendance(
                             }
                             tbody {
                                 for row in rows.clone() {
-                                    tr { key: "{row.date}", class: if row.muted { "att-muted" },
+                                    tr { key: "{row.date}", class: if row.muted { "row-muted" },
                                         td {
                                             if row.record_id.is_some() {
                                                 button { class: "link-btn", r#type: "button", onclick: open(&row),
@@ -301,7 +356,7 @@ pub fn MonthAttendance(
                                                 "{row.date_label}"
                                             }
                                             if let Some(note) = &row.note {
-                                                span { class: "att-note", "{note}" }
+                                                span { class: "cell-sub", "{note}" }
                                             }
                                         }
                                         td { "{row.cells.work_type}" }
@@ -315,7 +370,7 @@ pub fn MonthAttendance(
                                             td { class: "num",
                                                 if logic::can_request_correction(row.date, current_day) {
                                                     Button {
-                                                        kind: ButtonKind::Ghost,
+                                                        kind: ButtonKind::Grey,
                                                         small: true,
                                                         onclick: correct(&row),
                                                         "정정 요청"
@@ -329,20 +384,20 @@ pub fn MonthAttendance(
                             }
                         }
                     }
-                    ul { class: "list att-mobile",
+                    ul { class: "list only-mobile",
                         for row in rows {
-                            li { key: "{row.date}", class: if row.muted { "att-day att-muted" } else { "att-day" },
+                            li { key: "{row.date}", class: if row.muted { "list-row row-muted" } else { "list-row" },
                                 if row.record_id.is_some() {
-                                    button { class: "att-day-main", r#type: "button", onclick: open(&row),
+                                    button { class: "row-link", r#type: "button", onclick: open(&row),
                                         DayLine { row: row.clone() }
                                         span { class: "sr-only", " 변경 이력 보기" }
                                     }
                                 } else {
-                                    div { class: "att-day-main", DayLine { row: row.clone() } }
+                                    div { class: "row-link", DayLine { row: row.clone() } }
                                 }
                                 if own && logic::can_request_correction(row.date, current_day) {
                                     Button {
-                                        kind: ButtonKind::Ghost,
+                                        kind: ButtonKind::Grey,
                                         small: true,
                                         onclick: correct(&row),
                                         "정정"
@@ -377,17 +432,9 @@ pub fn MonthAttendance(
 #[component]
 fn DayLine(row: DayRow) -> Element {
     rsx! {
-        span { class: "att-day-text",
+        span { class: "list-row-main",
             strong { "{row.date_label}" }
-            small {
-                if let Some(note) = &row.note {
-                    "{note} · "
-                }
-                "{row.cells.clock_in} – {row.cells.clock_out}"
-                if row.cells.worked != logic::EMPTY {
-                    " · {row.cells.worked}"
-                }
-            }
+            Meta { items: logic::day_meta(&row) }
         }
         Badge { tone: row.cells.tone, "{row.cells.status}" }
     }
@@ -432,7 +479,7 @@ fn CorrectionModal(
         match api::post_once::<_, CorrectionDto>("/attendance/corrections", &request, &key()).await
         {
             Ok(_) => {
-                report_success("정정을 요청했습니다. 결재가 끝나면 기록에 반영됩니다.");
+                report_success("정정을 요청했어요. 결재가 끝나면 기록에 반영돼요.");
                 // 창이 닫히므로 버튼을 다시 풀지 않는다(닫히기 전 두 번째 제출 방지).
                 onsubmitted.call(());
                 return;
@@ -487,7 +534,7 @@ fn CorrectionModal(
                         kind: "datetime-local",
                         value: current.clock_in.clone(),
                         required: true,
-                        hint: "{zone_name} 기준 · 이 근무일의 출근이어야 합니다.",
+                        hint: "{zone_name} 기준이에요. 이 근무일의 출근이어야 해요.",
                         error: message_for(CorrectionSlot::Times),
                         oninput: move |value| {
                             form.write().clock_in = value;
@@ -498,7 +545,7 @@ fn CorrectionModal(
                         label: "퇴근 시각",
                         kind: "datetime-local",
                         value: current.clock_out.clone(),
-                        hint: "비워 두면 퇴근 전으로 남습니다.",
+                        hint: "비워 두면 퇴근 전으로 남아요.",
                         oninput: move |value| {
                             form.write().clock_out = value;
                             problem.set(None);
@@ -522,7 +569,7 @@ fn CorrectionModal(
                         rows: 3,
                         required: true,
                         maxlength: logic::TEXT_MAX_CHARS as i64,
-                        placeholder: "예: 지문 인식기 고장으로 출근이 기록되지 않았습니다.",
+                        placeholder: "예: 지문 인식기 고장으로 출근이 기록되지 않았어요.",
                         oninput: move |value| {
                             form.write().reason = value;
                             problem.set(None);
@@ -533,9 +580,9 @@ fn CorrectionModal(
                     }
                 }
                 div { class: "field",
-                    p { class: "field-hint", "마지막 결재자는 내 조직장 또는 관리자여야 합니다. 추천 결재선을 쓰면 이 조건을 맞춥니다." }
+                    p { class: "field-hint", "마지막 결재자는 내 조직장 또는 관리자여야 해요. 추천 결재선을 쓰면 이 조건을 맞춰요." }
                     if !line.ready() {
-                        Spinner {}
+                        Skeleton {}
                     } else {
                         ApprovalLineEditor {
                             steps: line_now,
@@ -550,7 +597,7 @@ fn CorrectionModal(
                     }
                 }
                 div { class: "modal-actions",
-                    Button { kind: ButtonKind::Ghost, onclick: move |_| onclose.call(()), "취소" }
+                    Button { kind: ButtonKind::Grey, onclick: move |_| onclose.call(()), "취소" }
                     Button { submit: true, busy: busy(), "정정 요청" }
                 }
             }
@@ -583,7 +630,7 @@ fn CorrectionHistory(revision: ReadSignal<u32>) -> Element {
         busy.set(false);
         confirm.set(None);
         match result {
-            Ok(_) => report_success("정정 요청을 취소했습니다. 결재 문서도 회수했습니다."),
+            Ok(_) => report_success("정정 요청을 취소했어요. 결재 문서도 회수했어요."),
             Err(error) => {
                 toasts.error(text::correction_error_message(
                     &error.code,
@@ -605,8 +652,8 @@ fn CorrectionHistory(revision: ReadSignal<u32>) -> Element {
                 if items.is_empty() {
                     return rsx! {
                         EmptyState {
-                            title: "올린 정정 요청이 없습니다.",
-                            hint: "기록이 틀린 날의 \"정정 요청\"을 눌러 고칠 값을 올리면 결재 후 반영됩니다.",
+                            title: "올린 정정 요청이 없어요.",
+                            hint: "기록이 틀린 날의 \"정정 요청\"을 눌러 고칠 값을 올리면 결재 후 반영돼요.",
                             icon: IconName::Clock,
                         }
                     };
@@ -614,14 +661,14 @@ fn CorrectionHistory(revision: ReadSignal<u32>) -> Element {
                 rsx! {
                     ul { class: "list",
                         for item in items {
-                            li { key: "{item.id}", class: "list-row leave-row",
+                            li { key: "{item.id}", class: "list-row list-row-top",
                                 div { class: "list-row-main",
-                                    div { class: "leave-row-title",
+                                    div { class: "row-title",
                                         strong { {format::date_md(item.work_date)} }
                                         Badge { tone: text::correction_status_tone(item.status), {text::correction_status_label(item.status)} }
                                     }
                                     small { {logic::correction_summary(&item, tz)} }
-                                    p { class: "leave-row-reason", "{item.reason}" }
+                                    p { class: "row-reason", "{item.reason}" }
                                 }
                                 div { class: "list-row-side",
                                     Link {
@@ -630,7 +677,7 @@ fn CorrectionHistory(revision: ReadSignal<u32>) -> Element {
                                     }
                                     if logic::can_cancel_correction(item.status) {
                                         Button {
-                                            kind: ButtonKind::Secondary,
+                                            kind: ButtonKind::Grey,
                                             small: true,
                                             onclick: {
                                                 let item = item.clone();
@@ -689,28 +736,27 @@ pub fn RecordHistory(
         Modal { title: "{title} 변경 이력", onclose: move |_| onclose.call(()),
             {resource_view(events, move |list: Vec<AttendanceEventDto>| {
                 if list.is_empty() {
-                    return rsx! { EmptyState { title: "변경 이력이 없습니다." } };
+                    return rsx! { EmptyState { title: "변경 이력이 없어요." } };
                 }
                 rsx! {
-                    ol { class: "att-history",
+                    Timeline {
                         for event in list.iter().map(|event| logic::event_row(event, tz)) {
-                            li { key: "{event.id}", class: "att-history-item",
-                                div { class: "att-history-head",
-                                    Badge { tone: Tone::Info, "{event.kind}" }
-                                    small { "{event.when} · {event.actor}" }
+                            TimelineItem { key: "{event.id}", tone: Tone::Info,
+                                div { class: "timeline-head",
+                                    strong { "{event.kind}" }
+                                    Meta { items: vec![event.when.clone(), event.actor.clone()] }
                                 }
                                 if let Some(before) = &event.before {
-                                    p { class: "att-history-change",
-                                        span { class: "att-history-before", "{before}" }
-                                        span { "aria-hidden": "true", " → " }
+                                    p { class: "change-line",
+                                        span { class: "change-before", "{before}" }
                                         span { class: "sr-only", "에서 " }
                                         span { "{event.after}" }
                                     }
                                 } else {
-                                    p { class: "att-history-change", "{event.after}" }
+                                    p { class: "change-line", "{event.after}" }
                                 }
                                 if let Some(reason) = &event.reason {
-                                    p { class: "att-history-reason", "사유: {reason}" }
+                                    p { class: "text-sub", "사유: {reason}" }
                                 }
                             }
                         }
@@ -740,6 +786,7 @@ pub(crate) mod logic {
     use crate::format::{self, LocalInputError};
     use crate::text;
     use crate::ui::approval_line::{line_problem, to_inputs};
+    use crate::ui::workday_bar::DayInput;
     use crate::ui::{ApproverEntry, Tone};
 
     /// 값이 없는 칸.
@@ -800,6 +847,76 @@ pub(crate) mod logic {
             None if !is_working_day => Some("휴무일".to_owned()),
             None => None,
         }
+    }
+
+    /// 하루 막대에 넘길 사실. `work_date`는 막대가 나타내는 근무일(기록이 있으면 그 기록의 근무일).
+    pub fn day_input(
+        work_date: NaiveDate,
+        record: Option<&AttendanceRecordDto>,
+        evaluation: &DayEvaluation,
+        expected: (MinuteOfDay, MinuteOfDay),
+        cutoff: MinuteOfDay,
+        now: Timestamp,
+        tz: Tz,
+    ) -> DayInput {
+        DayInput {
+            work_date,
+            cutoff,
+            expected_start: expected.0,
+            expected_end: expected.1,
+            clock_in: record.map(|r| r.clock_in_at),
+            clock_out: record.and_then(|r| r.clock_out_at),
+            late: evaluation.late_minutes > 0,
+            missing_clock_out: evaluation.status == DayStatus::MissingClockOut,
+            now,
+            tz,
+        }
+    }
+
+    /// 하루 막대를 글로 옮긴 한 줄(화면 낭독기용).
+    pub fn bar_summary(hours: &str, cells: &RecordCells) -> String {
+        if cells.clock_in == EMPTY {
+            return format!("근무 시간 {hours}, 출근 기록 없음, {}", cells.status);
+        }
+        let clock_out = if cells.clock_out == EMPTY {
+            "퇴근 전".to_owned()
+        } else {
+            format!("퇴근 {}", cells.clock_out)
+        };
+        format!(
+            "근무 시간 {hours}, 출근 {}, {clock_out}, {}",
+            cells.clock_in, cells.status
+        )
+    }
+
+    /// 하루 막대의 출근 표지 글자. 기록이 없으면 빈 값.
+    pub fn clock_in_flag(cells: &RecordCells) -> String {
+        if cells.clock_in == EMPTY {
+            String::new()
+        } else {
+            format!("출근 {}", cells.clock_in)
+        }
+    }
+
+    /// 아직 퇴근하지 않은 근무의 경과 분. 서버 판정(`worked_minutes`)은 퇴근 전에 0이라
+    /// 이번 주 누적에 따로 더한다.
+    pub fn live_minutes(stage: &TodayStage, now: Timestamp) -> u32 {
+        match stage {
+            TodayStage::Working { clock_in_at, .. } => format::elapsed_minutes(*clock_in_at, now),
+            _ => 0,
+        }
+    }
+
+    /// 날짜별 근무 분(이번 주 누적 계산용).
+    pub fn worked_days(days: &[DayEntry]) -> Vec<(NaiveDate, u32)> {
+        days.iter()
+            .map(|day| (day.date, day.evaluation.worked_minutes))
+            .collect()
+    }
+
+    /// 기록이 바뀌면 달라지는 값(이번 주 누적을 다시 읽는 기준).
+    pub fn record_stamp(record: Option<&AttendanceRecordDto>) -> String {
+        record.map_or_else(String::new, |r| format!("{}:{}", r.id, r.version))
     }
 
     /// `09:00 ~ 18:00`
@@ -887,6 +1004,16 @@ pub(crate) mod logic {
             record: entry.record.clone(),
             cells: record_cells(entry.date, entry.record.as_ref(), &entry.evaluation, tz),
         }
+    }
+
+    /// 모바일 날짜 줄의 보조 정보: (공휴일 이름) · 출퇴근 시각 · (근무시간).
+    pub fn day_meta(row: &DayRow) -> Vec<String> {
+        let mut items: Vec<String> = row.note.iter().cloned().collect();
+        items.push(format!("{} – {}", row.cells.clock_in, row.cells.clock_out));
+        if row.cells.worked != EMPTY {
+            items.push(row.cells.worked.clone());
+        }
+        items
     }
 
     /// 숫자 타일 하나.
@@ -1024,7 +1151,7 @@ pub(crate) mod logic {
     pub fn record_snapshot(value: &serde_json::Value, tz: Tz) -> String {
         match serde_json::from_value::<AttendanceRecordDto>(value.clone()) {
             Ok(record) => record_text(Some(&record), tz),
-            Err(_) => "내용을 표시할 수 없습니다.".to_owned(),
+            Err(_) => "내용을 표시할 수 없어요.".to_owned(),
         }
     }
 
@@ -1086,19 +1213,19 @@ pub(crate) mod logic {
                 Self::MemberMissing => "구성원을 골라 주세요.",
                 Self::WorkDateInvalid => "근무일을 확인해 주세요.",
                 Self::ClockInMissing => "출근 시각을 입력해 주세요.",
-                Self::ClockInInvalid => "출근 시각의 형식이 올바르지 않습니다.",
+                Self::ClockInInvalid => "출근 시각의 형식이 올바르지 않아요.",
                 Self::ClockInNonexistent => {
-                    "출근 시각이 서머타임 전환으로 존재하지 않는 시각입니다."
+                    "출근 시각이 서머타임 전환으로 존재하지 않는 시각이에요."
                 }
-                Self::ClockOutInvalid => "퇴근 시각의 형식이 올바르지 않습니다.",
+                Self::ClockOutInvalid => "퇴근 시각의 형식이 올바르지 않아요.",
                 Self::ClockOutNonexistent => {
-                    "퇴근 시각이 서머타임 전환으로 존재하지 않는 시각입니다."
+                    "퇴근 시각이 서머타임 전환으로 존재하지 않는 시각이에요."
                 }
-                Self::ClockOutNotAfterClockIn => "퇴근 시각은 출근 시각보다 늦어야 합니다.",
-                Self::ShiftTooLong => "한 번의 근무는 24시간을 넘을 수 없습니다.",
-                Self::ReasonMissing => "사유를 입력해 주세요. 이력에 남습니다.",
-                Self::ReasonTooLong => "사유는 1,000자까지 쓸 수 있습니다.",
-                Self::NoteTooLong => "메모는 1,000자까지 쓸 수 있습니다.",
+                Self::ClockOutNotAfterClockIn => "퇴근 시각은 출근 시각보다 늦어야 해요.",
+                Self::ShiftTooLong => "한 번의 근무는 24시간을 넘을 수 없어요.",
+                Self::ReasonMissing => "사유를 입력해 주세요. 이력에 남아요.",
+                Self::ReasonTooLong => "사유는 1,000자까지 쓸 수 있어요.",
+                Self::NoteTooLong => "메모는 1,000자까지 쓸 수 있어요.",
             }
         }
     }
@@ -1306,7 +1433,7 @@ pub(crate) mod logic {
 
     pub fn cancel_correction_message(correction: &CorrectionDto) -> String {
         format!(
-            "{} 정정 요청을 취소합니다. 결재 문서도 함께 회수됩니다.",
+            "{} 정정 요청을 취소해요. 결재 문서도 함께 회수돼요.",
             format::date_md(correction.work_date)
         )
     }
@@ -1376,6 +1503,166 @@ pub(crate) mod logic {
                 expected_start: MinuteOfDay::parse("09:00").expect("time"),
                 expected_end: MinuteOfDay::parse("18:00").expect("time"),
             }
+        }
+
+        #[test]
+        fn day_bar_input_follows_the_record_and_judgement() {
+            let hours = (
+                MinuteOfDay::parse("09:00").expect("time"),
+                MinuteOfDay::parse("18:00").expect("time"),
+            );
+            let now = ts("2026-03-03T03:00:00Z");
+            let none = day_input(
+                date("2026-03-03"),
+                None,
+                &evaluation(DayStatus::Scheduled, 0),
+                hours,
+                MinuteOfDay::MIDNIGHT,
+                now,
+                seoul(),
+            );
+            assert_eq!((none.clock_in, none.clock_out), (None, None));
+            assert!(!none.late && !none.missing_clock_out);
+
+            let open = record("2026-03-03", "2026-03-03T00:40:00Z", None);
+            let mut late = evaluation(DayStatus::Working, 0);
+            late.late_minutes = 40;
+            let input = day_input(
+                date("2026-03-03"),
+                Some(&open),
+                &late,
+                hours,
+                MinuteOfDay::MIDNIGHT,
+                now,
+                seoul(),
+            );
+            assert_eq!(input.clock_in, Some(ts("2026-03-03T00:40:00Z")));
+            assert_eq!(input.clock_out, None);
+            assert!(input.late);
+            assert_eq!((input.expected_start, input.expected_end), hours);
+
+            let missing = day_input(
+                date("2026-03-03"),
+                Some(&open),
+                &evaluation(DayStatus::MissingClockOut, 0),
+                hours,
+                MinuteOfDay::MIDNIGHT,
+                now,
+                seoul(),
+            );
+            assert!(missing.missing_clock_out);
+        }
+
+        #[test]
+        fn bar_summary_reads_like_a_sentence() {
+            let none = record_cells(
+                date("2026-03-03"),
+                None,
+                &evaluation(DayStatus::Scheduled, 0),
+                seoul(),
+            );
+            assert_eq!(
+                bar_summary("09:00 ~ 18:00", &none),
+                format!("근무 시간 09:00 ~ 18:00, 출근 기록 없음, {}", none.status)
+            );
+            assert_eq!(clock_in_flag(&none), "");
+
+            let open = record("2026-03-03", "2026-03-03T00:02:00Z", None);
+            let working = record_cells(
+                date("2026-03-03"),
+                Some(&open),
+                &evaluation(DayStatus::Working, 0),
+                seoul(),
+            );
+            assert_eq!(
+                bar_summary("09:00 ~ 18:00", &working),
+                format!(
+                    "근무 시간 09:00 ~ 18:00, 출근 09:02, 퇴근 전, {}",
+                    working.status
+                )
+            );
+            assert_eq!(clock_in_flag(&working), "출근 09:02");
+
+            let closed = record(
+                "2026-03-03",
+                "2026-03-03T00:02:00Z",
+                Some("2026-03-03T09:10:00Z"),
+            );
+            let done = record_cells(
+                date("2026-03-03"),
+                Some(&closed),
+                &evaluation(DayStatus::Normal, 480),
+                seoul(),
+            );
+            assert!(bar_summary("09:00 ~ 18:00", &done).contains("출근 09:02, 퇴근 18:10"));
+        }
+
+        #[test]
+        fn week_inputs_come_from_today_and_month_records() {
+            let now = ts("2026-03-03T03:02:00Z");
+            let working = TodayStage::Working {
+                clock_in_at: ts("2026-03-03T00:02:00Z"),
+                work_type: WorkType::Office,
+                overnight: false,
+            };
+            assert_eq!(live_minutes(&working, now), 180);
+            assert_eq!(live_minutes(&TodayStage::ClockIn, now), 0);
+            let finished = TodayStage::Finished {
+                clock_in_at: ts("2026-03-03T00:02:00Z"),
+                clock_out_at: now,
+                worked_minutes: 120,
+                work_type: WorkType::Office,
+            };
+            assert_eq!(
+                live_minutes(&finished, now),
+                0,
+                "퇴근한 날은 서버 판정에 들어 있다"
+            );
+
+            let entry = |day: &str, minutes: u32| DayEntry {
+                date: date(day),
+                is_working_day: true,
+                holiday_name: None,
+                record: None,
+                evaluation: evaluation(DayStatus::Normal, minutes),
+            };
+            assert_eq!(
+                worked_days(&[entry("2026-03-02", 480), entry("2026-03-03", 0)]),
+                vec![(date("2026-03-02"), 480), (date("2026-03-03"), 0)]
+            );
+
+            assert_eq!(record_stamp(None), "");
+            let open = record("2026-03-03", "2026-03-03T00:02:00Z", None);
+            let mut closed = open.clone();
+            closed.version = 2;
+            assert_ne!(record_stamp(Some(&open)), record_stamp(Some(&closed)));
+        }
+
+        #[test]
+        fn mobile_day_meta_lists_only_what_exists() {
+            let entry = DayEntry {
+                date: date("2026-03-01"),
+                is_working_day: false,
+                holiday_name: Some("삼일절".into()),
+                record: None,
+                evaluation: evaluation(DayStatus::DayOff, 0),
+            };
+            assert_eq!(day_meta(&day_row(&entry, seoul())), vec!["삼일절", "- – -"]);
+            let worked = DayEntry {
+                date: date("2026-03-03"),
+                is_working_day: true,
+                holiday_name: None,
+                record: Some(record(
+                    "2026-03-03",
+                    "2026-03-03T00:02:00Z",
+                    Some("2026-03-03T09:10:00Z"),
+                )),
+                evaluation: evaluation(DayStatus::Normal, 488),
+            };
+            assert_eq!(
+                day_meta(&day_row(&worked, seoul())),
+                vec!["09:02 – 18:10".to_owned(), format::duration_minutes(488)]
+            );
         }
 
         #[test]
@@ -1843,7 +2130,7 @@ pub(crate) mod logic {
             let row = event_row(&event, seoul());
             assert_eq!(row.before, None);
             assert_eq!(row.reason, None);
-            assert_eq!(row.after, "내용을 표시할 수 없습니다.");
+            assert_eq!(row.after, "내용을 표시할 수 없어요.");
             assert_eq!(row.actor, "홍길동");
         }
     }

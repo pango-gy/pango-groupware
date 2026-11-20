@@ -8,6 +8,7 @@ pub mod workday_bar;
 pub use approval_line::{use_line_draft, ApprovalLineEditor, ApproverEntry};
 pub use icon::{Icon, IconName};
 pub use member_picker::{MemberPicker, PickedMember};
+pub use workday_bar::{WeekProgress, WorkdayBar};
 
 use dioxus::prelude::*;
 
@@ -18,10 +19,14 @@ use crate::session::{use_toasts, Toast, ToastKind, Toasts};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ButtonKind {
+    /// 주 동작(채움). 영역마다 하나만 둔다.
     #[default]
     Primary,
-    Secondary,
-    Ghost,
+    /// 옅은 버튼(브랜드 옅은 바탕). 주 동작 옆의 보조 동작.
+    Weak,
+    /// 회색 버튼. 취소·닫기처럼 물러나는 동작과 행 안의 작은 동작.
+    Grey,
+    /// 위험 동작(빨간 옅은 바탕). 확인 단계와 함께 쓴다.
     Danger,
 }
 
@@ -29,8 +34,8 @@ impl ButtonKind {
     const fn class(self) -> &'static str {
         match self {
             Self::Primary => "btn btn-primary",
-            Self::Secondary => "btn btn-secondary",
-            Self::Ghost => "btn btn-ghost",
+            Self::Weak => "btn btn-weak",
+            Self::Grey => "btn btn-grey",
             Self::Danger => "btn btn-danger",
         }
     }
@@ -47,7 +52,12 @@ pub fn Button(
     #[props(default)]
     busy: bool,
     #[props(default)] block: bool,
-    #[props(default)] small: bool,
+    /// 높이 32px(행 안의 동작).
+    #[props(default)]
+    small: bool,
+    /// 높이 52px(화면의 대표 동작).
+    #[props(default)]
+    large: bool,
     #[props(default)] onclick: EventHandler<MouseEvent>,
     children: Element,
 ) -> Element {
@@ -58,6 +68,9 @@ pub fn Button(
     if small {
         class.push_str(" btn-sm");
     }
+    if large {
+        class.push_str(" btn-lg");
+    }
     rsx! {
         button {
             class,
@@ -66,13 +79,14 @@ pub fn Button(
             "aria-busy": busy,
             onclick: move |event| onclick.call(event),
             if busy {
-                span { class: "spinner spinner-inline", "aria-hidden": "true" }
+                span { class: "spinner", "aria-hidden": "true" }
             }
             {children}
         }
     }
 }
 
+/// 흰 패널. 화면의 내용은 모두 패널 안에 놓는다.
 #[component]
 pub fn Card(
     #[props(into, default)] title: String,
@@ -82,14 +96,25 @@ pub fn Card(
     children: Element,
 ) -> Element {
     rsx! {
-        section { class: "card {class}",
+        section { class: "panel {class}",
             if !title.is_empty() || action.is_some() {
-                header { class: "card-header",
-                    h2 { class: "card-title", "{title}" }
+                header { class: "panel-header",
+                    h2 { class: "panel-title", "{title}" }
                     {action}
                 }
             }
             {children}
+        }
+    }
+}
+
+/// 패널 제목 오른쪽의 "더 보기" 링크(꺾쇠가 붙는다).
+#[component]
+pub fn PanelLink(to: Route, #[props(into)] label: String) -> Element {
+    rsx! {
+        Link { class: "panel-link", to,
+            "{label}"
+            Icon { name: IconName::Chevron }
         }
     }
 }
@@ -114,6 +139,17 @@ impl Tone {
             Self::Danger => "tone-danger",
         }
     }
+
+    /// 바탕 없이 글자·선의 색만 정하는 클래스(숫자 타일, 타임라인의 점).
+    const fn ink(self) -> &'static str {
+        match self {
+            Self::Neutral => "ink-neutral",
+            Self::Info => "ink-info",
+            Self::Success => "ink-success",
+            Self::Warning => "ink-warning",
+            Self::Danger => "ink-danger",
+        }
+    }
 }
 
 #[component]
@@ -121,18 +157,78 @@ pub fn Badge(#[props(default)] tone: Tone, children: Element) -> Element {
     rsx! { span { class: "badge {tone.class()}", {children} } }
 }
 
-#[component]
-pub fn Avatar(#[props(into)] name: String, #[props(default)] large: bool) -> Element {
-    let class = if large { "avatar avatar-lg" } else { "avatar" };
-    rsx! { span { class, "aria-hidden": "true", "{format::initial(&name)}" } }
+/// 아바타 바탕색의 가짓수.
+pub const AVATAR_COLORS: u32 = 6;
+
+/// 구성원마다 고정된 아바타 색 번호(0~5). 같은 키는 언제나 같은 색이다(FNV-1a).
+pub fn avatar_color(key: &str) -> u32 {
+    let hash = key.bytes().fold(0x811c_9dc5_u32, |hash, byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
+    });
+    hash % AVATAR_COLORS
 }
 
+/// 이름 첫 글자 아바타. 색은 `seed`(구성원 ID)로 정하고, 없으면 이름으로 정한다.
 #[component]
-pub fn Spinner() -> Element {
+pub fn Avatar(
+    #[props(into)] name: String,
+    #[props(into, default)] seed: String,
+    #[props(default)] large: bool,
+) -> Element {
+    let color = avatar_color(if seed.is_empty() { &name } else { &seed });
+    let size = if large { " avatar-lg" } else { "" };
     rsx! {
-        div { class: "loading", role: "status",
-            span { class: "spinner" }
+        span { class: "avatar avatar-{color}{size}", "aria-hidden": "true", "{format::initial(&name)}" }
+    }
+}
+
+/// 골격 한 줄의 폭(%). 글줄처럼 보이도록 줄마다 길이를 달리한다.
+pub fn skeleton_width(index: usize) -> u32 {
+    const WIDTHS: [u32; 4] = [92, 100, 76, 58];
+    WIDTHS[index % WIDTHS.len()]
+}
+
+/// 기다리는 동안 내용 자리를 대신 보여 주는 골격. `rows`는 줄 수, `title`이면 굵은 첫 줄이 붙는다.
+#[component]
+pub fn Skeleton(#[props(default = 3)] rows: usize, #[props(default)] title: bool) -> Element {
+    rsx! {
+        div { class: "skeleton", role: "status",
+            if title {
+                span { class: "skeleton-bar skeleton-title" }
+            }
+            for index in 0..rows {
+                span { key: "{index}", class: "skeleton-bar", style: "width: {skeleton_width(index)}%" }
+            }
             span { class: "sr-only", "불러오는 중" }
+        }
+    }
+}
+
+/// 비어 있지 않은 항목만 앞뒤 공백을 지워 남긴다.
+pub fn meta_items<I, S>(items: I) -> Vec<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    items
+        .into_iter()
+        .map(|item| item.as_ref().trim().to_owned())
+        .filter(|item| !item.is_empty())
+        .collect()
+}
+
+/// 메타 정보 줄. 항목을 가운데 점으로 잇지 않고 간격을 둔 별도 요소로 나열한다.
+#[component]
+pub fn Meta(items: Vec<String>) -> Element {
+    let items = meta_items(items);
+    if items.is_empty() {
+        return rsx! {};
+    }
+    rsx! {
+        span { class: "meta",
+            for (index , item) in items.into_iter().enumerate() {
+                span { key: "{index}", class: "meta-item", "{item}" }
+            }
         }
     }
 }
@@ -146,7 +242,7 @@ pub fn EmptyState(
 ) -> Element {
     rsx! {
         div { class: "empty",
-            Icon { name: icon }
+            span { class: "empty-icon", Icon { name: icon } }
             p { class: "empty-title", "{title}" }
             if !hint.is_empty() {
                 p { class: "empty-hint", "{hint}" }
@@ -161,9 +257,9 @@ pub fn EmptyState(
 pub fn ErrorState(#[props(into)] message: String, onretry: EventHandler<()>) -> Element {
     rsx! {
         div { class: "empty", role: "alert",
-            Icon { name: IconName::Alert }
+            span { class: "empty-icon", Icon { name: IconName::Alert } }
             p { class: "empty-title", "{message}" }
-            Button { kind: ButtonKind::Secondary, small: true, onclick: move |_| onretry.call(()), "다시 시도" }
+            Button { kind: ButtonKind::Weak, onclick: move |_| onretry.call(()), "다시 시도" }
         }
     }
 }
@@ -176,7 +272,7 @@ pub fn resource_view<T: Clone + 'static>(
     // 세션 만료·권한 변경은 요청 future가 이미 반영했다(`api`). 여기서는 그리기만 한다.
     let state = resource.read().clone();
     match state {
-        None => rsx! { Spinner {} },
+        None => rsx! { Skeleton { rows: 4 } },
         Some(Ok(value)) => render(value),
         Some(Err(error)) => {
             rsx! { ErrorState { message: error.message(), onretry: move |_| resource.restart() } }
@@ -196,16 +292,18 @@ pub fn loaded_or_empty<T: Clone>(resource: &Resource<ApiResult<Vec<T>>>) -> Vec<
 #[component]
 pub fn PageHeader(
     #[props(into)] title: String,
-    #[props(into, default)] subtitle: String,
-    /// 제목 오른쪽의 주요 동작 버튼.
+    /// 제목 아래 한 줄 설명.
+    #[props(into, default)]
+    description: String,
+    /// 제목 오른쪽의 동작 버튼(주 동작은 하나).
     actions: Option<Element>,
 ) -> Element {
     rsx! {
         header { class: "page-header",
-            div {
+            div { class: "page-heading",
                 h1 { class: "page-title", "{title}" }
-                if !subtitle.is_empty() {
-                    p { class: "page-subtitle", "{subtitle}" }
+                if !description.is_empty() {
+                    p { class: "page-description", "{description}" }
                 }
             }
             if let Some(actions) = actions {
@@ -308,13 +406,15 @@ pub fn SelectField(
                     span { class: "field-required", "aria-hidden": "true", " *" }
                 }
             }
-            select {
-                class: "input",
-                required,
-                disabled,
-                onchange: move |event| onchange.call(event.value()),
-                for (option_value , text) in options {
-                    option { value: "{option_value}", selected: option_value == value, "{text}" }
+            span { class: "select",
+                select {
+                    class: "input",
+                    required,
+                    disabled,
+                    onchange: move |event| onchange.call(event.value()),
+                    for (option_value , text) in options {
+                        option { value: "{option_value}", selected: option_value == value, "{text}" }
+                    }
                 }
             }
         }
@@ -529,14 +629,52 @@ pub fn Stat(
     #[props(default)] tone: Tone,
 ) -> Element {
     rsx! {
-        div { class: "stat {tone.class()}",
+        div { class: "stat",
             span { class: "stat-label", "{label}" }
-            strong { class: "stat-value", "{value}" }
+            strong { class: "stat-value tnum {tone.ink()}",
+                for (index , part) in stat_parts(&value).into_iter().enumerate() {
+                    if part.unit {
+                        span { key: "{index}", class: "stat-unit", "{part.text}" }
+                    } else {
+                        "{part.text}"
+                    }
+                }
+            }
             if !hint.is_empty() {
                 span { class: "stat-hint", "{hint}" }
             }
         }
     }
+}
+
+/// 숫자 타일 값의 한 조각. 숫자는 크게, 단위(`건`, `명`, `시간`)는 작고 흐리게 그린다.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatPart {
+    pub text: String,
+    pub unit: bool,
+}
+
+/// `12시간 30분` → `12` `시간 ` `30` `분`. 숫자가 하나도 없으면(`-`, `없음`) 통째로 값이다.
+pub fn stat_parts(value: &str) -> Vec<StatPart> {
+    let is_number = |c: char| c.is_ascii_digit() || matches!(c, '.' | ',' | '-' | '+');
+    if !value.chars().any(|c| c.is_ascii_digit()) {
+        return vec![StatPart {
+            text: value.to_owned(),
+            unit: false,
+        }];
+    }
+    let mut parts: Vec<StatPart> = Vec::new();
+    for c in value.chars() {
+        let unit = !is_number(c);
+        match parts.last_mut() {
+            Some(last) if last.unit == unit => last.text.push(c),
+            _ => parts.push(StatPart {
+                text: c.to_string(),
+                unit,
+            }),
+        }
+    }
+    parts
 }
 
 /// 누르면 다른 화면으로 가는 숫자 타일(홈·관리 홈의 "처리할 일").
@@ -559,6 +697,7 @@ pub fn StatLink(
             to,
             onclick: move |_| pending.open(target.clone(), tab),
             Stat { label, value, hint, tone }
+            Icon { name: IconName::Chevron }
         }
     }
 }
@@ -648,7 +787,10 @@ fn ToastItem(toast: Toast) -> Element {
             class: if toast.kind == ToastKind::Error { "toast toast-error" } else { "toast" },
             r#type: "button",
             onclick: move |_| toasts.dismiss(id),
-            "{toast.message}"
+            if toast.kind == ToastKind::Error {
+                Icon { name: IconName::Alert }
+            }
+            span { "{toast.message}" }
             span { class: "sr-only", " (눌러서 닫기)" }
         }
     }
@@ -702,7 +844,7 @@ pub fn MonthCalendar(
     const WEEKDAYS: [&str; 7] = ["일", "월", "화", "수", "목", "금", "토"];
     rsx! {
         div { class: "calendar", role: "grid",
-            div { class: "calendar-row calendar-head", role: "row",
+            div { class: "calendar-row", role: "row",
                 for name in WEEKDAYS {
                     span { class: "calendar-weekday", role: "columnheader", "{name}" }
                 }
@@ -788,7 +930,7 @@ pub fn ConfirmModal(
             }
             div { class: "modal-actions",
                 Button {
-                    kind: ButtonKind::Secondary,
+                    kind: ButtonKind::Grey,
                     disabled: busy,
                     onclick: move |_| oncancel.call(()),
                     "취소"
@@ -816,7 +958,7 @@ pub fn LoadMore(
     }
     rsx! {
         div { class: "load-more",
-            Button { kind: ButtonKind::Secondary, busy, onclick: move |_| onclick.call(()), "더 보기" }
+            Button { kind: ButtonKind::Grey, busy, onclick: move |_| onclick.call(()), "더 보기" }
         }
     }
 }
@@ -948,12 +1090,12 @@ pub fn SecretReveal(
                             "autocapitalize": "off",
                         }
                     }
-                    p { class: "secret-warning", role: "note",
+                    p { class: "callout callout-warning", role: "note",
                         Icon { name: IconName::Alert }
-                        span { "이 창을 닫으면 다시 볼 수 없습니다. 지금 복사해 본인에게 안전하게 전달하세요." }
+                        span { "이 창을 닫으면 다시 볼 수 없어요. 지금 복사해 본인에게 안전하게 전달해 주세요." }
                     }
                     div { class: "modal-actions",
-                        Button { onclick: move |_| onclose.call(()), "확인했습니다" }
+                        Button { onclick: move |_| onclose.call(()), "확인했어요" }
                     }
                 }
             }
@@ -980,7 +1122,7 @@ pub fn TimelineItem(
         li {
             class: if current { "timeline-item timeline-item-current" } else { "timeline-item" },
             "aria-current": if current { "step" },
-            span { class: "timeline-dot {tone.class()}", "aria-hidden": "true" }
+            span { class: "timeline-dot {tone.ink()}", "aria-hidden": "true" }
             div { class: "timeline-body", {children} }
         }
     }
@@ -1105,6 +1247,78 @@ mod tests {
         // 목록이 줄어 위치가 범위를 벗어났으면 끝으로 본다.
         assert_eq!(tab_move(2, Some(5), false), TabMove::Focus(0));
         assert_eq!(tab_move(2, Some(5), true), TabMove::Focus(1));
+    }
+
+    #[test]
+    fn avatar_color_is_stable_and_in_range() {
+        let id = "018f3c1e-7b2a-7c3d-9e4f-0a1b2c3d4e5f";
+        assert_eq!(avatar_color(id), avatar_color(id), "같은 구성원은 같은 색");
+        assert_eq!(avatar_color(""), 0x811c_9dc5_u32 % AVATAR_COLORS);
+        // 알려진 FNV-1a 값: "a" → 0xe40c292c.
+        assert_eq!(avatar_color("a"), 0xe40c_292c_u32 % AVATAR_COLORS);
+        let keys: Vec<String> = (0..200).map(|n| format!("member-{n}")).collect();
+        let mut seen = [0_u32; AVATAR_COLORS as usize];
+        for key in &keys {
+            let color = avatar_color(key);
+            assert!(color < AVATAR_COLORS);
+            seen[color as usize] += 1;
+        }
+        assert!(
+            seen.iter().all(|count| *count > 0),
+            "여섯 색을 모두 쓴다: {seen:?}"
+        );
+    }
+
+    #[test]
+    fn skeleton_rows_vary_in_width() {
+        let widths: Vec<u32> = (0..5).map(skeleton_width).collect();
+        assert_eq!(widths, vec![92, 100, 76, 58, 92]);
+        assert!(widths.iter().all(|w| (1..=100).contains(w)));
+    }
+
+    #[test]
+    fn meta_drops_blank_items() {
+        assert_eq!(
+            meta_items(["개발팀", " 팀장 ", "", "  "]),
+            vec!["개발팀", "팀장"]
+        );
+        assert!(meta_items(Vec::<String>::new()).is_empty());
+    }
+
+    #[test]
+    fn stat_values_split_numbers_from_units() {
+        let shown = |value: &str| -> Vec<(String, bool)> {
+            stat_parts(value)
+                .into_iter()
+                .map(|p| (p.text, p.unit))
+                .collect()
+        };
+        assert_eq!(shown("3건"), vec![("3".into(), false), ("건".into(), true)]);
+        assert_eq!(
+            shown("12시간 30분"),
+            vec![
+                ("12".into(), false),
+                ("시간 ".into(), true),
+                ("30".into(), false),
+                ("분".into(), true)
+            ]
+        );
+        assert_eq!(
+            shown("5 / 8명"),
+            vec![
+                ("5".into(), false),
+                (" / ".into(), true),
+                ("8".into(), false),
+                ("명".into(), true)
+            ]
+        );
+        assert_eq!(
+            shown("12.5일"),
+            vec![("12.5".into(), false), ("일".into(), true)]
+        );
+        assert_eq!(shown("-"), vec![("-".into(), false)]);
+        assert_eq!(shown("없음"), vec![("없음".into(), false)]);
+        assert_eq!(shown(""), vec![("".into(), false)]);
     }
 
     #[test]
