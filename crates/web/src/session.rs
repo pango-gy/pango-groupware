@@ -18,6 +18,11 @@ impl Session {
         self.me.read().clone()
     }
 
+    /// 회사 시간대. 로그인 전에는 화면이 그려지지 않으므로 UTC는 실제로 쓰이지 않는다.
+    pub fn zone(&self) -> chrono_tz::Tz {
+        crate::format::member_zone(self.me.read().as_ref())
+    }
+
     pub fn is_loaded(&self) -> bool {
         *self.loaded.read()
     }

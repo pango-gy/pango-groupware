@@ -89,3 +89,27 @@ pub fn MemberPicker(
         }
     }
 }
+
+/// 고른 구성원 한 명과 선택 해제 버튼. 해제하면 보통 [`MemberPicker`]로 돌아간다.
+#[component]
+pub fn PickedMember(
+    #[props(into)] name: String,
+    /// 해제 버튼의 접근성 이름(예: "조직장 지정 해제").
+    #[props(into)]
+    clear_label: String,
+    onclear: EventHandler<()>,
+) -> Element {
+    rsx! {
+        div { class: "picked-member",
+            Avatar { name: name.clone() }
+            span { class: "picked-member-name", "{name}" }
+            button {
+                class: "icon-btn",
+                r#type: "button",
+                "aria-label": "{clear_label}",
+                onclick: move |_| onclear.call(()),
+                Icon { name: IconName::Close }
+            }
+        }
+    }
+}

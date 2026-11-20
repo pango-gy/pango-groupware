@@ -21,7 +21,6 @@ use crate::ui::{
 
 /// 상세 화면의 순수 함수: 동작 판정, 요청 변환, 구조화된 내용 요약.
 pub(crate) mod logic {
-    use chrono::NaiveDate;
     use chrono_tz::Tz;
     use pango_api::approval::{ApproveRequest, DocumentDetail, RejectRequest};
     use pango_core::approval::{DocumentKind, DocumentStatus, StepStatus};
@@ -92,26 +91,16 @@ pub(crate) mod logic {
         )
     }
 
-    fn message(field: &str, error: &pango_core::DomainError) -> String {
-        match error {
-            pango_core::DomainError::Validation { reason, .. } => {
-                text::error_message("validation_failed", Some(field), Some(reason.code()))
-            }
-            _ => text::error_message("validation_failed", Some(field), None),
-        }
-    }
-
     /// 승인 의견(선택). 비어 있으면 보내지 않는다.
     pub fn approve_request(comment: &str) -> Result<ApproveRequest, String> {
-        let trimmed = comment.trim();
-        if trimmed.is_empty() {
+        let Some(trimmed) = format::non_empty(comment) else {
             return Ok(ApproveRequest { comment: None });
-        }
+        };
         Comment::parse(trimmed)
             .map(|_| ApproveRequest {
                 comment: Some(trimmed.to_owned()),
             })
-            .map_err(|error| message("comment", &error))
+            .map_err(|error| text::field_error_message("comment", &error))
     }
 
     /// 반려 사유(필수).
@@ -120,7 +109,7 @@ pub(crate) mod logic {
             .map(|_| RejectRequest {
                 reason: reason.trim().to_owned(),
             })
-            .map_err(|error| message("reason", &error))
+            .map_err(|error| text::field_error_message("reason", &error))
     }
 
     fn text_of(object: &Map<String, Value>, keys: &[&str]) -> Option<String> {
@@ -132,7 +121,7 @@ pub(crate) mod logic {
     }
 
     fn date_text(raw: &str) -> String {
-        NaiveDate::parse_from_str(raw, "%Y-%m-%d")
+        pango_core::calendar::parse_date("date", raw)
             .map(format::date_ymd)
             .unwrap_or_else(|_| raw.to_owned())
     }
@@ -281,7 +270,7 @@ pub fn ApprovalDetail(id: String) -> Element {
     let mut dialog_error = use_signal(String::new);
 
     let me = session.me();
-    let tz = format::zone(&me.as_ref().map(|m| m.timezone.clone()).unwrap_or_default());
+    let tz = format::member_zone(me.as_ref());
     let me_id = me.as_ref().map(|m| m.id);
 
     let run = move |act: Act| async move {
@@ -540,11 +529,11 @@ fn DocumentView(
                         current: step.status == StepStatus::Pending,
                         div { class: "timeline-head",
                             strong { "{step.order}. {step.approver_name}" }
-                            span { class: "timeline-kind", {text::step_kind_label(step.kind)} }
+                            span { class: "timeline-meta", {text::step_kind_label(step.kind)} }
                             Badge { tone: text::step_status_tone(step.status), {text::step_status_label(step.status)} }
                         }
                         if let Some(at) = step.acted_at {
-                            small { class: "timeline-time", {format::datetime(at, tz)} }
+                            small { class: "timeline-meta", {format::datetime(at, tz)} }
                         }
                         if let Some(comment) = step.comment.as_ref().filter(|c| !c.trim().is_empty()) {
                             p { class: "timeline-comment", "{comment}" }
@@ -579,9 +568,9 @@ fn DocumentView(
                         TimelineItem { key: "{index}",
                             div { class: "timeline-head",
                                 strong { "{event.actor_name}" }
-                                span { class: "timeline-kind", {text::event_kind_label(event.kind)} }
+                                span { class: "timeline-meta", {text::event_kind_label(event.kind)} }
                             }
-                            small { class: "timeline-time", {format::datetime(event.created_at, tz)} }
+                            small { class: "timeline-meta", {format::datetime(event.created_at, tz)} }
                             if let Some(comment) = event.comment.as_ref().filter(|c| !c.trim().is_empty()) {
                                 p { class: "timeline-comment", "{comment}" }
                             }

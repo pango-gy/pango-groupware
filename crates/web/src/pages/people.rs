@@ -8,7 +8,7 @@ use pango_api::org::{DepartmentDto, MemberSummary};
 
 use crate::api;
 use crate::org_tree::{self, DepartmentRow};
-use crate::pages::admin::members::{logic::member_query, query_string};
+use crate::pages::admin::members::logic::member_query;
 use crate::ui::{
     resource_view, Avatar, Card, EmptyState, IconName, PageHeader, SelectField, TextField,
 };
@@ -22,7 +22,7 @@ pub fn People() -> Element {
         use_resource(|| async { api::get::<Vec<DepartmentDto>>("/departments").await });
     let members = use_resource(move || async move {
         let pairs = member_query(&search(), &department(), false);
-        api::get::<Vec<MemberSummary>>(&format!("/members{}", query_string(&pairs))).await
+        api::get::<Vec<MemberSummary>>(&format!("/members{}", api::query_string(&pairs))).await
     });
 
     let department_list: Vec<DepartmentDto> = match &*departments.read() {

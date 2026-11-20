@@ -6,13 +6,12 @@ use pango_api::leave::{BalanceDto, LeaveRequestDto, LeaveTypeDto};
 use pango_core::leave::LeaveUnit;
 
 use crate::api;
-use crate::pages::leave::{company_zone, today};
 use crate::route::Route;
 use crate::session::use_session;
 use crate::text;
 use crate::ui::approval_line::from_suggestion;
 use crate::ui::{
-    report_success, ApprovalLineEditor, ApproverEntry, Button, ButtonKind, Card, DateField,
+    report_success, today, ApprovalLineEditor, ApproverEntry, Button, ButtonKind, Card, DateField,
     ErrorState, FormError, PageHeader, SelectField, Spinner, TextArea,
 };
 
@@ -22,7 +21,7 @@ use logic::Slot;
 pub fn LeaveNew() -> Element {
     let mut session = use_session();
     let nav = navigator();
-    let tz = company_zone();
+    let tz = session.zone();
     let today = today(tz);
     let me_id = session.me().map(|me| me.id);
 
@@ -159,7 +158,7 @@ pub fn LeaveNew() -> Element {
                     div { class: "form",
                         FormError { message: error_for(Slot::Form) }
                         div { class: "form-row",
-                            div { class: "field-stack",
+                            div { class: "field",
                                 SelectField {
                                     label: "휴가 종류",
                                     value: chosen.as_ref().map(|t| t.id.to_string()).unwrap_or_default(),
@@ -175,7 +174,7 @@ pub fn LeaveNew() -> Element {
                                 }
                                 FieldError { message: error_for(Slot::Type) }
                             }
-                            div { class: "field-stack",
+                            div { class: "field",
                                 SelectField {
                                     label: "단위",
                                     value: unit().as_str(),
@@ -217,7 +216,7 @@ pub fn LeaveNew() -> Element {
                                 },
                             }
                         }
-                        div { class: "field-stack",
+                        div { class: "field",
                             TextArea {
                                 label: "사유",
                                 value: reason(),

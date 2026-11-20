@@ -209,6 +209,16 @@ pub fn domain_error_message(error: &DomainError) -> String {
     }
 }
 
+/// 화면 입력 상자 `field`의 검증 문구. 도메인 오류의 필드 이름(`code` 등)이 아니라 입력 상자를 기준으로 쓴다.
+pub fn field_error_message(field: &str, error: &DomainError) -> String {
+    match error {
+        DomainError::Validation { reason, .. } => {
+            validation_message(Some(field), Some(reason.code()))
+        }
+        _ => validation_message(Some(field), None),
+    }
+}
+
 pub fn role_tone(role: Role) -> Tone {
     match role {
         Role::Owner => Tone::Warning,
@@ -312,6 +322,17 @@ pub fn day_status_label(status: DayStatus) -> &'static str {
         DayStatus::Absent => "결근",
         DayStatus::OnLeave => "휴가",
         DayStatus::DayOff => "휴무",
+    }
+}
+
+/// 상태 배지 색. 색만으로 구분하지 않도록 배지에는 항상 [`day_status_label`]을 함께 쓴다.
+pub fn day_status_tone(status: DayStatus) -> Tone {
+    match status {
+        DayStatus::Normal => Tone::Success,
+        DayStatus::Late | DayStatus::EarlyLeave | DayStatus::LateAndEarlyLeave => Tone::Warning,
+        DayStatus::Absent | DayStatus::MissingClockOut => Tone::Danger,
+        DayStatus::Working | DayStatus::OnLeave => Tone::Info,
+        DayStatus::Scheduled | DayStatus::DayOff => Tone::Neutral,
     }
 }
 
@@ -444,12 +465,30 @@ pub fn leave_status_label(status: LeaveRequestStatus) -> &'static str {
     }
 }
 
+pub fn leave_status_tone(status: LeaveRequestStatus) -> Tone {
+    match status {
+        LeaveRequestStatus::Pending => Tone::Warning,
+        LeaveRequestStatus::Approved => Tone::Success,
+        LeaveRequestStatus::Rejected => Tone::Danger,
+        LeaveRequestStatus::Canceled => Tone::Neutral,
+    }
+}
+
 pub fn ledger_kind_label(kind: LedgerKind) -> &'static str {
     match kind {
         LedgerKind::Grant => "부여",
         LedgerKind::Use => "사용",
         LedgerKind::Restore => "복원",
         LedgerKind::Adjust => "조정",
+    }
+}
+
+/// 원장 한 줄의 색: 늘어나면 초록, 사용은 파랑, 조정은 회색.
+pub fn ledger_kind_tone(kind: LedgerKind) -> Tone {
+    match kind {
+        LedgerKind::Grant | LedgerKind::Restore => Tone::Success,
+        LedgerKind::Use => Tone::Info,
+        LedgerKind::Adjust => Tone::Neutral,
     }
 }
 
@@ -566,6 +605,16 @@ mod tests {
             domain_error_message(&DomainError::Forbidden),
             error_message("forbidden", None, None)
         );
+        // 입력 상자 이름으로 문구를 만든다(도메인 필드 이름과 다를 수 있다).
+        let error = DomainError::validation("text", ValidationReason::TooLong { max: 10 });
+        assert_eq!(
+            field_error_message("comment", &error),
+            "의견이(가) 너무 깁니다."
+        );
+        assert_eq!(
+            field_error_message("reason", &DomainError::Forbidden),
+            "사유의 형식이 올바르지 않습니다."
+        );
     }
 
     #[test]
@@ -675,6 +724,37 @@ mod tests {
                 error_message("validation_failed", Some("steps"), Some(reason)),
                 fallback
             );
+        }
+    }
+
+    #[test]
+    fn status_tones_cover_every_status() {
+        for status in DAY_STATUSES {
+            let tone = day_status_tone(status);
+            assert!(!day_status_label(status).is_empty());
+            match status {
+                DayStatus::Late | DayStatus::EarlyLeave | DayStatus::LateAndEarlyLeave => {
+                    assert_eq!(tone, Tone::Warning)
+                }
+                DayStatus::Absent | DayStatus::MissingClockOut => {
+                    assert_eq!(tone, Tone::Danger)
+                }
+                DayStatus::Normal => assert_eq!(tone, Tone::Success),
+                _ => assert!(matches!(tone, Tone::Neutral | Tone::Info)),
+            }
+        }
+    }
+
+    #[test]
+    fn every_status_has_a_distinct_tone_and_label() {
+        let tones: Vec<_> = LeaveRequestStatus::ALL
+            .iter()
+            .map(|s| leave_status_tone(*s))
+            .collect();
+        for (i, a) in tones.iter().enumerate() {
+            for b in &tones[i + 1..] {
+                assert_ne!(a, b);
+            }
         }
     }
 }

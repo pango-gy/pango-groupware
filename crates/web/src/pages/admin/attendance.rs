@@ -10,12 +10,13 @@ use pango_core::id::AttendanceRecordId;
 use crate::api;
 use crate::calendar::YearMonth;
 use crate::format;
-use crate::pages::attendance::{company_zone, current_time, RecordHistory};
+use crate::org_tree;
+use crate::pages::attendance::RecordHistory;
 use crate::session::use_session;
 use crate::ui::{
-    report_error, report_success, resource_view, Avatar, Badge, Button, ButtonKind, Card,
-    EmptyState, FormError, Icon, IconName, LoadMore, MemberPicker, Modal, PageHeader, SelectField,
-    TextArea, TextField,
+    report_error, report_success, resource_view, today, Badge, Button, ButtonKind, Card,
+    EmptyState, FormError, Icon, IconName, LoadMore, MemberPicker, Modal, PageHeader, PickedMember,
+    SelectField, TextArea, TextField,
 };
 
 use logic::{AdminRow, FailureAction, Filter};
@@ -30,8 +31,8 @@ enum Editor {
 #[component]
 pub fn AdminAttendance() -> Element {
     let session = use_session();
-    let tz = company_zone(&session);
-    let this_month = YearMonth::of(format::local_date(current_time(), tz));
+    let tz = session.zone();
+    let this_month = YearMonth::of(today(tz));
     let mut from = use_signal(move || this_month.first_day().to_string());
     let mut to = use_signal(move || this_month.last_day().to_string());
     let mut department = use_signal(String::new);
@@ -96,8 +97,8 @@ pub fn AdminAttendance() -> Element {
         .unwrap_or_default();
     let export_href = logic::export_href(&current).ok();
     let department_options = match &*departments.read() {
-        Some(Ok(list)) => logic::department_options(list),
-        _ => logic::department_options(&[]),
+        Some(Ok(list)) => org_tree::department_options(list, "전체 부서"),
+        _ => org_tree::department_options(&[], "전체 부서"),
     };
 
     rsx! {
@@ -137,7 +138,7 @@ pub fn AdminAttendance() -> Element {
                     onchange: move |value| department.set(value),
                 }
                 if let Some(chosen) = member() {
-                    PickedMember { label: "구성원", member: chosen, onclear: move |_| member.set(None) }
+                    PickedMemberField { label: "구성원", member: chosen, onclear: move |_| member.set(None) }
                 } else {
                     MemberPicker { label: "구성원", onpick: move |picked| member.set(Some(picked)) }
                 }
@@ -264,9 +265,9 @@ fn RowActions(
     }
 }
 
-/// 고른 구성원 표시 + 다시 고르기.
+/// 라벨이 붙은 고른 구성원 표시 + 다시 고르기.
 #[component]
-fn PickedMember(
+fn PickedMemberField(
     #[props(into)] label: String,
     member: MemberSummary,
     onclear: EventHandler<()>,
@@ -274,16 +275,10 @@ fn PickedMember(
     rsx! {
         div { class: "field",
             span { class: "field-label", "{label}" }
-            div { class: "att-picked",
-                Avatar { name: member.name.clone() }
-                span { class: "att-picked-name", "{member.name}" }
-                button {
-                    class: "icon-btn",
-                    r#type: "button",
-                    "aria-label": "{label} 다시 고르기",
-                    onclick: move |_| onclear.call(()),
-                    Icon { name: IconName::Close }
-                }
+            PickedMember {
+                name: member.name,
+                clear_label: format!("{label} 다시 고르기"),
+                onclear: move |_| onclear.call(()),
             }
         }
     }
@@ -293,10 +288,10 @@ fn PickedMember(
 #[component]
 fn RecordEditor(editor: Editor, onclose: EventHandler<()>, onsaved: EventHandler<()>) -> Element {
     let session = use_session();
-    let tz = company_zone(&session);
+    let tz = session.zone();
     let zone_name = session.me().map(|me| me.timezone).unwrap_or_default();
     let initial = match &editor {
-        Editor::Create => logic::RecordForm::blank(format::local_date(current_time(), tz)),
+        Editor::Create => logic::RecordForm::blank(today(tz)),
         Editor::Edit(item) => logic::RecordForm::from_record(&item.record, tz),
     };
     let mut form = use_signal(move || initial);
@@ -398,7 +393,7 @@ fn RecordEditor(editor: Editor, onclose: EventHandler<()>, onsaved: EventHandler
                     }
                 } else {
                     if let Some(chosen) = picked() {
-                        PickedMember {
+                        PickedMemberField {
                             label: "구성원",
                             member: chosen,
                             onclear: move |_| {
@@ -484,7 +479,6 @@ mod logic {
     use pango_api::attendance::{
         AdminAttendanceItem, AdminCreateRecordRequest, AdminEditRecordRequest, AttendanceRecordDto,
     };
-    use pango_api::org::DepartmentDto;
     use pango_api::API_PREFIX;
     use pango_core::attendance::{WorkType, MAX_SHIFT};
     use pango_core::calendar::{parse_date, DateRange};
@@ -545,32 +539,17 @@ mod logic {
             return Err(FilterError::Reversed);
         }
         let range = DateRange::new(from, to).map_err(|_| FilterError::TooLong)?;
-        let department = match filter.department.trim() {
-            "" => None,
-            raw => Some(
+        let department = crate::format::non_empty(&filter.department)
+            .map(|raw| {
                 raw.parse::<DepartmentId>()
-                    .map_err(|_| FilterError::InvalidDepartment)?,
-            ),
-        };
+                    .map_err(|_| FilterError::InvalidDepartment)
+            })
+            .transpose()?;
         Ok(ValidFilter {
             range,
             department,
             member: filter.member,
         })
-    }
-
-    /// 쿼리 값 인코딩(RFC 3986 비예약 문자만 그대로 둔다).
-    pub fn escape(value: &str) -> String {
-        let mut out = String::with_capacity(value.len());
-        for byte in value.bytes() {
-            match byte {
-                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                    out.push(char::from(byte));
-                }
-                _ => out.push_str(&format!("%{byte:02X}")),
-            }
-        }
-        out
     }
 
     fn range_query(range: DateRange) -> String {
@@ -590,10 +569,7 @@ mod logic {
         if let Some(member) = valid.member {
             path.push_str(&format!("&member_id={member}"));
         }
-        if let Some(cursor) = cursor.filter(|c| !c.is_empty()) {
-            path.push_str(&format!("&cursor={}", escape(cursor)));
-        }
-        Ok(path)
+        Ok(crate::api::with_cursor(path, cursor))
     }
 
     /// CSV 내려받기 주소. 쿠키로 인증되므로 일반 링크로 연다.
@@ -603,12 +579,6 @@ mod logic {
             "{API_PREFIX}/admin/attendance/export.csv?{}",
             range_query(valid.range)
         ))
-    }
-
-    pub fn department_options(list: &[DepartmentDto]) -> Vec<(String, String)> {
-        std::iter::once((String::new(), "전체 부서".to_owned()))
-            .chain(list.iter().map(|d| (d.id.to_string(), d.name.clone())))
-            .collect()
     }
 
     pub fn work_type_options() -> Vec<(String, String)> {
@@ -914,9 +884,6 @@ mod logic {
 
         #[test]
         fn cursor_and_query_values_are_escaped() {
-            assert_eq!(escape("abc-_.~09"), "abc-_.~09");
-            assert_eq!(escape("a&b=c d"), "a%26b%3Dc%20d");
-            assert_eq!(escape("가"), "%EA%B0%80");
             let path =
                 list_path(&filter("2026-03-01", "2026-03-31"), Some("x&admin=1")).expect("path");
             assert!(path.ends_with("&cursor=x%26admin%3D1"), "{path}");
@@ -940,10 +907,6 @@ mod logic {
 
         #[test]
         fn options_lists() {
-            assert_eq!(
-                department_options(&[]),
-                vec![(String::new(), "전체 부서".into())]
-            );
             let work = work_type_options();
             assert_eq!(work.len(), WorkType::ALL.len());
             for (value, label) in &work {

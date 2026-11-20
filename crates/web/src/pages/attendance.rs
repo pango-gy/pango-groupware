@@ -2,7 +2,6 @@
 //!
 //! 월별 기록(`MonthAttendance`)은 팀 현황 화면이 구성원 한 명의 달을 보여 줄 때도 그대로 쓴다.
 
-use chrono_tz::Tz;
 use dioxus::prelude::*;
 use pango_api::attendance::{
     AttendanceEventDto, AttendanceRecordDto, MonthRecords, MonthlySummaryDto, TodayResponse,
@@ -10,33 +9,18 @@ use pango_api::attendance::{
 use pango_api::Empty;
 use pango_core::attendance::WorkType;
 use pango_core::id::{AttendanceRecordId, MemberId};
-use pango_core::time::Timestamp;
 
 use crate::api;
 use crate::calendar::YearMonth;
 use crate::format;
-use crate::session::{use_session, Session};
+use crate::session::use_session;
 use crate::text;
 use crate::ui::{
-    report_error, report_success, resource_view, Badge, Button, Card, EmptyState, IconName, Modal,
-    MonthSwitcher, PageHeader, Stat, TextField, Tone,
+    report_error, report_success, resource_view, today, Badge, Button, Card, EmptyState, IconName,
+    Modal, MonthSwitcher, PageHeader, Stat, TextField, Tone,
 };
 
 use logic::{DayRow, MonthEndpoint, TodayStage};
-
-/// 브라우저의 현재 시각.
-pub(crate) fn current_time() -> Timestamp {
-    Timestamp::from_millis(js_sys::Date::now() as i64)
-        .unwrap_or_else(|_| Timestamp::from_utc(chrono::DateTime::UNIX_EPOCH))
-}
-
-/// 회사 시간대. 로그인 전에는 화면이 그려지지 않으므로 UTC는 실제로 쓰이지 않는다.
-pub(crate) fn company_zone(session: &Session) -> Tz {
-    session
-        .me()
-        .map(|me| format::zone(&me.timezone))
-        .unwrap_or(Tz::UTC)
-}
 
 #[component]
 pub fn Attendance() -> Element {
@@ -53,9 +37,9 @@ pub fn Attendance() -> Element {
 #[component]
 fn TodayCard(onchange: EventHandler<()>) -> Element {
     let session = use_session();
-    let tz = company_zone(&session);
+    let tz = session.zone();
     let mut today = use_resource(|| async { api::get::<TodayResponse>("/attendance/today").await });
-    let mut now = use_signal(current_time);
+    let mut now = use_signal(crate::ui::now);
     let mut work_type = use_signal(|| WorkType::Office);
     let mut note = use_signal(String::new);
     let mut busy = use_signal(|| false);
@@ -64,7 +48,7 @@ fn TodayCard(onchange: EventHandler<()>) -> Element {
     use_future(move || async move {
         loop {
             gloo_timers::future::TimeoutFuture::new(30_000).await;
-            now.set(current_time());
+            now.set(crate::ui::now());
         }
     });
 
@@ -83,7 +67,7 @@ fn TodayCard(onchange: EventHandler<()>) -> Element {
             }
             Err(error) => report_error(&error),
         }
-        now.set(current_time());
+        now.set(crate::ui::now());
         today.restart();
         onchange.call(());
     };
@@ -98,7 +82,7 @@ fn TodayCard(onchange: EventHandler<()>) -> Element {
             Ok(_) => report_success("퇴근했습니다. 수고하셨습니다."),
             Err(error) => report_error(&error),
         }
-        now.set(current_time());
+        now.set(crate::ui::now());
         today.restart();
         onchange.call(());
     };
@@ -119,11 +103,11 @@ fn TodayCard(onchange: EventHandler<()>) -> Element {
                         }
                     }
                 }
-                Badge { tone: logic::status_tone(status), {text::day_status_label(status)} }
+                Badge { tone: text::day_status_tone(status), {text::day_status_label(status)} }
             }
             {match stage {
                 TodayStage::ClockIn => rsx! {
-                    div { class: "work-type-picker", role: "group", "aria-label": "근무 형태",
+                    div { class: "chip-group", role: "group", "aria-label": "근무 형태",
                         for option in WorkType::ALL {
                             button {
                                 key: "{option.as_str()}",
@@ -211,8 +195,8 @@ pub fn MonthAttendance(
     revision: ReadSignal<u32>,
 ) -> Element {
     let session = use_session();
-    let tz = company_zone(&session);
-    let mut month = use_signal(move || YearMonth::of(format::local_date(current_time(), tz)));
+    let tz = session.zone();
+    let mut month = use_signal(move || YearMonth::of(today(tz)));
     let mut opened = use_signal(|| None::<(AttendanceRecordId, String)>);
 
     let summary = use_resource(move || async move {
@@ -345,7 +329,7 @@ pub fn RecordHistory(
     onclose: EventHandler<()>,
 ) -> Element {
     let session = use_session();
-    let tz = company_zone(&session);
+    let tz = session.zone();
     let events = use_resource(move || async move {
         api::get::<Vec<AttendanceEventDto>>(&format!("/attendance/records/{record_id}/events"))
             .await
@@ -406,17 +390,6 @@ pub(crate) mod logic {
     pub const EMPTY: &str = "-";
     /// 출근 메모 최대 글자 수(서버 `Comment` 규칙과 같다).
     pub const NOTE_MAX_CHARS: i64 = 1_000;
-
-    /// 상태 배지 색. 색만으로 구분하지 않도록 배지에는 항상 [`text::day_status_label`]을 함께 쓴다.
-    pub fn status_tone(status: DayStatus) -> Tone {
-        match status {
-            DayStatus::Normal => Tone::Success,
-            DayStatus::Late | DayStatus::EarlyLeave | DayStatus::LateAndEarlyLeave => Tone::Warning,
-            DayStatus::Absent | DayStatus::MissingClockOut => Tone::Danger,
-            DayStatus::Working | DayStatus::OnLeave => Tone::Info,
-            DayStatus::Scheduled | DayStatus::DayOff => Tone::Neutral,
-        }
-    }
 
     /// 오늘 카드의 단계.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -529,7 +502,7 @@ pub(crate) mod logic {
                     .map(|_| format::duration_minutes(evaluation.worked_minutes)),
             ),
             status: text::day_status_label(evaluation.status),
-            tone: status_tone(evaluation.status),
+            tone: text::day_status_tone(evaluation.status),
         }
     }
 
@@ -565,12 +538,19 @@ pub(crate) mod logic {
         pub tone: Tone,
     }
 
-    fn count_tile(label: &'static str, count: u32, tone: Tone) -> Tile {
-        Tile {
-            label,
-            value: format!("{count}일"),
-            tone: if count == 0 { Tone::Neutral } else { tone },
+    impl Tile {
+        /// 개수 타일(`3일`, `5명`). 0이면 강조하지 않는다.
+        pub fn count(label: &'static str, count: u32, unit: &str, tone: Tone) -> Self {
+            Self {
+                label,
+                value: format!("{count}{unit}"),
+                tone: if count == 0 { Tone::Neutral } else { tone },
+            }
         }
+    }
+
+    fn count_tile(label: &'static str, count: u32, tone: Tone) -> Tile {
+        Tile::count(label, count, "일", tone)
     }
 
     /// 월 요약 타일: 근무일수, 총 근무시간, 지각, 조퇴, 결근, 누락.
@@ -760,24 +740,6 @@ pub(crate) mod logic {
                 evaluation: evaluation(status, 470),
                 expected_start: MinuteOfDay::parse("09:00").expect("time"),
                 expected_end: MinuteOfDay::parse("18:00").expect("time"),
-            }
-        }
-
-        #[test]
-        fn status_tones_cover_every_status() {
-            for status in text::DAY_STATUSES {
-                let tone = status_tone(status);
-                assert!(!text::day_status_label(status).is_empty());
-                match status {
-                    DayStatus::Late | DayStatus::EarlyLeave | DayStatus::LateAndEarlyLeave => {
-                        assert_eq!(tone, Tone::Warning)
-                    }
-                    DayStatus::Absent | DayStatus::MissingClockOut => {
-                        assert_eq!(tone, Tone::Danger)
-                    }
-                    DayStatus::Normal => assert_eq!(tone, Tone::Success),
-                    _ => assert!(matches!(tone, Tone::Neutral | Tone::Info)),
-                }
             }
         }
 

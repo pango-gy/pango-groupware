@@ -10,14 +10,14 @@ use pango_core::leave::LeaveRequestStatus;
 
 use crate::api::{self, ApiResult};
 use crate::format;
-use crate::pages::leave::{company_zone, logic as leave_logic, today};
+use crate::pages::leave::logic as leave_logic;
 use crate::route::Route;
 use crate::session::{use_session, use_toasts};
 use crate::text;
 use crate::ui::{
-    report_error, report_success, resource_view, Badge, Button, ButtonKind, Card, Checkbox,
-    ConfirmModal, DateField, EmptyState, FormError, IconName, LoadMore, Modal, PageHeader,
-    SelectField, Tabs, TextArea, TextField, Tone,
+    report_error, report_success, resource_view, today, use_more_pages, Badge, Button, ButtonKind,
+    Card, Checkbox, ConfirmModal, DateField, EmptyState, FormError, IconName, LoadMore, Modal,
+    PageHeader, SelectField, Tabs, TextArea, TextField, Tone,
 };
 
 const TAB_BALANCES: &str = "balances";
@@ -26,7 +26,7 @@ const TAB_TYPES: &str = "types";
 
 #[component]
 pub fn AdminLeave() -> Element {
-    let tz = company_zone();
+    let tz = use_session().zone();
     let today = today(tz);
     let mut tab = use_signal(|| TAB_BALANCES.to_owned());
     let mut running = use_signal(|| false);
@@ -246,37 +246,14 @@ fn AdjustModal(
 #[component]
 fn RequestsTab() -> Element {
     let mut status = use_signal(String::new);
-    let mut more = use_signal(Vec::<LeaveRequestDto>::new);
-    let mut more_cursor = use_signal(|| None::<Option<String>>);
-    let mut loading_more = use_signal(|| false);
+    let more = use_more_pages::<LeaveRequestDto>();
     let mut confirm = use_signal(|| None::<LeaveRequestDto>);
     let mut busy = use_signal(|| false);
     let mut first = use_resource(move || async move {
         let path = logic::requests_path(&status(), None);
+        more.reset();
         api::get::<Page<LeaveRequestDto>>(&path).await
     });
-
-    let mut reset = move || {
-        more.set(Vec::new());
-        more_cursor.set(None);
-    };
-
-    let load_more = move |cursor: String| async move {
-        if loading_more() {
-            return;
-        }
-        loading_more.set(true);
-        match api::get::<Page<LeaveRequestDto>>(&logic::requests_path(&status(), Some(&cursor)))
-            .await
-        {
-            Ok(page) => {
-                more.write().extend(page.items);
-                more_cursor.set(Some(page.next_cursor));
-            }
-            Err(error) => report_error(&error),
-        }
-        loading_more.set(false);
-    };
 
     let cancel = move |id: String| async move {
         if busy() {
@@ -289,7 +266,6 @@ fn RequestsTab() -> Element {
             Err(error) => report_error(&error),
         }
         confirm.set(None);
-        reset();
         first.restart();
         busy.set(false);
     };
@@ -310,16 +286,12 @@ fn RequestsTab() -> Element {
                 label: "상태",
                 value: status(),
                 options: status_options,
-                onchange: move |value: String| {
-                    reset();
-                    status.set(value);
-                },
+                onchange: move |value: String| status.set(value),
             }
         }
         {resource_view(first, move |page: Page<LeaveRequestDto>| {
-            let extra = more();
-            let next = logic::next_cursor(page.next_cursor.as_deref(), more_cursor().as_ref());
-            let items: Vec<LeaveRequestDto> = logic::merge_pages(page.items, extra);
+            let next = more.cursor(&page);
+            let items: Vec<LeaveRequestDto> = logic::merge_pages(page.items, more.items());
             rsx! {
                 if items.is_empty() {
                     EmptyState { title: "조건에 맞는 신청이 없습니다.", icon: IconName::Calendar }
@@ -331,7 +303,7 @@ fn RequestsTab() -> Element {
                                     div { class: "list-row-main",
                                         div { class: "leave-row-title",
                                             strong { "{item.member_name}" }
-                                            Badge { tone: leave_logic::status_tone(item.status), {text::leave_status_label(item.status)} }
+                                            Badge { tone: text::leave_status_tone(item.status), {text::leave_status_label(item.status)} }
                                         }
                                         small {
                                             "{item.leave_type_name} · {leave_logic::period_label(item.start_date, item.end_date)} · {text::leave_unit_label(item.unit)} · {format::leave_days(item.amount.quarters())}"
@@ -357,10 +329,11 @@ fn RequestsTab() -> Element {
                         }
                         LoadMore {
                             has_more: next.is_some(),
-                            busy: loading_more(),
+                            busy: more.busy(),
                             onclick: move |_| {
                                 if let Some(cursor) = next.clone() {
-                                    spawn(load_more(cursor));
+                                    let current = status();
+                                    spawn(more.load(cursor, move |c| logic::requests_path(&current, Some(c))));
                                 }
                             },
                         }
@@ -743,27 +716,7 @@ pub(crate) mod logic {
         if let Ok(status) = LeaveRequestStatus::parse(status) {
             path.push_str(&format!("&status={}", status.as_str()));
         }
-        if let Some(cursor) = cursor.filter(|c| !c.is_empty()) {
-            path.push_str(&format!("&cursor={}", api_encode(cursor)));
-        }
-        path
-    }
-
-    /// 쿼리 값 인코딩. 커서는 서버가 만든 16진수라 보통 그대로 쓰지만, 다른 값이면 인코딩한다.
-    fn api_encode(value: &str) -> String {
-        if value.bytes().all(|b| b.is_ascii_alphanumeric()) {
-            value.to_owned()
-        } else {
-            api::encode(value)
-        }
-    }
-
-    /// 다음에 읽을 커서. 더 읽은 적이 있으면 그 응답의 커서를, 아니면 첫 페이지의 것을 쓴다.
-    pub fn next_cursor(first: Option<&str>, more: Option<&Option<String>>) -> Option<String> {
-        match more {
-            Some(after_more) => after_more.clone(),
-            None => first.map(str::to_owned),
-        }
+        api::with_cursor(path, cursor)
     }
 
     /// 첫 페이지 뒤에 더 읽은 항목을 붙인다. 그 사이 목록이 바뀌어 겹친 항목은 한 번만.
@@ -1011,9 +964,6 @@ pub(crate) mod logic {
                 requests_path("bogus", Some("")),
                 "/admin/leave/requests?limit=50"
             );
-            assert_eq!(next_cursor(Some("a"), None), Some("a".into()));
-            assert_eq!(next_cursor(Some("a"), Some(&None)), None);
-            assert_eq!(next_cursor(None, Some(&Some("b".into()))), Some("b".into()));
             assert!(admin_can_cancel(LeaveRequestStatus::Approved));
             assert!(admin_can_cancel(LeaveRequestStatus::Pending));
             assert!(!admin_can_cancel(LeaveRequestStatus::Canceled));

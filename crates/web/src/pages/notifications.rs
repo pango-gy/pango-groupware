@@ -73,7 +73,7 @@ pub fn Notifications() -> Element {
         marking_all.set(false);
     };
 
-    let tz = format::zone(&session.me().map(|me| me.timezone).unwrap_or_default());
+    let tz = session.zone();
     let at = now();
     let tabs = vec![
         ("all".to_owned(), "전체".to_owned(), None),
@@ -130,7 +130,7 @@ pub fn Notifications() -> Element {
                                 busy: more.busy(),
                                 onclick: move |_| {
                                     let base = list_path(unread_only());
-                                    more.load(cursor.clone(), move |c| format!("{base}&cursor={c}"))
+                                    more.load(cursor.clone(), move |c| api::with_cursor(base.clone(), Some(c)))
                                 },
                             }
                         }

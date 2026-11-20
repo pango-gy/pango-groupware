@@ -10,8 +10,8 @@ use crate::format;
 use crate::session::use_session;
 use crate::text;
 use crate::ui::{
-    resource_view, use_more_pages, Button, ButtonKind, Card, EmptyState, FormError, Icon, IconName,
-    LoadMore, MemberPicker, Modal, PageHeader, SelectField, TextField,
+    resource_view, use_more_pages, Button, ButtonKind, Card, EmptyState, FormError, IconName,
+    LoadMore, MemberPicker, Modal, PageHeader, PickedMember, SelectField, TextField,
 };
 
 use logic::{actor_text, detail_full, detail_preview, query_pairs, target_text, AuditFilters};
@@ -19,30 +19,22 @@ use logic::{actor_text, detail_full, detail_preview, query_pairs, target_text, A
 /// 상세 열에 보여 줄 최대 글자 수. 넘으면 "전체 보기"로 연다.
 const PREVIEW_CHARS: usize = 80;
 
-fn encode_query(pairs: &[(&str, String)]) -> String {
-    pairs
-        .iter()
-        .map(|(key, value)| format!("{key}={}", api::encode(value)))
-        .collect::<Vec<_>>()
-        .join("&")
-}
-
 #[component]
 pub fn AdminAudit() -> Element {
     let session = use_session();
-    let tz = format::zone(&session.me().map(|me| me.timezone).unwrap_or_default());
+    let tz = session.zone();
     let mut from = use_signal(String::new);
     let mut until = use_signal(String::new);
     let mut action = use_signal(String::new);
     let mut actor = use_signal(|| None::<MemberSummary>);
     let mut filter_error = use_signal(String::new);
-    let mut query = use_signal(|| encode_query(&logic::base_pairs()));
+    let mut query = use_signal(|| api::query_string(&logic::base_pairs()));
     let mut detail = use_signal(|| None::<String>);
     let more = use_more_pages::<AuditEntryDto>();
     let entries = use_resource(move || async move {
         let query = query();
         more.reset();
-        api::get::<Page<AuditEntryDto>>(&format!("/admin/audit-log?{query}")).await
+        api::get::<Page<AuditEntryDto>>(&format!("/admin/audit-log{query}")).await
     });
 
     let apply = move |event: FormEvent| {
@@ -56,7 +48,7 @@ pub fn AdminAudit() -> Element {
         match query_pairs(&filters, tz) {
             Ok(pairs) => {
                 filter_error.set(String::new());
-                query.set(encode_query(&pairs));
+                query.set(api::query_string(&pairs));
             }
             Err(message) => filter_error.set(message),
         }
@@ -98,15 +90,10 @@ pub fn AdminAudit() -> Element {
                     if let Some(member) = actor() {
                         div { class: "field",
                             span { class: "field-label", "행위자" }
-                            span { class: "chip",
-                                "{member.name}"
-                                button {
-                                    class: "icon-btn chip-remove",
-                                    r#type: "button",
-                                    "aria-label": "행위자 선택 해제",
-                                    onclick: move |_| actor.set(None),
-                                    Icon { name: IconName::Close }
-                                }
+                            PickedMember {
+                                name: member.name,
+                                clear_label: "행위자 선택 해제",
+                                onclear: move |_| actor.set(None),
                             }
                         }
                     } else {
@@ -156,7 +143,7 @@ pub fn AdminAudit() -> Element {
                                     let query = query();
                                     more.load(
                                         cursor.clone(),
-                                        move |c| format!("/admin/audit-log?{query}&cursor={c}"),
+                                        move |c| api::with_cursor(format!("/admin/audit-log{query}"), Some(c)),
                                     )
                                 },
                             }
@@ -202,7 +189,6 @@ pub mod logic {
     use chrono::NaiveDate;
     use chrono_tz::Tz;
     use pango_api::admin::AuditEntryDto;
-    use pango_core::calendar::parse_date;
     use pango_core::id::MemberId;
     use pango_core::time::{MinuteOfDay, Timestamp, WorkCalendarZone};
     use serde_json::Value;
@@ -231,12 +217,7 @@ pub mod logic {
     }
 
     fn date_of(raw: &str, label: &str) -> Result<Option<NaiveDate>, String> {
-        let raw = raw.trim();
-        if raw.is_empty() {
-            return Ok(None);
-        }
-        parse_date("date", raw)
-            .map(Some)
+        crate::format::optional_date("date", raw)
             .map_err(|_| format!("{label}을 YYYY-MM-DD 형식으로 입력해 주세요."))
     }
 

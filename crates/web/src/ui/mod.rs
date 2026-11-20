@@ -6,7 +6,7 @@ mod member_picker;
 
 pub use approval_line::{ApprovalLineEditor, ApproverEntry};
 pub use icon::{Icon, IconName};
-pub use member_picker::MemberPicker;
+pub use member_picker::{MemberPicker, PickedMember};
 
 use dioxus::prelude::*;
 
@@ -487,11 +487,16 @@ pub fn MonthCalendar(
     }
 }
 
-/// 지금 시각(브라우저 시계). 목록의 상대 시각 표시에만 쓴다.
+/// 지금 시각(브라우저 시계). 서버가 다시 판정하므로 표시·기본값 용도로만 쓴다.
 pub fn now() -> pango_core::time::Timestamp {
     let millis = js_sys::Date::now() as i64;
     pango_core::time::Timestamp::from_millis(millis)
         .unwrap_or_else(|_| pango_core::time::Timestamp::from_utc(chrono::DateTime::UNIX_EPOCH))
+}
+
+/// 회사 시간대의 오늘(브라우저 시계 기준).
+pub fn today(tz: chrono_tz::Tz) -> chrono::NaiveDate {
+    format::local_date(now(), tz)
 }
 
 /// 라벨이 붙은 체크 상자.
@@ -588,6 +593,8 @@ pub struct MorePages<T: 'static> {
     /// 마지막으로 이어 붙인 페이지의 다음 커서. 아직 안 붙였으면 `None`.
     after: Signal<Option<Option<String>>>,
     busy: Signal<bool>,
+    /// [`MorePages::reset`]할 때마다 늘린다. 읽는 사이 목록이 바뀌었으면 받은 페이지를 버린다.
+    generation: Signal<u32>,
 }
 
 impl<T: 'static> Clone for MorePages<T> {
@@ -603,6 +610,7 @@ pub fn use_more_pages<T: 'static>() -> MorePages<T> {
         items: use_signal(Vec::new),
         after: use_signal(|| None),
         busy: use_signal(|| false),
+        generation: use_signal(|| 0),
     }
 }
 
@@ -618,6 +626,8 @@ impl<T: Clone + serde::de::DeserializeOwned + 'static> MorePages<T> {
     pub fn reset(mut self) {
         self.items.set(Vec::new());
         self.after.set(None);
+        let next = self.generation.peek().wrapping_add(1);
+        self.generation.set(next);
     }
 
     pub fn items(&self) -> Vec<T> {
@@ -632,13 +642,16 @@ impl<T: Clone + serde::de::DeserializeOwned + 'static> MorePages<T> {
         next_cursor(first.next_cursor.as_deref(), self.after.read().clone())
     }
 
-    /// 다음 페이지를 불러와 붙인다. `path`는 인코딩된 커서로 요청 경로를 만든다.
+    /// 다음 페이지를 불러와 붙인다. `path`는 커서로 요청 경로를 만든다([`crate::api::with_cursor`]).
     pub async fn load(mut self, cursor: String, path: impl Fn(&str) -> String) {
         if self.busy() {
             return;
         }
         self.busy.set(true);
-        match crate::api::get::<pango_api::Page<T>>(&path(&crate::api::encode(&cursor))).await {
+        let generation = *self.generation.peek();
+        match crate::api::get::<pango_api::Page<T>>(&path(&cursor)).await {
+            // 읽는 사이 목록이 바뀌었으면(필터·탭 변경) 버린다.
+            Ok(_) if *self.generation.peek() != generation => {}
             Ok(page) => {
                 self.items.write().extend(page.items);
                 self.after.set(Some(page.next_cursor));

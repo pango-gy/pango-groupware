@@ -11,13 +11,13 @@ use crate::api;
 use crate::format;
 use crate::session::use_session;
 use crate::ui::{
-    now, report_error, report_success, resource_view, Button, ButtonKind, Card, ConfirmModal,
-    EmptyState, FormError, Icon, IconName, Modal, PageHeader, TextArea, TextField,
+    report_error, report_success, resource_view, today, Button, ButtonKind, Card, ConfirmModal,
+    EmptyState, FormError, Icon, IconName, Modal, PageHeader, TextArea, TextField, YearSwitcher,
 };
 
 use logic::{
-    build_settings, form_of, holiday_request, parse_holiday_lines, step_year, year_of, FieldErrors,
-    TierRow, COMMON_TIMEZONES, MAX_IMPORT, WEEKDAY_LABELS,
+    build_settings, form_of, holiday_request, parse_holiday_lines, FieldErrors, TierRow,
+    COMMON_TIMEZONES, HOLIDAY_YEARS, MAX_IMPORT, WEEKDAY_LABELS,
 };
 
 #[component]
@@ -295,8 +295,8 @@ enum HolidayDialog {
 #[component]
 fn HolidaysCard() -> Element {
     let session = use_session();
-    let tz = format::zone(&session.me().map(|me| me.timezone).unwrap_or_default());
-    let mut year = use_signal(move || year_of(now(), tz));
+    let tz = session.zone();
+    let mut year = use_signal(move || today(tz).year());
     let mut holidays = use_resource(move || async move {
         api::get::<Vec<HolidayDto>>(&format!("/holidays?year={}", year())).await
     });
@@ -361,32 +361,11 @@ fn HolidaysCard() -> Element {
         Card {
             title: "공휴일",
             action: rsx! {
-                div { class: "year-switcher",
-                    button {
-                        class: "icon-btn month-prev",
-                        r#type: "button",
-                        "aria-label": "이전 해",
-                        disabled: step_year(current_year, -1).is_none(),
-                        onclick: move |_| {
-                            if let Some(previous) = step_year(year(), -1) {
-                                year.set(previous);
-                            }
-                        },
-                        Icon { name: IconName::Chevron }
-                    }
-                    strong { class: "month-label", "{current_year}년" }
-                    button {
-                        class: "icon-btn",
-                        r#type: "button",
-                        "aria-label": "다음 해",
-                        disabled: step_year(current_year, 1).is_none(),
-                        onclick: move |_| {
-                            if let Some(next) = step_year(year(), 1) {
-                                year.set(next);
-                            }
-                        },
-                        Icon { name: IconName::Chevron }
-                    }
+                YearSwitcher {
+                    year: current_year,
+                    min: *HOLIDAY_YEARS.start(),
+                    max: *HOLIDAY_YEARS.end(),
+                    onchange: move |next| year.set(next),
                 }
             },
             form { class: "holiday-add", onsubmit: add,
@@ -608,13 +587,12 @@ fn HolidayImport(onclose: EventHandler<()>, onsaved: EventHandler<()>) -> Elemen
 pub mod logic {
     use std::collections::{BTreeMap, HashMap};
 
-    use chrono::{Datelike, NaiveDate, Weekday};
-    use chrono_tz::Tz;
+    use chrono::{NaiveDate, Weekday};
     use pango_api::admin::{BreakTierDto, CompanySettingsInput, HolidayImportItem, HolidayInput};
     use pango_core::attendance::{BreakTier, WorkPolicy};
     use pango_core::calendar::{parse_date, WorkWeek};
     use pango_core::text::{CompanyName, LabelName};
-    use pango_core::time::{parse_timezone, MinuteOfDay, Timestamp, WorkCalendarZone};
+    use pango_core::time::{parse_timezone, MinuteOfDay, WorkCalendarZone};
     use pango_core::{DomainError, DomainResult};
 
     use crate::text;
@@ -624,7 +602,7 @@ pub mod logic {
     /// 오류 목록이 화면을 덮지 않게 이만큼만 보여 준다.
     const MAX_REPORTED_ERRORS: usize = 10;
     /// 서버가 받는 공휴일 연도 범위.
-    const YEARS: std::ops::RangeInclusive<i32> = 1000..=9999;
+    pub const HOLIDAY_YEARS: std::ops::RangeInclusive<i32> = 1000..=9999;
 
     pub const WEEKDAYS: [Weekday; 7] = [
         Weekday::Mon,
@@ -849,15 +827,6 @@ pub mod logic {
                 .collect(),
             workdays: week.bits(),
         })
-    }
-
-    /// 회사 시간대 기준 올해.
-    pub fn year_of(now: Timestamp, tz: Tz) -> i32 {
-        now.to_utc().with_timezone(&tz).year()
-    }
-
-    pub fn step_year(year: i32, delta: i32) -> Option<i32> {
-        year.checked_add(delta).filter(|y| YEARS.contains(y))
     }
 
     /// 공휴일 한 건 추가·이름 변경 요청. 날짜는 경로에 들어가므로 엄격히 검사한다.
@@ -1094,23 +1063,6 @@ pub mod logic {
             for zone in COMMON_TIMEZONES {
                 assert!(parse_timezone(zone).is_ok(), "{zone}");
             }
-        }
-
-        #[test]
-        fn year_follows_company_zone() {
-            let ts = |rfc: &str| {
-                Timestamp::from_utc(
-                    chrono::DateTime::parse_from_rfc3339(rfc)
-                        .expect("rfc3339")
-                        .with_timezone(&chrono::Utc),
-                )
-            };
-            let seoul: Tz = "Asia/Seoul".parse().expect("tz");
-            assert_eq!(year_of(ts("2025-12-31T15:00:00Z"), seoul), 2026);
-            assert_eq!(year_of(ts("2025-12-31T15:00:00Z"), Tz::UTC), 2025);
-            assert_eq!(step_year(2026, 1), Some(2027));
-            assert_eq!(step_year(9999, 1), None);
-            assert_eq!(step_year(1000, -1), None);
         }
 
         #[test]

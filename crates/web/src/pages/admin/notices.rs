@@ -11,6 +11,7 @@ use pango_core::text::{Body, Title};
 use crate::api;
 use crate::badges::refresh_badges;
 use crate::format;
+use crate::pages::notices::NoticeFlags;
 use crate::session::use_session;
 use crate::ui::{
     report_error, report_success, resource_view, use_more_pages, Badge, Button, ButtonKind, Card,
@@ -41,7 +42,7 @@ pub fn AdminNotices() -> Element {
     });
     let departments =
         use_resource(|| async { api::get::<Vec<DepartmentDto>>("/departments").await });
-    let tz = format::zone(&session.me().map(|me| me.timezone).unwrap_or_default());
+    let tz = session.zone();
 
     let department_options: Vec<(String, String)> = match &*departments.read() {
         Some(Ok(items)) => items
@@ -103,12 +104,7 @@ pub fn AdminNotices() -> Element {
                                             if notice.archived_at.is_some() {
                                                 Badge { tone: Tone::Neutral, "보관됨" }
                                             }
-                                            if notice.pinned {
-                                                Badge { tone: Tone::Info, "고정" }
-                                            }
-                                            if notice.must_read {
-                                                Badge { tone: Tone::Danger, "필독" }
-                                            }
+                                            NoticeFlags { pinned: notice.pinned, must_read: notice.must_read }
                                             strong { "{notice.title}" }
                                         }
                                         small {
@@ -154,7 +150,7 @@ pub fn AdminNotices() -> Element {
                             LoadMore {
                                 busy: more.busy(),
                                 onclick: move |_| {
-                                    more.load(cursor.clone(), |c| format!("{LIST_PATH}&cursor={c}"))
+                                    more.load(cursor.clone(), |c| api::with_cursor(LIST_PATH.to_owned(), Some(c)))
                                 },
                             }
                         }
@@ -384,7 +380,7 @@ fn ReadReport(id: NoticeId, title: String) -> Element {
     let report = use_resource(move || async move {
         api::get::<NoticeReadReport>(&format!("/admin/notices/{id}/reads")).await
     });
-    let tz = format::zone(&session.me().map(|me| me.timezone).unwrap_or_default());
+    let tz = session.zone();
     rsx! {
         p { class: "read-report-title", "{title}" }
         {resource_view(report, move |report: NoticeReadReport| rsx! {
@@ -426,7 +422,6 @@ pub mod logic {
     use pango_core::authz::{Audience, AudienceKind};
     use pango_core::id::DepartmentId;
     use pango_core::text::{Body, Title};
-    use pango_core::DomainError;
 
     use crate::text;
 
@@ -473,21 +468,12 @@ pub mod logic {
         }
     }
 
-    fn message(error: &DomainError) -> String {
-        match error {
-            DomainError::Validation { field, reason } => {
-                text::error_message("validation_failed", Some(field), Some(reason.code()))
-            }
-            other => text::error_message(other.code(), None, None),
-        }
-    }
-
     /// 폼을 요청으로 바꾼다. 서버와 같은 규칙(제목·본문 길이, 대상과 부서의 짝)을 먼저 확인한다.
     ///
     /// 대상이 전체면 골라 둔 부서가 있어도 보내지 않고, 부서 대상이면 부서가 반드시 있어야 한다.
     pub fn build_input(form: &NoticeForm) -> Result<NoticeInput, String> {
-        let title = Title::parse(&form.title).map_err(|e| message(&e))?;
-        let body = Body::parse(&form.body).map_err(|e| message(&e))?;
+        let title = Title::parse(&form.title).map_err(|e| text::domain_error_message(&e))?;
+        let body = Body::parse(&form.body).map_err(|e| text::domain_error_message(&e))?;
         let department_id = match form.audience {
             AudienceKind::All => None,
             AudienceKind::Department => match form.department.trim() {
@@ -497,7 +483,8 @@ pub mod logic {
                 })?),
             },
         };
-        let audience = Audience::new(form.audience, department_id).map_err(|e| message(&e))?;
+        let audience = Audience::new(form.audience, department_id)
+            .map_err(|e| text::domain_error_message(&e))?;
         Ok(NoticeInput {
             title: title.into_string(),
             body: body.into_string(),

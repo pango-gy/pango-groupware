@@ -12,51 +12,20 @@ use crate::route::Route;
 use crate::session::use_session;
 use crate::text;
 use crate::ui::{
-    report_error, resource_view, Badge, Card, EmptyState, IconName, LoadMore, PageHeader, Tabs,
-    Tone,
+    now, resource_view, use_more_pages, Badge, Card, EmptyState, IconName, LoadMore, PageHeader,
+    Tabs, Tone,
 };
-
-/// 지금 시각(목록의 "오늘이면 시각만" 표시용).
-pub(crate) fn now() -> Timestamp {
-    // `Date::now()`는 밀리초 정수를 f64로 돌려주므로 잘림이 없다.
-    #[allow(clippy::cast_possible_truncation)]
-    let millis = js_sys::Date::now() as i64;
-    Timestamp::from_millis(millis)
-        .unwrap_or_else(|_| Timestamp::from_utc(chrono::DateTime::UNIX_EPOCH))
-}
 
 /// 결재 화면들이 함께 쓰는 순수 함수.
 pub(crate) mod logic {
     use pango_api::approval::{ApprovalCounts, DocumentSummary};
-    use pango_api::Page;
     use pango_core::approval::{DocumentStatus, Mailbox};
 
     use crate::text;
 
-    /// 쿼리 값 인코딩(RFC 3986 비예약 문자만 그대로 둔다). 네이티브 테스트에서도 돌도록 순수 구현이다.
-    pub fn encode_query(value: &str) -> String {
-        let mut out = String::with_capacity(value.len());
-        for byte in value.bytes() {
-            if byte.is_ascii_alphanumeric() || b"-_.~".contains(&byte) {
-                out.push(char::from(byte));
-            } else {
-                out.push_str(&format!("%{byte:02X}"));
-            }
-        }
-        out
-    }
-
-    fn with_cursor(mut path: String, cursor: Option<&str>) -> String {
-        if let Some(cursor) = cursor.filter(|c| !c.is_empty()) {
-            path.push_str("&cursor=");
-            path.push_str(&encode_query(cursor));
-        }
-        path
-    }
-
     /// `GET /approval/documents` 경로.
     pub fn mailbox_path(mailbox: Mailbox, cursor: Option<&str>) -> String {
-        with_cursor(
+        crate::api::with_cursor(
             format!("/approval/documents?box={}", mailbox.as_str()),
             cursor,
         )
@@ -69,34 +38,7 @@ pub(crate) mod logic {
             path.push_str("&status=");
             path.push_str(status.as_str());
         }
-        with_cursor(path, cursor)
-    }
-
-    /// "더 보기"로 읽은 페이지를 이어 붙인다. 커서는 마지막으로 읽은 페이지의 것을 쓴다.
-    pub fn append_page<T>(acc: Option<Page<T>>, next: Page<T>) -> Page<T> {
-        match acc {
-            None => next,
-            Some(mut acc) => {
-                acc.items.extend(next.items);
-                acc.next_cursor = next.next_cursor;
-                acc
-            }
-        }
-    }
-
-    /// 첫 페이지와 더 읽은 페이지들을 합친 목록과 다음 커서.
-    pub fn merge_pages<T: Clone>(
-        first: &Page<T>,
-        extra: Option<&Page<T>>,
-    ) -> (Vec<T>, Option<String>) {
-        match extra {
-            None => (first.items.clone(), first.next_cursor.clone()),
-            Some(extra) => {
-                let mut items = first.items.clone();
-                items.extend(extra.items.iter().cloned());
-                (items, extra.next_cursor.clone())
-            }
-        }
+        crate::api::with_cursor(path, cursor)
     }
 
     /// 탭 배지 숫자: 결재 대기는 처리할 문서 수, 참조는 읽지 않은 문서 수.
@@ -159,15 +101,16 @@ pub(crate) mod logic {
 pub fn ApprovalList() -> Element {
     let session = use_session();
     let mut mailbox = use_signal(|| Mailbox::Todo);
-    let mut extra = use_signal(|| None::<Page<DocumentSummary>>);
-    let mut loading_more = use_signal(|| false);
+    let more = use_more_pages::<DocumentSummary>();
     let mut counts =
         use_resource(|| async { api::get::<ApprovalCounts>("/approval/counts").await });
     let first = use_resource(move || async move {
-        api::get::<Page<DocumentSummary>>(&logic::mailbox_path(mailbox(), None)).await
+        let current = mailbox();
+        more.reset();
+        api::get::<Page<DocumentSummary>>(&logic::mailbox_path(current, None)).await
     });
 
-    let tz = format::zone(&session.me().map(|me| me.timezone).unwrap_or_default());
+    let tz = session.zone();
     let now = now();
     let current = mailbox();
     let tabs = logic::mailbox_tabs(
@@ -177,25 +120,6 @@ pub fn ApprovalList() -> Element {
             .and_then(|r| r.as_ref().ok())
             .copied(),
     );
-
-    let load_more = move |cursor: String| async move {
-        if loading_more() {
-            return;
-        }
-        loading_more.set(true);
-        let at_start = mailbox();
-        match api::get::<Page<DocumentSummary>>(&logic::mailbox_path(at_start, Some(&cursor))).await
-        {
-            // 읽는 사이 탭을 바꿨으면 버린다.
-            Ok(page) if mailbox() == at_start => {
-                let acc = extra.peek().clone();
-                extra.set(Some(logic::append_page(acc, page)));
-            }
-            Ok(_) => {}
-            Err(error) => report_error(&error),
-        }
-        loading_more.set(false);
-    };
 
     rsx! {
         PageHeader {
@@ -210,7 +134,6 @@ pub fn ApprovalList() -> Element {
             onselect: move |key: String| {
                 if let Ok(next) = Mailbox::parse(&key) {
                     if next != mailbox() {
-                        extra.set(None);
                         mailbox.set(next);
                         counts.restart();
                     }
@@ -218,8 +141,9 @@ pub fn ApprovalList() -> Element {
             },
         }
         {resource_view(first, move |page: Page<DocumentSummary>| {
-            let (items, next) = logic::merge_pages(&page, extra().as_ref());
+            let next = more.cursor(&page);
             let has_more = next.is_some();
+            let items: Vec<DocumentSummary> = page.items.into_iter().chain(more.items()).collect();
             rsx! {
                 if items.is_empty() {
                     EmptyState { title: logic::empty_title(current), icon: IconName::Inbox }
@@ -233,10 +157,10 @@ pub fn ApprovalList() -> Element {
                     }
                     LoadMore {
                         has_more,
-                        busy: loading_more(),
+                        busy: more.busy(),
                         onclick: move |_| {
                             if let Some(cursor) = next.clone() {
-                                spawn(load_more(cursor));
+                                spawn(more.load(cursor, move |c| logic::mailbox_path(current, Some(c))));
                             }
                         },
                     }
@@ -278,16 +202,8 @@ pub(crate) fn DocumentRow(doc: DocumentSummary, now: Timestamp, tz: chrono_tz::T
 mod tests {
     use super::logic::*;
     use pango_api::approval::{ApprovalCounts, DocumentSummary};
-    use pango_api::Page;
     use pango_core::approval::{DocumentKind, DocumentStatus, Mailbox};
     use pango_core::id::{DocumentId, MemberId};
-
-    fn page(items: Vec<i32>, next: Option<&str>) -> Page<i32> {
-        Page {
-            items,
-            next_cursor: next.map(str::to_owned),
-        }
-    }
 
     #[test]
     fn paths_carry_mailbox_status_and_encoded_cursor() {
@@ -315,21 +231,6 @@ mod tests {
             admin_documents_path(Some(DocumentStatus::InProgress), Some("ff")),
             "/admin/approval/documents?limit=50&status=in_progress&cursor=ff"
         );
-        assert_eq!(encode_query("가"), "%EA%B0%80");
-    }
-
-    #[test]
-    fn pages_are_appended_in_order_with_latest_cursor() {
-        let acc = append_page(None, page(vec![3, 4], Some("b")));
-        let acc = append_page(Some(acc), page(vec![5], None));
-        assert_eq!(acc.items, vec![3, 4, 5]);
-        assert_eq!(acc.next_cursor, None);
-
-        let first = page(vec![1, 2], Some("a"));
-        assert_eq!(merge_pages(&first, None), (vec![1, 2], Some("a".into())));
-        assert_eq!(merge_pages(&first, Some(&acc)), (vec![1, 2, 3, 4, 5], None));
-        let empty: Page<i32> = page(vec![], None);
-        assert_eq!(merge_pages(&empty, None), (vec![], None));
     }
 
     #[test]

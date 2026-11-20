@@ -9,9 +9,9 @@ use crate::api;
 use crate::org_tree;
 use crate::text;
 use crate::ui::{
-    report_error, report_form_error, report_success, resource_view, Avatar, Button, ButtonKind,
-    Card, ConfirmModal, EmptyState, FormError, Icon, IconName, MemberPicker, Modal, PageHeader,
-    SelectField, Tabs, TextField,
+    report_error, report_form_error, report_success, resource_view, Button, ButtonKind, Card,
+    ConfirmModal, EmptyState, FormError, Icon, IconName, MemberPicker, Modal, PageHeader,
+    PickedMember, SelectField, Tabs, TextField,
 };
 
 use self::logic::{DepartmentForm, PositionForm};
@@ -73,13 +73,13 @@ pub mod logic {
         }
 
         pub fn to_input(&self) -> DomainResult<DepartmentInput> {
-            let parent_id = if self.parent_id.is_empty() {
-                None
-            } else {
-                Some(DepartmentId::parse(&self.parent_id).map_err(|_| {
-                    DomainError::validation("parent_id", ValidationReason::InvalidFormat)
-                })?)
-            };
+            let parent_id = crate::format::non_empty(&self.parent_id)
+                .map(|raw| {
+                    DepartmentId::parse(raw).map_err(|_| {
+                        DomainError::validation("parent_id", ValidationReason::InvalidFormat)
+                    })
+                })
+                .transpose()?;
             Ok(DepartmentInput {
                 name: LabelName::parse(&self.name)?.into_string(),
                 parent_id,
@@ -546,20 +546,14 @@ fn DepartmentModal(
                 div { class: "field",
                     span { class: "field-label", "조직장" }
                     if current.head_member_id.is_some() {
-                        div { class: "head-chip",
-                            Avatar { name: current.head_name.clone() }
-                            span { class: "head-chip-name", "{current.head_name}" }
-                            button {
-                                class: "icon-btn",
-                                r#type: "button",
-                                "aria-label": "조직장 지정 해제",
-                                onclick: move |_| {
-                                    let mut f = form.write();
-                                    f.head_member_id = None;
-                                    f.head_name = String::new();
-                                },
-                                Icon { name: IconName::Close }
-                            }
+                        PickedMember {
+                            name: current.head_name.clone(),
+                            clear_label: "조직장 지정 해제",
+                            onclear: move |_| {
+                                let mut f = form.write();
+                                f.head_member_id = None;
+                                f.head_name = String::new();
+                            },
                         }
                     } else {
                         span { class: "field-hint", "지정하지 않음. 조직장은 이 부서와 하위 부서의 팀 현황을 봅니다." }

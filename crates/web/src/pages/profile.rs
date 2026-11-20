@@ -21,7 +21,7 @@ pub fn Profile() -> Element {
     let Some(me) = session.me() else {
         return rsx! {};
     };
-    let tz = format::zone(&me.timezone);
+    let tz = format::member_zone(Some(&me));
     let mut sessions =
         use_resource(|| async { api::get::<Vec<SessionInfo>>("/me/sessions").await });
 

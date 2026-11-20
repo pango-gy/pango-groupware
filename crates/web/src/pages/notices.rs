@@ -25,7 +25,7 @@ pub fn Notices() -> Element {
         more.reset();
         api::get::<Page<NoticeSummary>>(LIST_PATH).await
     });
-    let tz = format::zone(&session.me().map(|me| me.timezone).unwrap_or_default());
+    let tz = session.zone();
     let at = now();
 
     rsx! {
@@ -50,12 +50,7 @@ pub fn Notices() -> Element {
                                         }
                                         span { class: "list-row-main",
                                             span { class: "notice-title",
-                                                if notice.pinned {
-                                                    Badge { tone: Tone::Info, "고정" }
-                                                }
-                                                if notice.must_read {
-                                                    Badge { tone: Tone::Danger, "필독" }
-                                                }
+                                                NoticeFlags { pinned: notice.pinned, must_read: notice.must_read }
                                                 strong { "{notice.title}" }
                                             }
                                             small {
@@ -73,7 +68,7 @@ pub fn Notices() -> Element {
                             LoadMore {
                                 busy: more.busy(),
                                 onclick: move |_| {
-                                    more.load(cursor.clone(), |c| format!("{LIST_PATH}&cursor={c}"))
+                                    more.load(cursor.clone(), |c| api::with_cursor(LIST_PATH.to_owned(), Some(c)))
                                 },
                             }
                         }
@@ -107,11 +102,24 @@ async fn load_and_mark(id: String) -> ApiResult<Option<NoticeDto>> {
     Ok(Some(notice))
 }
 
+/// 공지의 "고정"·"필독" 배지. 공지 목록·상세·관리가 함께 쓴다.
+#[component]
+pub(crate) fn NoticeFlags(pinned: bool, must_read: bool) -> Element {
+    rsx! {
+        if pinned {
+            Badge { tone: Tone::Info, "고정" }
+        }
+        if must_read {
+            Badge { tone: Tone::Danger, "필독" }
+        }
+    }
+}
+
 #[component]
 pub fn NoticeDetail(id: String) -> Element {
     let session = use_session();
     let mut notice = use_resource(use_reactive!(|id| load_and_mark(id)));
-    let tz = format::zone(&session.me().map(|me| me.timezone).unwrap_or_default());
+    let tz = session.zone();
 
     rsx! {
         Link { class: "back-link", to: Route::Notices {}, "← 공지 목록" }
@@ -131,12 +139,7 @@ pub fn NoticeDetail(id: String) -> Element {
                 Card { class: "notice-detail",
                     header { class: "notice-head",
                         div { class: "notice-title",
-                            if summary.pinned {
-                                Badge { tone: Tone::Info, "고정" }
-                            }
-                            if summary.must_read {
-                                Badge { tone: Tone::Danger, "필독" }
-                            }
+                            NoticeFlags { pinned: summary.pinned, must_read: summary.must_read }
                         }
                         h1 { class: "notice-heading", "{summary.title}" }
                         p { class: "notice-meta",

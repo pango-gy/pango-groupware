@@ -14,22 +14,10 @@ use crate::route::Route;
 use crate::session::{use_session, use_toasts};
 use crate::text;
 use crate::ui::{
-    report_success, resource_view, Badge, Button, ButtonKind, Card, ConfirmModal, EmptyState, Icon,
-    IconName, MonthCalendar, MonthSwitcher, PageHeader, Stat, Tabs, Tone, YearSwitcher,
+    report_success, resource_view, today, Badge, Button, ButtonKind, Card, ConfirmModal,
+    EmptyState, Icon, IconName, MonthCalendar, MonthSwitcher, PageHeader, Stat, Tabs, Tone,
+    YearSwitcher,
 };
-
-/// 회사 시간대의 오늘. 브라우저 시계를 쓴다(서버가 다시 판정하므로 표시·기본값 용도).
-pub(crate) fn today(tz: Tz) -> NaiveDate {
-    logic::date_from_millis(js_sys::Date::now(), tz).unwrap_or(NaiveDate::MIN)
-}
-
-/// 로그인한 구성원의 회사 시간대. 아직 모르면 UTC.
-pub(crate) fn company_zone() -> Tz {
-    use_session()
-        .me()
-        .map(|me| format::zone(&me.timezone))
-        .unwrap_or(Tz::UTC)
-}
 
 const TAB_REQUESTS: &str = "requests";
 const TAB_CALENDAR: &str = "calendar";
@@ -37,7 +25,7 @@ const TAB_LEDGER: &str = "ledger";
 
 #[component]
 pub fn Leave() -> Element {
-    let tz = company_zone();
+    let tz = use_session().zone();
     let today = today(tz);
     let mut tab = use_signal(|| TAB_REQUESTS.to_owned());
     let mut balance = use_resource(|| async { api::get::<BalanceDto>("/leave/balance").await });
@@ -193,7 +181,7 @@ fn RequestRow(
             div { class: "list-row-main",
                 div { class: "leave-row-title",
                     strong { "{item.leave_type_name}" }
-                    Badge { tone: logic::status_tone(item.status), {text::leave_status_label(item.status)} }
+                    Badge { tone: text::leave_status_tone(item.status), {text::leave_status_label(item.status)} }
                 }
                 small {
                     "{period} · {text::leave_unit_label(item.unit)} · {format::leave_days(item.amount.quarters())}"
@@ -347,11 +335,7 @@ fn DayAgenda(date: NaiveDate, people: Vec<logic::DayEntry>) -> Element {
                                 small { {text::leave_unit_label(person.unit)} }
                             }
                             div { class: "list-row-side",
-                                if person.pending {
-                                    Badge { tone: Tone::Warning, "결재 중" }
-                                } else {
-                                    Badge { tone: Tone::Success, "승인" }
-                                }
+                                Badge { tone: text::leave_status_tone(person.status()), {text::leave_status_label(person.status())} }
                             }
                         }
                     }
@@ -399,7 +383,7 @@ fn LedgerTab(tz: Tz) -> Element {
 /// 화면 계산(순수 함수).
 pub(crate) mod logic {
     use super::*;
-    use chrono::{DateTime, Weekday};
+    use chrono::Weekday;
     use pango_api::leave::LedgerKind;
     use pango_core::leave::LeaveRequestStatus;
     use pango_core::leave::LeaveUnit;
@@ -408,16 +392,6 @@ pub(crate) mod logic {
     /// 신청 목록에서 고를 수 있는 가장 이른 해. 서버가 받는 범위(2000~)와 같다.
     pub const MIN_YEAR: i32 = 2000;
 
-    /// `Date.now()`(밀리초) → 회사 시간대의 날짜. 값이 비정상이면 `None`.
-    pub fn date_from_millis(millis: f64, tz: Tz) -> Option<NaiveDate> {
-        if !millis.is_finite() {
-            return None;
-        }
-        // f64 → i64: 범위를 벗어나면 포화된 뒤 아래에서 걸러진다.
-        let at = DateTime::from_timestamp_millis(millis as i64)?;
-        Some(at.with_timezone(&tz).date_naive())
-    }
-
     /// 연도 이동 범위: 2000년 ~ 내년(미리 낸 신청을 볼 수 있게).
     pub fn year_bounds(today: NaiveDate) -> (i32, i32) {
         (MIN_YEAR, today.year().saturating_add(1).max(MIN_YEAR))
@@ -425,15 +399,6 @@ pub(crate) mod logic {
 
     pub fn clamp_year(year: i32, (min, max): (i32, i32)) -> i32 {
         year.clamp(min, max)
-    }
-
-    pub fn status_tone(status: LeaveRequestStatus) -> Tone {
-        match status {
-            LeaveRequestStatus::Pending => Tone::Warning,
-            LeaveRequestStatus::Approved => Tone::Success,
-            LeaveRequestStatus::Rejected => Tone::Danger,
-            LeaveRequestStatus::Canceled => Tone::Neutral,
-        }
     }
 
     /// 본인이 취소할 수 있어 보이는지. 결재 중이면 언제나, 승인이면 시작 전까지.
@@ -496,6 +461,17 @@ pub(crate) mod logic {
         pub member_name: String,
         pub unit: LeaveUnit,
         pub pending: bool,
+    }
+
+    impl DayEntry {
+        /// 달력에는 결재 중·승인된 신청만 나온다.
+        pub fn status(&self) -> LeaveRequestStatus {
+            if self.pending {
+                LeaveRequestStatus::Pending
+            } else {
+                LeaveRequestStatus::Approved
+            }
+        }
     }
 
     /// 달력 항목을 그 달의 날짜별로 나눈다. 주말은 휴가일이 아니므로 넣지 않는다.
@@ -598,11 +574,7 @@ pub(crate) mod logic {
                 LedgerLine {
                     key: entry.id.to_string(),
                     label: text::ledger_kind_label(entry.kind),
-                    tone: match entry.kind {
-                        LedgerKind::Grant | LedgerKind::Restore => Tone::Success,
-                        LedgerKind::Use => Tone::Info,
-                        LedgerKind::Adjust => Tone::Neutral,
-                    },
+                    tone: text::ledger_kind_tone(entry.kind),
                     amount: signed_days(signed),
                     detail: ledger_detail(entry),
                     memo: entry.memo.clone().filter(|m| !m.trim().is_empty()),
@@ -630,7 +602,7 @@ pub(crate) mod logic {
 
         fn ts(rfc3339: &str) -> Timestamp {
             Timestamp::from_utc(
-                DateTime::parse_from_rfc3339(rfc3339)
+                chrono::DateTime::parse_from_rfc3339(rfc3339)
                     .expect("rfc3339")
                     .with_timezone(&chrono::Utc),
             )
@@ -672,18 +644,6 @@ pub(crate) mod logic {
         }
 
         #[test]
-        fn today_follows_company_zone() {
-            let seoul = format::zone("Asia/Seoul");
-            // 2026-03-01T15:30Z = 서울 3월 2일 00:30
-            let millis = 1_772_379_000_000.0;
-            assert_eq!(date_from_millis(millis, seoul), Some(d("2026-03-02")));
-            assert_eq!(date_from_millis(millis, Tz::UTC), Some(d("2026-03-01")));
-            assert_eq!(date_from_millis(f64::NAN, Tz::UTC), None);
-            assert_eq!(date_from_millis(f64::INFINITY, Tz::UTC), None);
-            assert_eq!(date_from_millis(1e300, Tz::UTC), None);
-        }
-
-        #[test]
         fn year_bounds_allow_next_year_and_clamp() {
             let bounds = year_bounds(d("2026-11-20"));
             assert_eq!(bounds, (2000, 2027));
@@ -710,19 +670,6 @@ pub(crate) mod logic {
             }
             assert!(cancel_message(&pending_past).contains("회수"));
             assert!(cancel_message(&approved_future).contains("복원"));
-        }
-
-        #[test]
-        fn every_status_has_a_distinct_tone_and_label() {
-            let tones: Vec<_> = LeaveRequestStatus::ALL
-                .iter()
-                .map(|s| status_tone(*s))
-                .collect();
-            for (i, a) in tones.iter().enumerate() {
-                for b in &tones[i + 1..] {
-                    assert_ne!(a, b);
-                }
-            }
         }
 
         #[test]

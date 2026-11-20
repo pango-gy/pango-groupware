@@ -9,6 +9,26 @@ pub fn zone(name: &str) -> Tz {
     name.parse().unwrap_or(Tz::UTC)
 }
 
+/// 로그인한 구성원의 회사 시간대. 아직 모르면(로그인 전) UTC.
+pub fn member_zone(me: Option<&pango_api::auth::Me>) -> Tz {
+    me.map_or(Tz::UTC, |me| zone(&me.timezone))
+}
+
+/// 폼 입력값: 앞뒤 공백을 지우고, 비었으면 `None`(선택 입력을 "보내지 않음"으로).
+pub fn non_empty(raw: &str) -> Option<&str> {
+    Some(raw.trim()).filter(|value| !value.is_empty())
+}
+
+/// 선택 날짜 입력(`YYYY-MM-DD`). 비었으면 `None`, 형식이 틀리면 `field`의 형식 오류다.
+pub fn optional_date(
+    field: &'static str,
+    raw: &str,
+) -> pango_core::DomainResult<Option<NaiveDate>> {
+    non_empty(raw)
+        .map(|value| pango_core::calendar::parse_date(field, value))
+        .transpose()
+}
+
 /// `09:05`
 pub fn time_hm(at: Timestamp, tz: Tz) -> String {
     let local = at.to_utc().with_timezone(&tz);
@@ -155,6 +175,58 @@ mod tests {
                 .expect("rfc3339")
                 .with_timezone(&chrono::Utc),
         )
+    }
+
+    #[test]
+    fn blank_inputs_become_none() {
+        assert_eq!(non_empty(""), None);
+        assert_eq!(non_empty("  \t"), None);
+        assert_eq!(non_empty(" a b "), Some("a b"));
+        assert_eq!(optional_date("hired_on", " "), Ok(None));
+        assert_eq!(
+            optional_date("hired_on", " 2026-03-02 "),
+            Ok(Some(d("2026-03-02")))
+        );
+        assert_eq!(
+            optional_date("hired_on", "2026-3-2"),
+            Err(pango_core::DomainError::validation(
+                "hired_on",
+                pango_core::error::ValidationReason::InvalidFormat
+            ))
+        );
+    }
+
+    #[test]
+    fn member_zone_falls_back_to_utc() {
+        use pango_api::auth::Me;
+        use pango_core::authz::{Capabilities, Role};
+        assert_eq!(member_zone(None), Tz::UTC);
+        let me = Me {
+            id: pango_core::id::MemberId::new(),
+            login_id: "me".into(),
+            name: "나".into(),
+            email: None,
+            phone: None,
+            role: Role::Member,
+            department_id: None,
+            department_name: None,
+            position_id: None,
+            position_name: None,
+            capabilities: Capabilities {
+                admin: false,
+                manage_roles: false,
+                team: false,
+            },
+            must_change_password: false,
+            company_name: "회사".into(),
+            timezone: "Asia/Seoul".into(),
+        };
+        assert_eq!(member_zone(Some(&me)), chrono_tz::Asia::Seoul);
+        let broken = Me {
+            timezone: "Mars/Olympus".into(),
+            ..me
+        };
+        assert_eq!(member_zone(Some(&broken)), Tz::UTC);
     }
 
     #[test]

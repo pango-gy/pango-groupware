@@ -37,6 +37,8 @@ pub mod logic {
     use pango_core::member::MemberStatus;
     use pango_core::text::{Email, LoginId, PersonName, Phone};
 
+    use crate::format::{self, optional_date};
+
     /// 화면에서 보여 줄 관리 동작. 서버의 `authz::manage_account`·`manage_other_account`·
     /// `change_role`과 같은 규칙이다(숨김은 편의일 뿐, 서버가 다시 판정한다).
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -97,12 +99,9 @@ pub mod logic {
         parse: impl FnOnce(&str) -> DomainResult<T>,
         into: impl FnOnce(T) -> String,
     ) -> DomainResult<Option<String>> {
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            Ok(None)
-        } else {
-            parse(trimmed).map(|value| Some(into(value)))
-        }
+        format::non_empty(raw)
+            .map(|value| parse(value).map(into))
+            .transpose()
     }
 
     fn optional_id<T>(
@@ -110,28 +109,16 @@ pub mod logic {
         field: &'static str,
         parse: impl FnOnce(&str) -> DomainResult<T>,
     ) -> DomainResult<Option<T>> {
-        if raw.is_empty() {
-            Ok(None)
-        } else {
-            parse(raw)
-                .map(Some)
-                .map_err(|_| DomainError::validation(field, ValidationReason::InvalidFormat))
-        }
-    }
-
-    /// `YYYY-MM-DD`(날짜 입력의 값). 비어 있으면 `None`.
-    pub fn parse_date(raw: &str, field: &'static str) -> DomainResult<Option<NaiveDate>> {
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            return Ok(None);
-        }
-        NaiveDate::parse_from_str(trimmed, "%Y-%m-%d")
-            .map(Some)
-            .map_err(|_| DomainError::validation(field, ValidationReason::InvalidFormat))
+        format::non_empty(raw)
+            .map(|value| {
+                parse(value)
+                    .map_err(|_| DomainError::validation(field, ValidationReason::InvalidFormat))
+            })
+            .transpose()
     }
 
     fn required_date(raw: &str, field: &'static str) -> DomainResult<NaiveDate> {
-        parse_date(raw, field)?.ok_or(DomainError::validation(field, ValidationReason::Empty))
+        optional_date(field, raw)?.ok_or(DomainError::validation(field, ValidationReason::Empty))
     }
 
     /// 구성원 추가·정보 수정 폼. 모든 값은 입력 그대로의 문자열이다.
@@ -240,13 +227,14 @@ pub mod logic {
             }
             self.status == MemberStatus::Retired
                 && !self.retired_on.trim().is_empty()
-                && parse_date(&self.retired_on, "retired_on").ok().flatten() != current.retired_on
+                && optional_date("retired_on", &self.retired_on).ok().flatten()
+                    != current.retired_on
         }
 
         /// 퇴사일은 퇴사로 바꿀 때만 보낸다(그 밖에 보내면 서버가 거부한다).
         pub fn to_request(&self, version: i64) -> DomainResult<ChangeStatusRequest> {
             let retired_on = if self.status == MemberStatus::Retired {
-                parse_date(&self.retired_on, "retired_on")?
+                optional_date("retired_on", &self.retired_on)?
             } else {
                 None
             };
@@ -658,18 +646,6 @@ impl From<IssuedCredentials> for Issued {
     }
 }
 
-pub(crate) fn query_string(pairs: &[(&'static str, String)]) -> String {
-    if pairs.is_empty() {
-        return String::new();
-    }
-    let joined = pairs
-        .iter()
-        .map(|(key, value)| format!("{key}={}", api::encode(value)))
-        .collect::<Vec<_>>()
-        .join("&");
-    format!("?{joined}")
-}
-
 fn loaded<T: Clone>(resource: &Resource<ApiResult<Vec<T>>>) -> Vec<T> {
     match &*resource.read() {
         Some(Ok(list)) => list.clone(),
@@ -703,7 +679,7 @@ pub fn AdminMembers() -> Element {
     let positions = use_resource(|| async { api::get::<Vec<PositionDto>>("/positions").await });
     let mut members = use_resource(move || async move {
         let pairs = logic::member_query(&search(), &department(), include_inactive());
-        api::get::<Vec<MemberDetail>>(&format!("/admin/members{}", query_string(&pairs))).await
+        api::get::<Vec<MemberDetail>>(&format!("/admin/members{}", api::query_string(&pairs))).await
     });
 
     let Some(me) = session.me() else {

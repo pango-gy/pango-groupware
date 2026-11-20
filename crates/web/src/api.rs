@@ -132,12 +132,80 @@ pub async fn delete<T: DeserializeOwned>(path: &str) -> ApiResult<T> {
     send(Method::DELETE, path, None, None).await
 }
 
-/// 쿼리 문자열 값을 인코딩한다.
+/// 쿼리 문자열 값을 인코딩한다(RFC 3986 비예약 문자만 그대로 둔다).
+/// 네이티브 테스트에서도 돌도록 순수 구현이다.
 pub fn encode(value: &str) -> String {
-    js_sys::encode_uri_component(value).into()
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-_.~".contains(&byte) {
+            out.push(char::from(byte));
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+/// `(키, 값)` 목록을 `?a=1&b=2`로. 값은 인코딩하고, 목록이 비면 빈 문자열이다.
+pub fn query_string(pairs: &[(&str, String)]) -> String {
+    if pairs.is_empty() {
+        return String::new();
+    }
+    let joined = pairs
+        .iter()
+        .map(|(key, value)| format!("{key}={}", encode(value)))
+        .collect::<Vec<_>>()
+        .join("&");
+    format!("?{joined}")
+}
+
+/// 목록 경로에 다음 페이지 커서를 붙인다. 커서가 없거나 비었으면 그대로다.
+pub fn with_cursor(mut path: String, cursor: Option<&str>) -> String {
+    if let Some(cursor) = cursor.filter(|c| !c.is_empty()) {
+        path.push(if path.contains('?') { '&' } else { '?' });
+        path.push_str("cursor=");
+        path.push_str(&encode(cursor));
+    }
+    path
 }
 
 /// 멱등성 키로 쓸 새 무작위 값. 폼을 열 때 하나 만들어 제출이 끝날 때까지 유지한다.
 pub fn new_idempotency_key() -> String {
     pango_core::id::NotificationId::new().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn values_are_percent_encoded() {
+        assert_eq!(encode("abc-_.~09"), "abc-_.~09");
+        assert_eq!(encode("a&b=c d"), "a%26b%3Dc%20d");
+        assert_eq!(encode("가"), "%EA%B0%80");
+        assert_eq!(encode(""), "");
+    }
+
+    #[test]
+    fn query_strings_skip_empty_lists() {
+        assert_eq!(query_string(&[]), "");
+        assert_eq!(
+            query_string(&[("search", "홍 길동".into()), ("status", "active".into())]),
+            "?search=%ED%99%8D%20%EA%B8%B8%EB%8F%99&status=active"
+        );
+    }
+
+    #[test]
+    fn cursor_is_appended_and_escaped() {
+        assert_eq!(with_cursor("/a?limit=50".into(), None), "/a?limit=50");
+        assert_eq!(with_cursor("/a?limit=50".into(), Some("")), "/a?limit=50");
+        assert_eq!(
+            with_cursor("/a?limit=50".into(), Some("ff")),
+            "/a?limit=50&cursor=ff"
+        );
+        assert_eq!(
+            with_cursor("/a".into(), Some("x&admin=1")),
+            "/a?cursor=x%26admin%3D1"
+        );
+    }
 }

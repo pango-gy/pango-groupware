@@ -6,7 +6,7 @@ use pango_api::org::MemberSummary;
 use pango_core::id::MemberId;
 
 use crate::api;
-use crate::pages::attendance::{company_zone, logic as attendance_logic, MonthAttendance};
+use crate::pages::attendance::{logic as attendance_logic, MonthAttendance};
 use crate::session::use_session;
 use crate::ui::{
     resource_view, Avatar, Badge, Button, ButtonKind, Card, EmptyState, IconName, PageHeader,
@@ -18,7 +18,7 @@ use logic::TeamTab;
 #[component]
 pub fn Team() -> Element {
     let session = use_session();
-    let tz = company_zone(&session);
+    let tz = session.zone();
     let mut tab = use_signal(|| TeamTab::Today);
     // `None`이면 서버가 정한 오늘 근무일을 쓴다(근무일 전환 시각을 화면이 알 필요가 없다).
     let mut date = use_signal(|| None::<String>);
@@ -126,7 +126,7 @@ pub fn Team() -> Element {
                         EmptyState { title: "관할 부서에 재직 중인 구성원이 없습니다.", icon: IconName::People }
                     } else {
                         Card { title: "팀원",
-                            div { class: "att-member-chips", role: "group", "aria-label": "팀원 선택",
+                            div { class: "chip-group", role: "group", "aria-label": "팀원 선택",
                                 for member in list {
                                     button {
                                         key: "{member.id}",
@@ -244,11 +244,7 @@ mod logic {
     }
 
     fn tile(label: &'static str, count: usize, tone: Tone) -> Tile {
-        Tile {
-            label,
-            value: format!("{count}명"),
-            tone: if count == 0 { Tone::Neutral } else { tone },
-        }
+        Tile::count(label, u32::try_from(count).unwrap_or(u32::MAX), "명", tone)
     }
 
     /// 인원 타일: 전체, 출근, 미출근, 지각, 휴가, 퇴근 누락.

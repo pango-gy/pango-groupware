@@ -7,15 +7,14 @@ use pango_core::id::FormId;
 use pango_core::text::{Body, Code, Comment, LabelName};
 
 use crate::api;
-use crate::format;
-use crate::pages::approval::logic::{admin_documents_path, append_page, merge_pages};
-use crate::pages::approval::{now, DocumentRow};
+use crate::pages::approval::logic::admin_documents_path;
+use crate::pages::approval::DocumentRow;
 use crate::session::use_session;
 use crate::text;
 use crate::ui::{
-    report_error, report_success, resource_view, Badge, Button, ButtonKind, Card, CharCount,
-    Checkbox, EmptyState, FormError, IconName, LoadMore, Modal, PageHeader, SelectField, TextArea,
-    TextField, Tone,
+    now, report_error, report_success, resource_view, use_more_pages, Badge, Button, ButtonKind,
+    Card, CharCount, Checkbox, EmptyState, FormError, IconName, LoadMore, Modal, PageHeader,
+    SelectField, TextArea, TextField, Tone,
 };
 
 /// 양식 편집과 문서 필터의 순수 함수.
@@ -23,7 +22,6 @@ pub(crate) mod logic {
     use pango_api::approval::{CreateFormRequest, FormDto, UpdateFormRequest};
     use pango_core::approval::{DocumentKind, DocumentStatus};
     use pango_core::text::{self as rules, Body, Code, Comment, LabelName};
-    use pango_core::DomainError;
 
     use crate::text;
 
@@ -81,15 +79,6 @@ pub(crate) mod logic {
         form.kind != DocumentKind::General
     }
 
-    fn message(field: &str, error: &DomainError) -> String {
-        match error {
-            DomainError::Validation { reason, .. } => {
-                text::error_message("validation_failed", Some(field), Some(reason.code()))
-            }
-            _ => text::error_message("validation_failed", Some(field), None),
-        }
-    }
-
     fn sort_order(raw: &str) -> Result<i64, String> {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
@@ -105,17 +94,17 @@ pub(crate) mod logic {
         let mut problems = FormProblems::default();
         if creating {
             if let Err(error) = Code::parse(&input.code) {
-                problems.code = message("code", &error);
+                problems.code = text::field_error_message("code", &error);
             }
         }
         if let Err(error) = LabelName::parse(&input.name) {
-            problems.name = message("name", &error);
+            problems.name = text::field_error_message("name", &error);
         }
         if let Err(error) = rules::optional(Some(&input.description), Comment::parse) {
-            problems.description = message("description", &error);
+            problems.description = text::field_error_message("description", &error);
         }
         if let Err(error) = rules::optional(Some(&input.body_template), Body::parse) {
-            problems.body_template = message("body_template", &error);
+            problems.body_template = text::field_error_message("body_template", &error);
         }
         if let Err(error) = sort_order(&input.sort_order) {
             problems.sort_order = error;
@@ -201,36 +190,15 @@ pub fn AdminApprovalForms() -> Element {
         use_resource(|| async { api::get::<Vec<FormDto>>("/admin/approval/forms").await });
     let mut editor = use_signal(|| None::<Editor>);
     let mut status = use_signal(String::new);
-    let mut extra = use_signal(|| None::<Page<DocumentSummary>>);
-    let mut loading_more = use_signal(|| false);
+    let more = use_more_pages::<DocumentSummary>();
     let docs = use_resource(move || async move {
-        api::get::<Page<DocumentSummary>>(&admin_documents_path(
-            logic::parse_status(&status()),
-            None,
-        ))
-        .await
+        let current = logic::parse_status(&status());
+        more.reset();
+        api::get::<Page<DocumentSummary>>(&admin_documents_path(current, None)).await
     });
 
-    let tz = format::zone(&session.me().map(|me| me.timezone).unwrap_or_default());
+    let tz = session.zone();
     let now = now();
-
-    let load_more = move |cursor: String| async move {
-        if loading_more() {
-            return;
-        }
-        loading_more.set(true);
-        let at_start = status();
-        let path = admin_documents_path(logic::parse_status(&at_start), Some(&cursor));
-        match api::get::<Page<DocumentSummary>>(&path).await {
-            Ok(page) if status() == at_start => {
-                let acc = extra.peek().clone();
-                extra.set(Some(append_page(acc, page)));
-            }
-            Ok(_) => {}
-            Err(error) => report_error(&error),
-        }
-        loading_more.set(false);
-    };
 
     rsx! {
         PageHeader {
@@ -288,15 +256,14 @@ pub fn AdminApprovalForms() -> Element {
                     label: "상태",
                     value: status(),
                     options: logic::status_options(),
-                    onchange: move |value: String| {
-                        extra.set(None);
-                        status.set(value);
-                    },
+                    onchange: move |value: String| status.set(value),
                 }
             }
             {resource_view(docs, move |page: Page<DocumentSummary>| {
-                let (items, next) = merge_pages(&page, extra().as_ref());
+                let next = more.cursor(&page);
                 let has_more = next.is_some();
+                let current = logic::parse_status(&status());
+                let items: Vec<DocumentSummary> = page.items.into_iter().chain(more.items()).collect();
                 rsx! {
                     if items.is_empty() {
                         EmptyState { title: "조건에 맞는 문서가 없습니다.", icon: IconName::Inbox }
@@ -308,10 +275,10 @@ pub fn AdminApprovalForms() -> Element {
                         }
                         LoadMore {
                             has_more,
-                            busy: loading_more(),
+                            busy: more.busy(),
                             onclick: move |_| {
                                 if let Some(cursor) = next.clone() {
-                                    spawn(load_more(cursor));
+                                    spawn(more.load(cursor, move |c| admin_documents_path(current, Some(c))));
                                 }
                             },
                         }
