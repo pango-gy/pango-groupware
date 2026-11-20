@@ -15,8 +15,8 @@ use crate::session::use_session;
 use crate::text;
 use crate::ui::{
     report_error, report_success, resource_view, Badge, Button, ButtonKind, Card, CharCount,
-    ConfirmModal, EmptyState, FormError, IconName, Modal, PageHeader, TextArea, Timeline,
-    TimelineItem, Tone,
+    ConfirmModal, EmptyState, FormError, FormFields, IconName, Modal, PageHeader, TextArea,
+    Timeline, TimelineItem, Tone,
 };
 
 /// 상세 화면의 순수 함수: 동작 판정, 요청 변환, 구조화된 내용 요약.
@@ -284,6 +284,18 @@ pub(crate) mod logic {
             .collect()
     }
 
+    /// 머리 정보의 날짜들: 작성, (있으면) 상신·완료.
+    pub fn header_facts(detail: &DocumentDetail, tz: Tz) -> Vec<(&'static str, String)> {
+        [
+            ("작성", Some(detail.created_at)),
+            ("상신", detail.submitted_at),
+            ("완료", detail.completed_at),
+        ]
+        .into_iter()
+        .filter_map(|(label, at)| at.map(|at| (label, format::datetime(at, tz))))
+        .collect()
+    }
+
     /// 기안자 표시: 이름, (있으면) 부서.
     pub fn drafter_line(detail: &DocumentDetail) -> Vec<String> {
         let department = detail
@@ -330,6 +342,7 @@ fn not_found() -> ApiError {
         code: "not_found".into(),
         field: None,
         reason: None,
+        fields: Vec::new(),
     }
 }
 
@@ -487,29 +500,14 @@ pub fn ApprovalDetail(id: String) -> Element {
             let actions = logic::available_actions(me_id, is_admin, &detail);
             let rows = logic::payload_rows(detail.kind, detail.payload.as_ref(), tz);
             rsx! {
-                DocumentView { detail: detail.clone(), rows, tz }
-                if actions.admin_reject {
-                    Card { title: "관리자 동작",
-                        p { class: "field-hint",
-                            "차례인 결재자가 퇴사·정지했거나 처리할 수 없어 문서가 멈춰 있을 때만 써요."
-                        }
-                        div { class: "panel-actions",
-                            Button {
-                                kind: ButtonKind::Danger,
-                                disabled: busy(),
-                                onclick: move |_| open(Act::AdminReject),
-                                "관리자 대리 반려"
-                            }
-                        }
-                    }
-                }
-                if actions.any() {
-                    ActionBar {
-                        actions,
-                        busy: busy(),
-                        onact: move |act: Act| open(act),
-                        onedit: move |_| editing.set(true),
-                    }
+                DocumentView {
+                    detail: detail.clone(),
+                    rows,
+                    tz,
+                    actions,
+                    busy: busy(),
+                    onact: move |act: Act| open(act),
+                    onedit: move |_| editing.set(true),
                 }
             }
         })}
@@ -611,13 +609,22 @@ pub fn ApprovalDetail(id: String) -> Element {
     }
 }
 
+/// 문서 한 장: 머리 정보 → (왼쪽) 문서 내용, (오른쪽) 동작·결재선·참조·이력.
+///
+/// 넓은 화면에서는 오른쪽 단이 화면에 붙어 따라오고 동작도 그 안에 있다. 좁은 화면에서는 한 줄로
+/// 쌓이고 동작은 화면 아래 막대에 놓인다.
 #[component]
 fn DocumentView(
     detail: DocumentDetail,
     rows: Vec<(&'static str, String)>,
     tz: chrono_tz::Tz,
+    actions: Actions,
+    busy: bool,
+    onact: EventHandler<Act>,
+    onedit: EventHandler<()>,
 ) -> Element {
     let drafter = logic::drafter_line(&detail);
+    let facts = logic::header_facts(&detail, tz);
     let proxy = logic::proxy_rejection(&detail)
         .map(|(order, admin)| (order, text::proxy_rejection_note(admin)));
     let verbs: Vec<&'static str> = detail
@@ -625,151 +632,219 @@ fn DocumentView(
         .iter()
         .map(|event| logic::event_verb(&detail, event))
         .collect();
+    let snapshot = detail.form_snapshot.clone();
+    let has_fields = snapshot
+        .as_ref()
+        .is_some_and(|snapshot| !snapshot.schema.fields.is_empty());
+    let has_body = !detail.body.trim().is_empty();
+    // 필드도 신청 내용도 없는 문서는 본문이 비어 있어도 본문 자리를 보여 준다.
+    let body_only = !has_fields && rows.is_empty();
     rsx! {
-        PageHeader {
-            title: detail.title.clone(),
-            description: detail.doc_no.clone().unwrap_or_else(|| "문서 번호는 상신할 때 붙어요.".into()),
-        }
-        Card {
-            div { class: "badge-row panel-note",
+        PageHeader { title: detail.title.clone() }
+        Card { class: "doc-header",
+            div { class: "badge-row",
                 Badge { tone: text::document_status_tone(detail.status), {text::document_status_label(detail.status)} }
                 if detail.my_turn {
                     Badge { tone: Tone::Warning, "내 차례" }
+                }
+                if let Some(snapshot) = &snapshot {
+                    Badge { tone: Tone::Neutral, "{snapshot.category_label}" }
                 }
                 if detail.kind != DocumentKind::General {
                     Badge { tone: Tone::Info, {text::document_kind_label(detail.kind)} }
                 }
             }
-            dl { class: "detail-list",
-                dt { "양식" }
-                dd { "{detail.form_name}" }
-                dt { "기안자" }
-                dd { class: "detail-inline",
-                    for part in drafter {
-                        span { key: "{part}", "{part}" }
+            dl { class: "doc-facts",
+                div { class: "doc-fact",
+                    dt { "문서 번호" }
+                    dd { class: "tnum",
+                        match &detail.doc_no {
+                            Some(number) => rsx! { "{number}" },
+                            None => rsx! { span { class: "text-sub", "상신하면 붙어요" } },
+                        }
                     }
                 }
-                dt { "작성" }
-                dd { {format::datetime(detail.created_at, tz)} }
-                if let Some(at) = detail.submitted_at {
-                    dt { "상신" }
-                    dd { {format::datetime(at, tz)} }
+                div { class: "doc-fact",
+                    dt { "양식" }
+                    dd { "{detail.form_name}" }
                 }
-                if let Some(at) = detail.completed_at {
-                    dt { "완료" }
-                    dd { {format::datetime(at, tz)} }
-                }
-            }
-        }
-        if !rows.is_empty() {
-            Card { title: "신청 내용",
-                dl { class: "detail-list",
-                    for (label , value) in rows {
-                        div { key: "{label}", class: "detail-pair",
-                            dt { "{label}" }
-                            dd { "{value}" }
+                div { class: "doc-fact",
+                    dt { "기안자" }
+                    dd { class: "detail-inline",
+                        for part in drafter {
+                            span { key: "{part}", "{part}" }
                         }
+                    }
+                }
+                for (label , value) in facts {
+                    div { key: "{label}", class: "doc-fact",
+                        dt { "{label}" }
+                        dd { class: "tnum", "{value}" }
                     }
                 }
             }
         }
-        Card { title: "내용",
-            // 본문은 사용자가 쓴 글이므로 텍스트로만 넣는다. 줄바꿈은 CSS(pre-wrap)로 살린다.
-            div { class: "doc-body", "{detail.body}" }
-        }
-        Card { title: "결재선",
-            Timeline {
-                for step in detail.steps.iter() {
-                    TimelineItem {
-                        key: "{step.order}",
-                        tone: text::step_status_tone(step.status),
-                        current: step.status == StepStatus::Pending,
-                        div { class: "timeline-head",
-                            strong { "{step.order}. {step.approver_name}" }
-                            span { class: "meta", {text::step_kind_label(step.kind)} }
-                            Badge { tone: text::step_status_tone(step.status), {text::step_status_label(step.status)} }
-                        }
-                        if let Some(at) = step.acted_at {
-                            small { class: "meta", {format::datetime(at, tz)} }
-                        }
-                        if let Some((_, note)) = proxy.as_ref().filter(|(order, _)| *order == step.order) {
-                            small { class: "meta", "{note}" }
-                        }
-                        if let Some(comment) = step.comment.as_ref().filter(|c| !c.trim().is_empty()) {
-                            p { class: "timeline-comment", "{comment}" }
-                        }
-                    }
-                }
-            }
-        }
-        if !detail.references.is_empty() {
-            Card { title: "참조",
-                ul { class: "list",
-                    for reference in detail.references.iter() {
-                        li { key: "{reference.member_id}", class: "list-row",
-                            div { class: "list-row-main", strong { "{reference.name}" } }
-                            div { class: "list-row-side",
-                                if let Some(at) = reference.read_at {
-                                    Badge { tone: Tone::Success, "읽음" }
-                                    small { {format::datetime(at, tz)} }
-                                } else {
-                                    Badge { tone: Tone::Neutral, "읽지 않음" }
+        div { class: "doc-layout",
+            div { class: "doc-main",
+                if !rows.is_empty() {
+                    Card { title: "신청 내용",
+                        dl { class: "detail-list",
+                            for (label , value) in rows {
+                                div { key: "{label}", class: "detail-pair",
+                                    dt { "{label}" }
+                                    dd { "{value}" }
                                 }
                             }
                         }
                     }
                 }
+                if let Some(snapshot) = snapshot.filter(|_| has_fields) {
+                    Card { title: "문서 내용",
+                        // 문서를 낸 때의 양식 정의로 그린다(그 뒤에 양식이 바뀌어도 낸 모양 그대로).
+                        FormFields {
+                            schema: snapshot.schema,
+                            values: snapshot.values,
+                            member_names: snapshot.member_names,
+                            readonly: true,
+                        }
+                    }
+                }
+                if has_body || body_only {
+                    Card { title: if has_fields { "본문" } else { "내용" },
+                        // 본문은 사용자가 쓴 글이므로 텍스트로만 넣는다. 줄바꿈은 CSS(pre-wrap)로 살린다.
+                        div { class: "doc-body", "{detail.body}" }
+                    }
+                }
             }
-        }
-        if !detail.events.is_empty() {
-            Card { title: "이력",
-                Timeline {
-                    for (index , (event , verb)) in detail.events.iter().zip(verbs).enumerate() {
-                        TimelineItem { key: "{index}",
-                            div { class: "timeline-head",
-                                strong { "{event.actor_name}" }
-                                span { class: "meta", "{verb}" }
+            aside { class: "doc-side", "aria-label": "결재 진행",
+                if actions.any() {
+                    Card { title: "처리", class: "only-desktop",
+                        div { class: "doc-side-actions",
+                            ActionButtons { actions, busy, onact, onedit, block: true }
+                        }
+                    }
+                }
+                Card { title: "결재선",
+                    Timeline {
+                        for step in detail.steps.iter() {
+                            TimelineItem {
+                                key: "{step.order}",
+                                tone: text::step_status_tone(step.status),
+                                current: step.status == StepStatus::Pending,
+                                div { class: "timeline-head",
+                                    strong { "{step.order}. {step.approver_name}" }
+                                    span { class: "meta", {text::step_kind_label(step.kind)} }
+                                    Badge { tone: text::step_status_tone(step.status), {text::step_status_label(step.status)} }
+                                }
+                                if let Some(at) = step.acted_at {
+                                    small { class: "meta", {format::datetime(at, tz)} }
+                                }
+                                if let Some((_, note)) = proxy.as_ref().filter(|(order, _)| *order == step.order) {
+                                    small { class: "meta", "{note}" }
+                                }
+                                if let Some(comment) = step.comment.as_ref().filter(|c| !c.trim().is_empty()) {
+                                    p { class: "timeline-comment", "{comment}" }
+                                }
                             }
-                            small { class: "meta", {format::datetime(event.created_at, tz)} }
-                            if let Some(comment) = event.comment.as_ref().filter(|c| !c.trim().is_empty()) {
-                                p { class: "timeline-comment", "{comment}" }
+                        }
+                    }
+                }
+                if !detail.references.is_empty() {
+                    Card { title: "참조",
+                        ul { class: "list",
+                            for reference in detail.references.iter() {
+                                li { key: "{reference.member_id}", class: "list-row",
+                                    div { class: "list-row-main",
+                                        strong { "{reference.name}" }
+                                        if let Some(at) = reference.read_at {
+                                            small { {format::datetime(at, tz)} }
+                                        }
+                                    }
+                                    div { class: "list-row-side",
+                                        if reference.read_at.is_some() {
+                                            Badge { tone: Tone::Success, "읽음" }
+                                        } else {
+                                            Badge { tone: Tone::Neutral, "읽지 않음" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if !detail.events.is_empty() {
+                    Card { title: "이력",
+                        Timeline {
+                            for (index , (event , verb)) in detail.events.iter().zip(verbs).enumerate() {
+                                TimelineItem { key: "{index}",
+                                    div { class: "timeline-head",
+                                        strong { "{event.actor_name}" }
+                                        span { class: "meta", "{verb}" }
+                                    }
+                                    small { class: "meta", {format::datetime(event.created_at, tz)} }
+                                    if let Some(comment) = event.comment.as_ref().filter(|c| !c.trim().is_empty()) {
+                                        p { class: "timeline-comment", "{comment}" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if actions.admin_reject {
+                    Card { title: "관리자 동작",
+                        p { class: "field-hint",
+                            "차례인 결재자가 퇴사·정지했거나 처리할 수 없어 문서가 멈춰 있을 때만 써요."
+                        }
+                        div { class: "panel-actions",
+                            Button {
+                                kind: ButtonKind::Danger,
+                                disabled: busy,
+                                onclick: move |_| onact.call(Act::AdminReject),
+                                "관리자 대리 반려"
                             }
                         }
                     }
                 }
             }
         }
+        if actions.any() {
+            // 좁은 화면의 동작 막대(하단 탭 바로 위). 넓은 화면에서는 오른쪽 단의 "처리"가 대신한다.
+            div { class: "action-bar doc-action-bar", role: "toolbar", "aria-label": "문서 동작",
+                ActionButtons { actions, busy, onact, onedit }
+            }
+        }
     }
 }
 
-/// 화면 아래에 붙는 동작 막대. 모바일에서는 하단 탭 바로 위에 붙는다.
+/// 지금 할 수 있는 동작의 버튼들. 물러나는 동작이 앞에, 주 동작이 맨 뒤에 온다.
 #[component]
-fn ActionBar(
+fn ActionButtons(
     actions: Actions,
     busy: bool,
     onact: EventHandler<Act>,
     onedit: EventHandler<()>,
+    /// 오른쪽 단에 세로로 쌓을 때(폭 가득).
+    #[props(default)]
+    block: bool,
 ) -> Element {
     rsx! {
-        div { class: "action-bar", role: "toolbar", "aria-label": "문서 동작",
-            if actions.delete {
-                Button { kind: ButtonKind::Danger, disabled: busy, onclick: move |_| onact.call(Act::Delete), "삭제" }
-            }
-            if actions.withdraw {
-                Button { kind: ButtonKind::Grey, disabled: busy, onclick: move |_| onact.call(Act::Withdraw), "회수" }
-            }
-            if actions.edit {
-                Button { kind: ButtonKind::Grey, disabled: busy, onclick: move |_| onedit.call(()), "수정" }
-            }
-            if actions.submit {
-                Button { disabled: busy, onclick: move |_| onact.call(Act::Submit), "상신" }
-            }
-            if actions.reject {
-                Button { kind: ButtonKind::Danger, disabled: busy, onclick: move |_| onact.call(Act::Reject), "반려" }
-            }
-            if actions.approve {
-                Button { disabled: busy, onclick: move |_| onact.call(Act::Approve), "승인" }
-            }
+        if actions.delete {
+            Button { kind: ButtonKind::Danger, block, disabled: busy, onclick: move |_| onact.call(Act::Delete), "삭제" }
+        }
+        if actions.withdraw {
+            Button { kind: ButtonKind::Grey, block, disabled: busy, onclick: move |_| onact.call(Act::Withdraw), "회수" }
+        }
+        if actions.edit {
+            Button { kind: ButtonKind::Grey, block, disabled: busy, onclick: move |_| onedit.call(()), "수정" }
+        }
+        if actions.submit {
+            Button { block, disabled: busy, onclick: move |_| onact.call(Act::Submit), "상신" }
+        }
+        if actions.reject {
+            Button { kind: ButtonKind::Danger, block, disabled: busy, onclick: move |_| onact.call(Act::Reject), "반려" }
+        }
+        if actions.approve {
+            Button { block, disabled: busy, onclick: move |_| onact.call(Act::Approve), "승인" }
         }
     }
 }
@@ -829,6 +904,7 @@ mod tests {
             title: "t".into(),
             body: "b".into(),
             payload: None,
+            form_snapshot: None,
             steps: vec![step(1, p.first, steps[0]), step(2, p.second, steps[1])],
             references: vec![ReferenceDto {
                 member_id: p.reference,
@@ -1222,6 +1298,26 @@ mod tests {
         let p = people();
         let mut doc = detail(&p, DocumentStatus::Draft, [StepStatus::Waiting; 2]);
         assert_eq!(drafter_line(&doc), vec!["기안자", "개발팀"]);
+        // 머리 정보의 날짜는 있는 것만 순서대로 나온다.
+        let tz = format::zone("Asia/Seoul");
+        let labels = |doc: &DocumentDetail| -> Vec<&'static str> {
+            header_facts(doc, tz)
+                .into_iter()
+                .map(|(label, _)| label)
+                .collect()
+        };
+        let mut dated = doc.clone();
+        dated.submitted_at = None;
+        dated.completed_at = None;
+        assert_eq!(labels(&dated), vec!["작성"]);
+        dated.submitted_at = Some(dated.created_at);
+        assert_eq!(labels(&dated), vec!["작성", "상신"]);
+        dated.completed_at = Some(dated.created_at);
+        assert_eq!(labels(&dated), vec!["작성", "상신", "완료"]);
+        assert_eq!(
+            header_facts(&dated, tz)[0].1,
+            format::datetime(dated.created_at, tz)
+        );
         doc.drafter_department_name = Some(" ".into());
         assert_eq!(drafter_line(&doc), vec!["기안자"]);
         doc.drafter_department_name = None;

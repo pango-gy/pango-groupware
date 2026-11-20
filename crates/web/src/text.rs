@@ -1,12 +1,15 @@
 //! 화면 문구. 서버의 코드 값(오류 코드, 상태 값)을 한국어로 바꾸는 곳은 여기뿐이다.
 
+use pango_api::approval::FormRoute;
 use pango_api::leave::{LedgerEntryDto, LedgerKind};
 use pango_core::approval::{
-    DocumentKind, DocumentStatus, EventKind, Mailbox, StepKind, StepStatus,
+    DocumentKind, DocumentStatus, EventKind, FormCategory, FormOrigin, Mailbox, StepKind,
+    StepStatus,
 };
 use pango_core::attendance::{AttendanceEventKind, CorrectionStatus, DayStatus, WorkType};
 use pango_core::authz::Role;
 use pango_core::error::DomainError;
+use pango_core::form_schema::FieldKind;
 use pango_core::leave::{LeaveRequestStatus, LeaveUnit};
 use pango_core::member::MemberStatus;
 
@@ -287,6 +290,9 @@ pub const AUDIT_ACTIONS: &[(&str, &str)] = &[
     ("leave_type.update", "휴가 종류 수정"),
     ("approval_form.create", "결재 양식 추가"),
     ("approval_form.update", "결재 양식 수정"),
+    ("approval_form.duplicate", "결재 양식 복제"),
+    ("approval_form.catalog_seed", "기본 결재 양식 추가"),
+    ("approval.default_reference_skipped", "기본 참조자 제외"),
     ("approval.admin_view", "결재 문서 열람(관리자)"),
     ("approval.admin_reject", "결재 문서 대리 반려(관리자)"),
     ("approval.draft_delete", "임시저장 문서 삭제"),
@@ -638,6 +644,152 @@ pub fn leave_cancel_error_message(code: &str, field: Option<&str>, reason: Optio
     }
 }
 
+// ───────────── 결재 양식 ─────────────
+
+/// 양식 분류의 이름. 서버 응답의 `category_label`과 같은 값이다.
+pub fn form_category_label(category: FormCategory) -> &'static str {
+    match category {
+        FormCategory::General => "일반",
+        FormCategory::Hr => "인사",
+        FormCategory::Attendance => "근태",
+        FormCategory::Trip => "출장",
+        FormCategory::Accounting => "회계",
+        FormCategory::Support => "지원",
+        FormCategory::Welfare => "복지",
+        FormCategory::Etc => "기타",
+    }
+}
+
+/// 양식의 출처: 제품이 넣은 기본 양식인지, 관리자가 만든 양식인지.
+pub fn form_origin_label(origin: FormOrigin) -> &'static str {
+    match origin {
+        FormOrigin::Catalog => "기본",
+        FormOrigin::Custom => "사용자",
+    }
+}
+
+/// 시스템 양식을 고르면 가게 되는 화면의 안내. 일반 양식은 안내가 없다.
+pub fn form_route_hint(route: FormRoute) -> Option<&'static str> {
+    match route {
+        FormRoute::ApprovalNew => None,
+        FormRoute::LeaveNew => Some("휴가 신청 화면에서 작성해요"),
+        FormRoute::Attendance => Some("근태 화면에서 정정을 요청해요"),
+    }
+}
+
+/// 필드 종류의 이름(양식 관리의 필드 편집).
+pub fn field_kind_label(kind: &FieldKind) -> &'static str {
+    match kind {
+        FieldKind::Text { .. } => "한 줄 글",
+        FieldKind::Textarea { .. } => "여러 줄 글",
+        FieldKind::Number { .. } => "숫자",
+        FieldKind::Money => "금액",
+        FieldKind::Date => "날짜",
+        FieldKind::DateRange => "기간",
+        FieldKind::TimeRange => "시간대",
+        FieldKind::Select { .. } => "선택",
+        FieldKind::Checkbox => "체크",
+        FieldKind::Member => "구성원",
+        FieldKind::Table { .. } => "표",
+    }
+}
+
+/// 양식이 바뀌어 화면의 필드에 붙일 수 없는 오류가 왔을 때의 안내.
+pub const FORM_CHANGED_HINT: &str =
+    "양식이 바뀌어 일부 항목을 확인할 수 없어요. 화면을 새로 고친 뒤 다시 작성해 주세요.";
+
+/// 숫자 필드의 허용 범위 안내. 범위가 없으면 빈 문자열.
+pub fn number_range_hint(min: Option<i64>, max: Option<i64>) -> String {
+    match (min, max) {
+        (Some(min), Some(max)) => format!("{min}부터 {max}까지 입력할 수 있어요."),
+        (Some(min), None) => format!("{min} 이상으로 입력해 주세요."),
+        (None, Some(max)) => format!("{max} 이하로 입력해 주세요."),
+        (None, None) => String::new(),
+    }
+}
+
+/// 양식 필드 값의 오류 문구. `reason`은 화면 검증(`FieldReason::code`)이나 서버 `error.fields`의
+/// 사유 코드다. 모르는 코드는 일반 문구로 처리한다.
+pub fn form_value_error(kind: &FieldKind, reason: &str) -> String {
+    let fixed = match (reason, kind) {
+        ("empty", FieldKind::Checkbox) => "체크해 주세요.",
+        ("empty", FieldKind::Table { .. }) => "한 행 이상 입력해 주세요.",
+        ("empty", FieldKind::Select { .. }) => "하나를 골라 주세요.",
+        ("empty", FieldKind::Member) => "구성원을 골라 주세요.",
+        ("empty", FieldKind::Date) => "날짜를 골라 주세요.",
+        ("empty", FieldKind::DateRange) => "시작일과 종료일을 골라 주세요.",
+        ("empty", FieldKind::TimeRange) => "시작 시각과 종료 시각을 입력해 주세요.",
+        ("empty", _) => "꼭 입력해야 하는 항목이에요.",
+        ("too_long", FieldKind::Table { .. }) => "행은 50개까지 넣을 수 있어요.",
+        ("too_long", _) => "글자 수가 너무 많아요.",
+        ("invalid_character", _) => "쓸 수 없는 문자가 들어 있어요.",
+        ("invalid_format", FieldKind::Number { .. }) => "소수점 없이 숫자만 입력해 주세요.",
+        ("invalid_format", FieldKind::Money) => "금액은 숫자만 입력해 주세요.",
+        ("invalid_format", FieldKind::Date) => "날짜를 다시 골라 주세요.",
+        ("invalid_format", FieldKind::DateRange) => "시작일과 종료일을 모두 골라 주세요.",
+        ("invalid_format", FieldKind::TimeRange) => "시작 시각과 종료 시각을 모두 입력해 주세요.",
+        ("invalid_format", FieldKind::Member) => "구성원을 다시 골라 주세요.",
+        ("invalid_format", FieldKind::Text { .. }) => "한 줄로 입력해 주세요.",
+        ("out_of_range", FieldKind::Number { min, max }) => {
+            let hint = number_range_hint(*min, *max);
+            return if hint.is_empty() {
+                "숫자가 너무 크거나 작아요.".to_owned()
+            } else {
+                hint
+            };
+        }
+        ("out_of_range", FieldKind::Money) => "0원부터 1조 원까지 입력할 수 있어요.",
+        ("out_of_range", FieldKind::DateRange) => "기간은 366일까지 고를 수 있어요.",
+        ("out_of_range", _) => "입력할 수 있는 범위를 벗어났어요.",
+        ("inconsistent", FieldKind::DateRange) => "종료일이 시작일보다 빨라요.",
+        ("inconsistent", FieldKind::TimeRange) => "종료 시각은 시작 시각보다 늦어야 해요.",
+        ("not_an_option", _) => "고를 수 없는 값이에요. 다시 골라 주세요.",
+        ("not_found", _) => "찾을 수 없는 구성원이에요. 다시 골라 주세요.",
+        ("member_inactive", _) => "재직 중이 아닌 구성원이에요. 다른 사람을 골라 주세요.",
+        ("unknown_field", _) => "양식에 없는 항목이에요. 화면을 새로 고쳐 주세요.",
+        _ => "입력한 내용을 다시 확인해 주세요.",
+    };
+    fixed.to_owned()
+}
+
+/// 표의 한 행 전체에 붙는 오류 문구(칸에 붙일 수 없는 오류).
+pub fn form_row_error(reason: &str) -> &'static str {
+    match reason {
+        "unknown_field" => "양식에 없는 칸이 있어요. 행을 지우고 다시 입력해 주세요.",
+        _ => "이 행을 다시 확인해 주세요.",
+    }
+}
+
+/// 양식의 필드 정의 오류 문구. `part`는 오류 위치의 마지막 이름(`key`, `label`, `options` …),
+/// `reason`은 사유 코드다.
+pub fn schema_error_message(part: &str, reason: &str) -> String {
+    let fixed = match (part, reason) {
+        ("fields", "too_long") => "필드는 40개까지 만들 수 있어요.",
+        ("key", "empty") => "키를 입력해 주세요.",
+        ("key", "too_long") => "키는 40자까지 쓸 수 있어요.",
+        ("key", "invalid_character") => "키는 영문 소문자·숫자·밑줄(_)만 쓸 수 있어요.",
+        ("key", "invalid_format") => "키는 영문 소문자로 시작해야 해요.",
+        ("key", "duplicate") => "같은 키가 이미 있어요. 다른 키를 써 주세요.",
+        ("label", "empty") => "이름을 입력해 주세요.",
+        ("label", "too_long") => "이름은 50자까지 쓸 수 있어요.",
+        ("help", "too_long") => "안내 문구는 200자까지 쓸 수 있어요.",
+        ("max_len", "invalid_format") => "최대 글자 수는 숫자로 입력해 주세요.",
+        ("max_len", _) => "최대 글자 수는 1부터 종류의 기본값(한 줄 200, 여러 줄 5,000)까지예요.",
+        ("min" | "max", "invalid_format") => "소수점 없이 숫자만 입력해 주세요.",
+        ("min", "inconsistent") => "최솟값이 최댓값보다 커요.",
+        ("min" | "max", "out_of_range") => "숫자가 너무 크거나 작아요.",
+        ("options", "empty") => "선택지를 하나 이상 입력해 주세요.",
+        ("options", "too_long") => "선택지는 30개까지, 하나에 50자까지 쓸 수 있어요.",
+        ("options", "duplicate") => "같은 선택지가 두 번 들어 있어요.",
+        ("columns", "empty") => "열을 하나 이상 만들어 주세요.",
+        ("columns", "too_long") => "열은 8개까지 만들 수 있어요.",
+        ("kind", _) => "표의 열에는 쓸 수 없는 종류예요.",
+        (_, "invalid_character") => "쓸 수 없는 문자가 들어 있어요.",
+        _ => "다시 확인해 주세요.",
+    };
+    fixed.to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -664,7 +816,10 @@ mod tests {
         "approval.admin_reject",
         "approval.admin_view",
         "approval.draft_delete",
+        "approval.default_reference_skipped",
+        "approval_form.catalog_seed",
         "approval_form.create",
+        "approval_form.duplicate",
         "approval_form.update",
         "attendance.correction",
         "attendance.correction_cancel",

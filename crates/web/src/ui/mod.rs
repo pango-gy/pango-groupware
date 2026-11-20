@@ -1,11 +1,15 @@
 //! 공용 UI 컴포넌트. 화면은 여기 있는 조각만 조립하고, 모양은 `assets/style.css`가 정한다.
 
 pub mod approval_line;
+pub mod form_fields;
+pub mod form_picker;
 mod icon;
 mod member_picker;
 pub mod workday_bar;
 
 pub use approval_line::{use_line_draft, ApprovalLineEditor, ApproverEntry};
+pub use form_fields::{FieldErrors, FormFields};
+pub use form_picker::{FormPicker, PickedForm};
 pub use icon::{Icon, IconName};
 pub use member_picker::{MemberPicker, PickedMember};
 pub use workday_bar::{WeekProgress, WorkdayBar};
@@ -429,6 +433,9 @@ pub fn SelectField(
 pub fn Modal(
     #[props(into)] title: String,
     onclose: EventHandler<()>,
+    /// 두 단으로 나뉘는 넓은 내용(양식 고르기, 양식 편집)을 담을 때.
+    #[props(default)]
+    wide: bool,
     children: Element,
 ) -> Element {
     let id = use_hook(dialog::next_id);
@@ -459,7 +466,7 @@ pub fn Modal(
         div { class: "modal-backdrop", onclick: move |_| onclose.call(()),
             div {
                 id: "{id}",
-                class: "modal",
+                class: if wide { "modal modal-wide" } else { "modal" },
                 role: "dialog",
                 "aria-modal": "true",
                 "aria-label": "{title}",

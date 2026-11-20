@@ -4,7 +4,7 @@
 //! 모든 호출은 [`ApiError`]로 실패하며, 화면은 `ApiError::message`로 문구를 얻는다.
 
 use gloo_net::http::{Method, RequestBuilder, Response};
-use pango_api::{ErrorBody, API_PREFIX};
+use pango_api::{ErrorBody, FieldErrorDto, API_PREFIX};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
@@ -17,6 +17,8 @@ pub struct ApiError {
     pub code: String,
     pub field: Option<String>,
     pub reason: Option<String>,
+    /// 한 요청에서 찾은 필드별 오류 전부(결재 양식의 값·필드 정의). 그 밖의 오류에서는 비어 있다.
+    pub fields: Vec<FieldErrorDto>,
 }
 
 impl ApiError {
@@ -26,6 +28,7 @@ impl ApiError {
             code: "network_error".into(),
             field: None,
             reason: None,
+            fields: Vec::new(),
         }
     }
 
@@ -35,6 +38,7 @@ impl ApiError {
             code: "unexpected_response".into(),
             field: None,
             reason: None,
+            fields: Vec::new(),
         }
     }
 
@@ -68,6 +72,7 @@ async fn decode<T: DeserializeOwned>(response: Response) -> ApiResult<T> {
             code: body.error.code,
             field: body.error.field,
             reason: body.error.reason,
+            fields: body.error.fields,
         }),
         Err(_) => Err(ApiError::unexpected(status)),
     }
