@@ -18,6 +18,9 @@ pub use members::AdminMembers;
 pub use notices::AdminNotices;
 pub use org::AdminOrg;
 pub use policy::AdminPolicy;
+mod leave;
+
+pub use leave::AdminLeave;
 
 macro_rules! placeholders {
     ($($name:ident => $title:literal),+ $(,)?) => {$(
@@ -30,6 +33,5 @@ macro_rules! placeholders {
 
 placeholders! {
     AdminHome => "관리 홈",
-    AdminLeave => "휴가 관리",
     AdminApprovalForms => "결재 양식",
 }

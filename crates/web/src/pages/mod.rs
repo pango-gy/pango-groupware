@@ -3,6 +3,8 @@
 pub mod admin;
 mod attendance;
 mod auth;
+mod leave;
+mod leave_new;
 mod more;
 mod notices;
 mod notifications;
@@ -13,10 +15,12 @@ mod team;
 
 pub use attendance::Attendance;
 pub use auth::{ChangePassword, Login};
+pub use leave::Leave;
+pub use leave_new::LeaveNew;
 pub use more::{More, NotFound};
 pub use notices::{NoticeDetail, Notices};
 pub use notifications::Notifications;
 pub use people::People;
-pub use placeholder::{ApprovalDetail, ApprovalList, ApprovalNew, Home, Leave, LeaveNew};
+pub use placeholder::{ApprovalDetail, ApprovalList, ApprovalNew, Home};
 pub use profile::Profile;
 pub use team::Team;

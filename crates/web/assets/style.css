@@ -755,6 +755,109 @@ button.att-day-main:hover strong { color: var(--primary); }
   .att-admin-item { align-items: flex-start; }
 }
 
+/* ── 휴가 ── */
+/* 공용 조각(확인 대화 상자, 체크 상자, 더 보기, 결재선 편집기) */
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; flex-wrap: wrap; }
+.check-field { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
+.check-field input { width: 18px; height: 18px; margin: 2px 0 0; flex: none; accent-color: var(--primary); }
+.check-field-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.field-stack { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.form-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+
+.line-editor { display: flex; flex-direction: column; gap: 12px; }
+.line-empty { color: var(--text-3); font-size: 14px; }
+.line-steps { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.line-step {
+  display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.line-order {
+  width: 22px; height: 22px; flex: none; display: grid; place-items: center; border-radius: 50%;
+  background: var(--primary-soft); color: var(--primary); font-size: 12px; font-weight: 700;
+}
+.line-name { flex: 1; min-width: 80px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.line-kind { width: auto; min-height: 36px; padding: 4px 8px; }
+.line-actions { display: flex; align-items: center; }
+.line-actions .icon-btn { width: 36px; height: 36px; }
+.line-actions .icon-btn:disabled { opacity: .35; cursor: not-allowed; }
+.line-up .icon { transform: rotate(-90deg); }
+.line-down .icon { transform: rotate(90deg); }
+
+/* 잔여 카드 */
+.leave-balance-main { display: flex; flex-direction: column; gap: 2px; margin-bottom: 14px; }
+.leave-balance-label { color: var(--text-2); font-size: 14px; font-weight: 600; }
+.leave-balance-value { font-size: 36px; font-weight: 800; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
+.leave-expiring { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; color: var(--warning); font-size: 14px; }
+.leave-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 10px; }
+@media (max-width: 959px) {
+  .leave-balance-value { font-size: 30px; }
+  .leave-stats { gap: 6px; }
+  .leave-stats .stat { padding: 10px; }
+  .leave-stats .stat-value { font-size: 17px; }
+}
+
+/* 목록 */
+.leave-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px 12px; flex-wrap: wrap; }
+.leave-row { align-items: flex-start; }
+.leave-row-title { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
+.leave-row .list-row-main small { white-space: normal; }
+.leave-row-reason {
+  margin-top: 4px; color: var(--text-2); font-size: 14px; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.leave-amount { font-variant-numeric: tabular-nums; }
+.leave-notice {
+  padding: 10px 12px; border-radius: var(--radius-sm);
+  background: var(--success-soft); color: var(--success); font-size: 14px;
+}
+.leave-filters { grid-template-columns: minmax(0, 240px); }
+.leave-table td { white-space: nowrap; }
+.leave-table td:first-child { white-space: normal; }
+.leave-cell-sub { display: block; color: var(--text-3); font-size: 12px; }
+.leave-negative { color: var(--danger); font-weight: 700; }
+
+/* 달력 */
+.leave-calendar .leave-toolbar { margin-bottom: 12px; }
+.leave-legend { display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px; }
+.leave-chip { background: var(--primary-soft); color: var(--primary); border: 1px solid transparent; font-size: 12px; }
+.leave-chip-pending {
+  background: transparent; color: var(--text-2);
+  border: 1px dashed var(--text-3);
+}
+.leave-calendar .calendar-cell { padding: 0; }
+.leave-day {
+  flex: 1; width: 100%; min-width: 0; display: flex; flex-direction: column; align-items: stretch; gap: 3px;
+  padding: 6px; border: 0; background: transparent; text-align: left; cursor: pointer;
+}
+.leave-day:hover { background: var(--surface-2); }
+.leave-day-weekend { background: var(--surface-2); color: var(--text-3); }
+.leave-day-selected { box-shadow: inset 0 0 0 2px var(--primary); }
+.leave-day .calendar-date { align-self: flex-start; }
+.leave-more { font-size: 11px; color: var(--text-3); }
+.leave-count { display: none; }
+.leave-agenda { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
+.leave-agenda-title { font-size: 15px; font-weight: 700; margin-bottom: 10px; }
+@media (max-width: 959px) {
+  .leave-day { padding: 4px 3px; align-items: center; }
+  .leave-day .calendar-date { align-self: center; }
+  .leave-day .leave-chip, .leave-day .leave-more { display: none; }
+  .leave-count {
+    display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px;
+    border-radius: 999px; background: var(--primary-soft); color: var(--primary);
+    font-size: 11px; font-weight: 700;
+  }
+}
+
+/* 신청 폼 */
+.leave-form { gap: 16px; }
+.leave-summary {
+  display: flex; flex-direction: column; gap: 4px; padding: 12px 14px;
+  border-radius: var(--radius-sm); background: var(--primary-soft); color: var(--primary);
+}
+.leave-summary-warn { background: var(--warning-soft); color: var(--warning); }
+.leave-summary-muted { background: var(--surface-2); color: var(--text-2); }
+
 /* 화면 폭에 따라 하나만 보이는 쌍(표 ↔ 목록 등). 다른 규칙보다 뒤에 둬야 이긴다. */
 .only-mobile { display: none; }
 @media (max-width: 959px) {

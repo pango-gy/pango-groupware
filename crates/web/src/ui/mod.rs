@@ -1,8 +1,10 @@
 //! 공용 UI 컴포넌트. 화면은 여기 있는 조각만 조립하고, 모양은 `assets/style.css`가 정한다.
 
+pub mod approval_line;
 mod icon;
 mod member_picker;
 
+pub use approval_line::{ApprovalLineEditor, ApproverEntry};
 pub use icon::{Icon, IconName};
 pub use member_picker::MemberPicker;
 
@@ -699,6 +701,73 @@ pub fn report_form_error(error: &ApiError, mut target: Signal<String>) {
     } else {
         target.set(String::new());
         report_error(error);
+    }
+}
+
+/// 날짜 입력(`YYYY-MM-DD`). 브라우저의 날짜 선택기를 쓴다.
+#[component]
+pub fn DateField(
+    #[props(into)] label: String,
+    #[props(into)] value: String,
+    oninput: EventHandler<String>,
+    #[props(into, default)] min: String,
+    #[props(into, default)] max: String,
+    #[props(into, default)] hint: String,
+    #[props(into, default)] error: String,
+    #[props(default)] required: bool,
+    #[props(default)] disabled: bool,
+) -> Element {
+    rsx! {
+        label { class: "field",
+            span { class: "field-label",
+                "{label}"
+                if required {
+                    span { class: "field-required", "aria-hidden": "true", " *" }
+                }
+            }
+            input {
+                class: if error.is_empty() { "input" } else { "input input-error" },
+                r#type: "date",
+                value: "{value}",
+                min: "{min}",
+                max: "{max}",
+                required,
+                disabled,
+                "aria-invalid": !error.is_empty(),
+                oninput: move |event| oninput.call(event.value()),
+            }
+            if !error.is_empty() {
+                span { class: "field-error", role: "alert", "{error}" }
+            } else if !hint.is_empty() {
+                span { class: "field-hint", "{hint}" }
+            }
+        }
+    }
+}
+
+/// 연도 이동 머리: `‹ 2026년 ›`. 범위 밖으로는 이동할 수 없다.
+#[component]
+pub fn YearSwitcher(year: i32, min: i32, max: i32, onchange: EventHandler<i32>) -> Element {
+    rsx! {
+        div { class: "month-switcher",
+            button {
+                class: "icon-btn month-prev",
+                r#type: "button",
+                "aria-label": "이전 해",
+                disabled: year <= min,
+                onclick: move |_| onchange.call(year - 1),
+                Icon { name: IconName::Chevron }
+            }
+            strong { class: "month-label", "{year}년" }
+            button {
+                class: "icon-btn",
+                r#type: "button",
+                "aria-label": "다음 해",
+                disabled: year >= max,
+                onclick: move |_| onchange.call(year + 1),
+                Icon { name: IconName::Chevron }
+            }
+        }
     }
 }
 

@@ -23,8 +23,6 @@ macro_rules! placeholders {
 
 placeholders! {
     Home => "홈",
-    Leave => "휴가",
-    LeaveNew => "휴가 신청",
     ApprovalList => "결재",
     ApprovalNew => "새 결재 문서",
 }

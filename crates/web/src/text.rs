@@ -1,8 +1,10 @@
 //! 화면 문구. 서버의 코드 값(오류 코드, 상태 값)을 한국어로 바꾸는 곳은 여기뿐이다.
 
+use pango_api::leave::LedgerKind;
 use pango_core::attendance::{AttendanceEventKind, DayStatus, WorkType};
 use pango_core::authz::Role;
 use pango_core::error::DomainError;
+use pango_core::leave::{LeaveRequestStatus, LeaveUnit};
 use pango_core::member::MemberStatus;
 
 use crate::ui::Tone;
@@ -58,6 +60,10 @@ fn field_label(field: &str) -> &str {
         "clock_out_at" => "퇴근 시각",
         "note" => "메모",
         "member_id" => "구성원",
+        "memo" => "메모",
+        "code" => "코드",
+        "effective_on" => "적용일",
+        "leave_type_id" => "휴가 종류",
         other => other,
     }
 }
@@ -321,6 +327,55 @@ pub const DAY_STATUSES: [DayStatus; 10] = [
     DayStatus::OnLeave,
     DayStatus::DayOff,
 ];
+pub fn leave_unit_label(unit: LeaveUnit) -> &'static str {
+    match unit {
+        LeaveUnit::FullDay => "종일",
+        LeaveUnit::AmHalf => "오전 반차",
+        LeaveUnit::PmHalf => "오후 반차",
+        LeaveUnit::AmQuarter => "오전 반반차",
+        LeaveUnit::PmQuarter => "오후 반반차",
+    }
+}
+
+/// 달력 칸처럼 좁은 곳에 쓰는 짧은 단위 표기.
+pub fn leave_unit_short(unit: LeaveUnit) -> &'static str {
+    match unit {
+        LeaveUnit::FullDay => "종일",
+        LeaveUnit::AmHalf => "오전½",
+        LeaveUnit::PmHalf => "오후½",
+        LeaveUnit::AmQuarter => "오전¼",
+        LeaveUnit::PmQuarter => "오후¼",
+    }
+}
+
+pub fn leave_status_label(status: LeaveRequestStatus) -> &'static str {
+    match status {
+        LeaveRequestStatus::Pending => "결재 중",
+        LeaveRequestStatus::Approved => "승인",
+        LeaveRequestStatus::Rejected => "반려",
+        LeaveRequestStatus::Canceled => "취소",
+    }
+}
+
+pub fn ledger_kind_label(kind: LedgerKind) -> &'static str {
+    match kind {
+        LedgerKind::Grant => "부여",
+        LedgerKind::Use => "사용",
+        LedgerKind::Restore => "복원",
+        LedgerKind::Adjust => "조정",
+    }
+}
+
+/// 휴가 취소 실패 문구. 취소는 곧 결재 문서 회수이므로 회수 오류를 휴가 말로 바꾼다.
+pub fn leave_cancel_error_message(code: &str, field: Option<&str>, reason: Option<&str>) -> String {
+    match code {
+        "withdraw_too_late" => {
+            "결재가 이미 진행되어 취소할 수 없습니다. 결재자에게 반려를 요청해 주세요.".into()
+        }
+        "document_already_closed" => "이미 처리가 끝난 신청이라 취소할 수 없습니다.".into(),
+        _ => error_message(code, field, reason),
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -463,6 +518,38 @@ mod tests {
         assert!(
             error_message("validation_failed", Some("unknown_field"), Some("weird"))
                 .contains("unknown_field")
+        );
+    }
+
+    #[test]
+    fn every_leave_enum_value_has_a_label() {
+        for unit in LeaveUnit::ALL {
+            assert!(!leave_unit_label(unit).is_empty(), "{unit:?}");
+            assert!(!leave_unit_short(unit).is_empty(), "{unit:?}");
+        }
+        for status in LeaveRequestStatus::ALL {
+            assert!(!leave_status_label(status).is_empty(), "{status:?}");
+        }
+        for kind in [
+            LedgerKind::Grant,
+            LedgerKind::Use,
+            LedgerKind::Restore,
+            LedgerKind::Adjust,
+        ] {
+            assert!(!ledger_kind_label(kind).is_empty(), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn leave_cancel_errors_speak_about_leave() {
+        assert!(leave_cancel_error_message("withdraw_too_late", None, None).contains("취소"));
+        assert_eq!(
+            leave_cancel_error_message("leave_already_started", None, None),
+            error_message("leave_already_started", None, None)
+        );
+        assert_eq!(
+            error_message("validation_failed", Some("memo"), Some("empty")),
+            "메모을(를) 입력해 주세요."
         );
     }
 }
