@@ -1,7 +1,10 @@
 //! 화면 문구. 서버의 코드 값(오류 코드, 상태 값)을 한국어로 바꾸는 곳은 여기뿐이다.
 
 use pango_core::authz::Role;
+use pango_core::error::DomainError;
 use pango_core::member::MemberStatus;
+
+use crate::ui::Tone;
 
 fn field_label(field: &str) -> &str {
     match field {
@@ -22,6 +25,17 @@ fn field_label(field: &str) -> &str {
         "month" => "월",
         "timezone" => "시간대",
         "amount" | "amount_q" => "수량",
+        "hired_on" => "입사일",
+        "retired_on" => "퇴사일",
+        "department_id" => "부서",
+        "parent_id" => "상위 부서",
+        "position_id" => "직책",
+        "head_member_id" => "조직장",
+        "sort_order" => "정렬 순서",
+        "level" => "등급",
+        "search" => "검색어",
+        "role" => "역할",
+        "status" => "상태",
         other => other,
     }
 }
@@ -110,6 +124,45 @@ pub fn member_status_label(status: MemberStatus) -> &'static str {
     }
 }
 
+/// 화면에서 미리 검증한 결과(`pango_core`의 검증 오류)를 서버 오류와 같은 문구로 바꾼다.
+pub fn domain_error_message(error: &DomainError) -> String {
+    match error {
+        DomainError::Validation { field, reason } => {
+            validation_message(Some(*field), Some(reason.code()))
+        }
+        other => error_message(other.code(), None, None),
+    }
+}
+
+pub fn role_tone(role: Role) -> Tone {
+    match role {
+        Role::Owner => Tone::Warning,
+        Role::Admin => Tone::Info,
+        Role::Member => Tone::Neutral,
+    }
+}
+
+pub fn member_status_tone(status: MemberStatus) -> Tone {
+    match status {
+        MemberStatus::Active => Tone::Success,
+        MemberStatus::Suspended => Tone::Warning,
+        MemberStatus::Retired => Tone::Neutral,
+    }
+}
+
+/// 상태를 바꾸기 전에 확인 단계에서 보여 줄 영향.
+pub fn member_status_effect(status: MemberStatus) -> &'static str {
+    match status {
+        MemberStatus::Active => "다시 로그인할 수 있게 됩니다.",
+        MemberStatus::Suspended => {
+            "로그인이 막히고 모든 기기에서 즉시 로그아웃됩니다. 조직장으로 지정된 부서가 있으면 해제됩니다. 근태·휴가·결재 기록은 그대로 남습니다."
+        }
+        MemberStatus::Retired => {
+            "로그인이 막히고 모든 기기에서 즉시 로그아웃됩니다. 조직장으로 지정된 부서가 있으면 해제되고 퇴사일이 기록됩니다. 근태·휴가·결재 기록은 그대로 남습니다."
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,6 +179,36 @@ mod tests {
                 reason.code()
             );
         }
+    }
+
+    #[test]
+    fn client_validation_uses_server_wording() {
+        use pango_core::error::ValidationReason;
+        let error = DomainError::validation("hired_on", ValidationReason::Empty);
+        assert_eq!(domain_error_message(&error), "입사일을(를) 입력해 주세요.");
+        assert_eq!(
+            domain_error_message(&DomainError::Forbidden),
+            error_message("forbidden", None, None)
+        );
+    }
+
+    #[test]
+    fn statuses_and_roles_have_distinct_labels() {
+        let labels: std::collections::BTreeSet<_> = MemberStatus::ALL
+            .iter()
+            .map(|s| member_status_label(*s))
+            .collect();
+        assert_eq!(labels.len(), MemberStatus::ALL.len());
+        let roles: std::collections::BTreeSet<_> = Role::ALL.into_iter().map(role_label).collect();
+        assert_eq!(roles.len(), Role::ALL.len());
+        assert_ne!(
+            member_status_tone(MemberStatus::Active),
+            member_status_tone(MemberStatus::Suspended)
+        );
+        assert_ne!(
+            member_status_effect(MemberStatus::Suspended),
+            member_status_effect(MemberStatus::Retired)
+        );
     }
 
     #[test]

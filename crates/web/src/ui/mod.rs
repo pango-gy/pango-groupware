@@ -484,3 +484,113 @@ pub fn MonthCalendar(
         }
     }
 }
+
+/// 되돌리기 어려운 동작의 확인 단계. 내용(`children`)에 무엇이 바뀌는지 적는다.
+#[component]
+pub fn ConfirmModal(
+    #[props(into)] title: String,
+    #[props(into)] confirm_label: String,
+    /// 확인 버튼을 위험 색으로.
+    #[props(default)]
+    danger: bool,
+    #[props(default)] busy: bool,
+    onconfirm: EventHandler<()>,
+    oncancel: EventHandler<()>,
+    children: Element,
+) -> Element {
+    rsx! {
+        Modal { title, onclose: move |_| oncancel.call(()),
+            div { class: "confirm-body", {children} }
+            div { class: "modal-actions",
+                Button { kind: ButtonKind::Secondary, onclick: move |_| oncancel.call(()), "취소" }
+                Button {
+                    kind: if danger { ButtonKind::Danger } else { ButtonKind::Primary },
+                    busy,
+                    onclick: move |_| onconfirm.call(()),
+                    "{confirm_label}"
+                }
+            }
+        }
+    }
+}
+
+/// 켜고 끄는 선택(체크 상자 + 라벨).
+#[component]
+pub fn Toggle(
+    #[props(into)] label: String,
+    checked: bool,
+    onchange: EventHandler<bool>,
+    #[props(default)] disabled: bool,
+) -> Element {
+    rsx! {
+        label { class: "toggle",
+            input {
+                r#type: "checkbox",
+                checked,
+                disabled,
+                onchange: move |event| onchange.call(event.checked()),
+            }
+            span { "{label}" }
+        }
+    }
+}
+
+/// 비밀값(임시 비밀번호 등)을 **한 번만** 보여 주는 대화 상자.
+///
+/// 실수로 닫지 않도록 바깥을 눌러도 닫히지 않고, 확인 버튼으로만 닫는다.
+/// 값은 부모가 들고 있다가 `onclose`에서 바로 버려야 한다.
+#[component]
+pub fn SecretReveal(
+    #[props(into)] title: String,
+    #[props(into)] label: String,
+    #[props(into)] secret: String,
+    onclose: EventHandler<()>,
+    children: Element,
+) -> Element {
+    rsx! {
+        div { class: "modal-backdrop",
+            div {
+                class: "modal",
+                role: "alertdialog",
+                "aria-modal": "true",
+                "aria-label": "{title}",
+                header { class: "modal-header",
+                    h2 { class: "modal-title", "{title}" }
+                }
+                div { class: "modal-body",
+                    {children}
+                    label { class: "field secret-field",
+                        span { class: "field-label", "{label}" }
+                        input {
+                            class: "input secret-value",
+                            r#type: "text",
+                            readonly: true,
+                            value: "{secret}",
+                            autocomplete: "off",
+                            spellcheck: false,
+                            "autocapitalize": "off",
+                        }
+                    }
+                    p { class: "secret-warning", role: "note",
+                        Icon { name: IconName::Alert }
+                        span { "이 창을 닫으면 다시 볼 수 없습니다. 지금 복사해 본인에게 안전하게 전달하세요." }
+                    }
+                    div { class: "modal-actions",
+                        Button { onclick: move |_| onclose.call(()), "확인했습니다" }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 폼 제출 실패를 처리한다. 입력 오류는 폼 안(`target`)에, 그 밖의 오류는 토스트로 알린다.
+/// 이벤트 핸들러 안에서 부른다.
+pub fn report_form_error(error: &ApiError, mut target: Signal<String>) {
+    if error.code == "validation_failed" {
+        target.set(error.message());
+    } else {
+        target.set(String::new());
+        report_error(error);
+    }
+}
