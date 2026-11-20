@@ -636,6 +636,22 @@ impl MonthlySummary {
     }
 }
 
+crate::string_enum! {
+    /// 출퇴근 기록 변경 이력(`attendance_events`)의 종류.
+    pub enum AttendanceEventKind("kind") {
+        /// 본인 출근.
+        ClockIn => "clock_in",
+        /// 본인 퇴근.
+        ClockOut => "clock_out",
+        /// 관리자가 기록을 새로 만듦.
+        AdminCreate => "admin_create",
+        /// 관리자가 기록을 고침.
+        AdminEdit => "admin_edit",
+        /// 정정 요청 승인으로 고쳐짐.
+        Correction => "correction",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
