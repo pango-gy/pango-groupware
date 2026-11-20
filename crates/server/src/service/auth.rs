@@ -49,7 +49,12 @@ fn check_limit(
 
 /// IP별 제한의 키. IPv6는 /64 단위로 묶는다(한 가입자가 주소를 바꿔 가며 제한을 피하지 못하게).
 fn ip_bucket(ip: &str) -> String {
-    match ip.parse::<std::net::IpAddr>() {
+    // IPv4-매핑 주소(`::ffff:1.2.3.4`)는 IPv4로 되돌린다. 그대로 /64로 묶으면 모든 IPv4
+    // 클라이언트가 한 버킷을 나눠 써서, 한 명이 전체의 로그인을 막을 수 있다.
+    match ip
+        .parse::<std::net::IpAddr>()
+        .map(|addr| addr.to_canonical())
+    {
         Ok(std::net::IpAddr::V6(v6)) => {
             let prefix = v6.segments();
             format!(
@@ -57,7 +62,8 @@ fn ip_bucket(ip: &str) -> String {
                 prefix[0], prefix[1], prefix[2], prefix[3]
             )
         }
-        _ => format!("ip:{ip}"),
+        Ok(std::net::IpAddr::V4(v4)) => format!("ip:{v4}"),
+        Err(_) => format!("ip:{ip}"),
     }
 }
 
@@ -472,5 +478,16 @@ mod tests {
         assert_ne!(a, other);
         assert_eq!(a, "ip6:2001:db8:1:2");
         assert_eq!(ip_bucket("not-an-ip"), "ip:not-an-ip");
+    }
+
+    #[test]
+    fn ipv4_mapped_addresses_are_bucketed_per_ipv4_address() {
+        assert_eq!(ip_bucket("::ffff:203.0.113.9"), "ip:203.0.113.9");
+        assert_eq!(ip_bucket("::ffff:cb00:7109"), "ip:203.0.113.9");
+        assert_ne!(
+            ip_bucket("::ffff:203.0.113.9"),
+            ip_bucket("::ffff:203.0.113.10")
+        );
+        assert_eq!(ip_bucket("::ffff:203.0.113.9"), ip_bucket("203.0.113.9"));
     }
 }

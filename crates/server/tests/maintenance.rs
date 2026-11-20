@@ -82,7 +82,11 @@ async fn cleanup_never_unlocks_an_account_early() {
     // 한도를 넘긴 시도(14분 시점)부터 15분 동안 잠긴다.
     app.advance(Duration::minutes(14));
     maintenance::run_once(&app.state).await.expect("run");
-    assert_eq!(failed_login(&app).await, StatusCode::TOO_MANY_REQUESTS, "28분: 아직 잠금");
+    assert_eq!(
+        failed_login(&app).await,
+        StatusCode::TOO_MANY_REQUESTS,
+        "28분: 아직 잠금"
+    );
 
     app.advance(Duration::minutes(2));
     assert_eq!(
