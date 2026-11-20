@@ -110,9 +110,20 @@ impl DateRange {
     }
 }
 
-/// 쿼리·본문으로 받는 날짜가 다룰 수 있는 연도 범위. 출퇴근 시각 범위(1900~9999년)와 같다.
-const MIN_INPUT_YEAR: i32 = 1900;
-const MAX_INPUT_YEAR: i32 = 9999;
+/// 쿼리·본문으로 받는 날짜와 연도(`?year=`)가 다룰 수 있는 범위. 출퇴근 시각 범위(1900~9999년)와
+/// 같다.
+pub const MIN_INPUT_YEAR: i32 = 1900;
+pub const MAX_INPUT_YEAR: i32 = 9999;
+
+/// `?year=`로 받은 한 해 전체(1월 1일 ~ 12월 31일). 범위 밖이면 `Validation { year, OutOfRange }`.
+pub fn year_range(year: i32) -> DomainResult<DateRange> {
+    let out_of_range = || DomainError::validation("year", ValidationReason::OutOfRange);
+    if !(MIN_INPUT_YEAR..=MAX_INPUT_YEAR).contains(&year) {
+        return Err(out_of_range());
+    }
+    let day = |month, day| NaiveDate::from_ymd_opt(year, month, day).ok_or_else(out_of_range);
+    DateRange::new(day(1, 1)?, day(12, 31)?)
+}
 
 /// 고정 폭 숫자 묶음을 읽는다. `str::parse`는 `+`를 받으므로 숫자만인지 먼저 확인한다.
 fn fixed_digits(raw: &str) -> Option<u32> {
@@ -438,6 +449,35 @@ mod tests {
             );
             let text = bad.format("%Y-%m-%d").to_string();
             assert!(parse_date("hired_on", &text).is_err(), "read back {text}");
+        }
+    }
+
+    #[test]
+    fn year_range_covers_the_whole_year_within_the_input_years() {
+        let ymd = |y, m, day| NaiveDate::from_ymd_opt(y, m, day).expect("date");
+        for year in [MIN_INPUT_YEAR, 2028, MAX_INPUT_YEAR] {
+            let range = year_range(year).expect("year");
+            assert_eq!(
+                (range.start(), range.end()),
+                (ymd(year, 1, 1), ymd(year, 12, 31))
+            );
+        }
+        for bad in [
+            MIN_INPUT_YEAR - 1,
+            MAX_INPUT_YEAR + 1,
+            0,
+            -1,
+            i32::MIN,
+            i32::MAX,
+        ] {
+            assert_eq!(
+                year_range(bad),
+                Err(DomainError::validation(
+                    "year",
+                    ValidationReason::OutOfRange
+                )),
+                "accepted {bad}"
+            );
         }
     }
 

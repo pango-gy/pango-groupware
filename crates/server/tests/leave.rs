@@ -1903,13 +1903,22 @@ async fn malformed_requests_are_rejected_without_side_effects() {
         .send()
         .await
         .expect_error(StatusCode::UNAUTHORIZED, "unauthenticated");
-    for query in ["?year=1999", "?year=10000", "?year=-1"] {
+    for query in ["?year=1899", "?year=10000", "?year=-1"] {
         w.app
             .get(&format!("/leave/requests{query}"))
             .bearer(&w.kim.token)
             .send()
             .await
             .expect_error(StatusCode::BAD_REQUEST, "validation_failed");
+    }
+    // 연도 범위는 날짜 입력과 같다(1900~9999년).
+    for query in ["?year=1900", "?year=9999"] {
+        w.app
+            .get(&format!("/leave/requests{query}"))
+            .bearer(&w.kim.token)
+            .send()
+            .await
+            .expect(StatusCode::OK);
     }
     w.app
         .get("/leave/requests?year=twenty")

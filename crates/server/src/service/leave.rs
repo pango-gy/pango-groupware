@@ -20,7 +20,7 @@ use pango_api::leave::{
 use pango_api::Page;
 use pango_core::approval::{ApprovalLine, DocumentKind};
 use pango_core::authz;
-use pango_core::calendar::{check_date, parse_month, DateRange};
+use pango_core::calendar::{check_date, parse_month, year_range, DateRange};
 use pango_core::error::{ConflictReason, ValidationReason};
 use pango_core::id::{DocumentId, LeaveLedgerEntryId, LeaveRequestId, LeaveTypeId, MemberId};
 use pango_core::leave::{
@@ -52,8 +52,6 @@ const EXPIRING_SOON_DAYS: u64 = 30;
 const MAX_ADJUST_QUARTERS: i32 = 400;
 /// 관리자가 회수할 수 없는 신청을 취소할 때 결재 문서에 남기는 반려 사유.
 const ADMIN_CANCEL_REASON: &str = "관리자가 휴가 신청을 취소했습니다.";
-/// 저장·전송 표기(`YYYY-MM-DD`)로 쓸 수 있는 연도 범위.
-const YEARS: std::ops::RangeInclusive<i32> = 2000..=9999;
 
 fn out_of_range(field: &'static str) -> ServiceError {
     DomainError::validation(field, ValidationReason::OutOfRange).into()
@@ -415,20 +413,12 @@ pub async fn list_requests(
     let mut conn = state.read().await?;
     let member = personal_records_member(&mut conn, ctx, query.member_id).await?;
     let year = match query.year {
-        Some(year) if YEARS.contains(&year) => year,
-        Some(_) => return Err(out_of_range("year")),
+        Some(year) => year,
         None => Company::load(&mut conn).await?.today(now).year(),
-    };
-    let (first, last) = (
-        NaiveDate::from_ymd_opt(year, 1, 1),
-        NaiveDate::from_ymd_opt(year, 12, 31),
-    );
-    let (Some(first), Some(last)) = (first, last) else {
-        return Err(out_of_range("year"));
     };
     let filter = RequestFilter {
         member_id: Some(member.id),
-        overlapping: Some(DateRange::new(first, last)?),
+        overlapping: Some(year_range(year)?),
         ..RequestFilter::default()
     };
     let (requests, _) = leave::list_requests(&mut conn, &filter, None).await?;

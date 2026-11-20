@@ -10,7 +10,7 @@ use pango_api::admin::{
 use pango_api::Versioned;
 use pango_core::authz;
 use pango_core::calendar::parse_date;
-use pango_core::calendar::{DateRange, WorkWeek};
+use pango_core::calendar::{year_range, DateRange, WorkWeek};
 use pango_core::error::ValidationReason;
 use pango_core::text::{CompanyName, LabelName};
 use pango_core::time::Timestamp;
@@ -27,9 +27,6 @@ use crate::state::AppState;
 
 /// 한 번에 일괄 등록할 수 있는 공휴일 수. 한 해 공휴일(대체 휴일 포함)보다 넉넉하다.
 pub const MAX_HOLIDAY_IMPORT: usize = 100;
-
-/// 공휴일 조회에 받는 연도. 날짜를 항상 네 자리 연도로 저장하기 위한 범위다.
-const YEARS: std::ops::RangeInclusive<i32> = 1000..=9999;
 
 fn input_of(settings: &CompanySettings) -> CompanySettingsInput {
     CompanySettingsInput {
@@ -168,15 +165,6 @@ fn holiday_dto(holiday: Holiday) -> HolidayDto {
         date: holiday.date,
         name: holiday.name,
     }
-}
-
-fn year_range(year: i32) -> ServiceResult<DateRange> {
-    let out_of_range = || DomainError::validation("year", ValidationReason::OutOfRange);
-    if !YEARS.contains(&year) {
-        return Err(out_of_range().into());
-    }
-    let day = |month, day| NaiveDate::from_ymd_opt(year, month, day).ok_or_else(out_of_range);
-    Ok(DateRange::new(day(1, 1)?, day(12, 31)?)?)
 }
 
 /// 한 해의 공휴일(날짜순). 연도를 생략하면 회사 시간대 기준 올해.

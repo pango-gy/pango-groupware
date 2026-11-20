@@ -584,7 +584,7 @@ async fn holiday_year_filter_boundaries() {
             .await
             .expect_error(StatusCode::BAD_REQUEST, "malformed_request");
     }
-    for out_of_range in ["0", "-1", "999", "10000"] {
+    for out_of_range in ["0", "-1", "999", "1899", "10000"] {
         let response = app
             .get(&format!("/holidays?year={out_of_range}"))
             .bearer(&owner)
