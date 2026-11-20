@@ -46,8 +46,8 @@ use pango_db::{org, settings, Conn};
 use super::approval::{self, LinkedOutcome, SystemDocument};
 use super::support::{
     audit, audit_as, current_member, department_tree, found, member_names, members_by_id,
-    next_page, notify, push_csv_row, require_current_admin, require_updated, Audit, AuthContext,
-    Company, Idempotency, Notify,
+    next_page, notify, personal_records_member, push_csv_row, require_current_admin,
+    require_updated, Audit, AuthContext, Company, Idempotency, Notify,
 };
 use crate::error::{ServiceError, ServiceResult};
 use crate::state::AppState;
@@ -398,21 +398,6 @@ pub async fn clock_out(state: &AppState, ctx: &AuthContext) -> ServiceResult<Att
 
 // ── 조회 ────────────────────────────────────────────────────────────────
 
-/// 개인 기록을 볼 대상 구성원. 생략하면 본인. 볼 수 없는 구성원은 없는 구성원과 같이 404.
-async fn viewable_member(
-    conn: &mut Conn,
-    ctx: &AuthContext,
-    member_id: Option<MemberId>,
-) -> ServiceResult<Member> {
-    let member = match member_id {
-        None => ctx.member.clone(),
-        Some(id) if id == ctx.member_id() => ctx.member.clone(),
-        Some(id) => found(members::find(conn, id).await?)?,
-    };
-    authz::view_personal_records(&ctx.actor, &member.subject())?;
-    Ok(member)
-}
-
 /// 한 달의 날짜별 기록과 판정.
 async fn month_days(
     conn: &mut Conn,
@@ -451,7 +436,7 @@ pub async fn month_records(
     query: &MonthQuery,
 ) -> ServiceResult<MonthRecords> {
     let mut conn = state.read().await?;
-    let member = viewable_member(&mut conn, ctx, query.member_id).await?;
+    let member = personal_records_member(&mut conn, ctx, query.member_id).await?;
     let range = parse_month(&query.month)?;
     let days = month_days(&mut conn, &member, range, state.now()).await?;
     Ok(MonthRecords {
@@ -467,7 +452,7 @@ pub async fn month_summary(
     query: &MonthQuery,
 ) -> ServiceResult<MonthlySummaryDto> {
     let mut conn = state.read().await?;
-    let member = viewable_member(&mut conn, ctx, query.member_id).await?;
+    let member = personal_records_member(&mut conn, ctx, query.member_id).await?;
     let range = parse_month(&query.month)?;
     let days = month_days(&mut conn, &member, range, state.now()).await?;
     let evaluations: Vec<_> = days.iter().map(|d| d.evaluation).collect();
@@ -486,7 +471,7 @@ pub async fn record_events(
 ) -> ServiceResult<Vec<AttendanceEventDto>> {
     let mut conn = state.read().await?;
     let record = found(attendance::find(&mut conn, record_id).await?)?;
-    viewable_member(&mut conn, ctx, Some(record.member_id)).await?;
+    personal_records_member(&mut conn, ctx, Some(record.member_id)).await?;
     let events = attendance::list_events(&mut conn, record_id).await?;
     let names = member_names(&mut conn, events.iter().map(|e| e.actor_id)).await?;
     Ok(events
@@ -843,7 +828,7 @@ pub async fn list_corrections(
     let page = query.page();
     let before = page.after::<AttendanceCorrectionId>()?;
     let mut conn = state.read().await?;
-    let member = viewable_member(&mut conn, ctx, query.member_id).await?;
+    let member = personal_records_member(&mut conn, ctx, query.member_id).await?;
     let (items, has_more) =
         corrections::list_for_member(&mut conn, member.id, before, page.limit()).await?;
     let items = correction_dtos(&mut conn, items).await?;

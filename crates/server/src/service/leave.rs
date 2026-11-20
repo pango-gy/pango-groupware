@@ -38,7 +38,8 @@ use pango_db::{org, Conn};
 use super::approval::{self, LinkedOutcome, SystemDocument};
 use super::support::{
     audit, current_member, found, member_names, members_by_id, next_page, notify,
-    require_current_admin, require_updated, Audit, AuthContext, Company, Idempotency, Notify,
+    personal_records_member, require_current_admin, require_updated, Audit, AuthContext, Company,
+    Idempotency, Notify,
 };
 use crate::error::{ServiceError, ServiceResult};
 use crate::state::AppState;
@@ -254,22 +255,6 @@ async fn ledger_entries(conn: &mut Conn, member_id: MemberId) -> ServiceResult<V
     Ok(records.into_iter().map(|record| record.entry).collect())
 }
 
-/// 다른 구성원의 개인 기록을 볼 때의 대상. 생략하면 본인이고, 볼 수 없는 사람은 `NotFound`다.
-async fn visible_member(
-    conn: &mut Conn,
-    ctx: &AuthContext,
-    member_id: Option<MemberId>,
-) -> ServiceResult<Member> {
-    match member_id.filter(|id| *id != ctx.member_id()) {
-        None => Ok(ctx.member.clone()),
-        Some(id) => {
-            let member = found(members::find(conn, id).await?)?;
-            authz::view_personal_records(&ctx.actor, &member.subject())?;
-            Ok(member)
-        }
-    }
-}
-
 /// 부여를 반영한 뒤 `today` 기준 잔여를 계산한다.
 async fn balance_tx(
     conn: &mut Conn,
@@ -317,7 +302,7 @@ pub async fn balance(
     let now = state.now();
     state
         .write(async |conn: &mut Conn| {
-            let member = visible_member(conn, ctx, member_id).await?;
+            let member = personal_records_member(conn, ctx, member_id).await?;
             let today = Company::load(conn).await?.today(now);
             balance_tx(conn, &member, today, now).await
         })
@@ -369,7 +354,7 @@ pub async fn ledger(
     let now = state.now();
     state
         .write(async |conn: &mut Conn| {
-            let member = visible_member(conn, ctx, member_id).await?;
+            let member = personal_records_member(conn, ctx, member_id).await?;
             let today = Company::load(conn).await?.today(now);
             ensure_accrued_tx(conn, &member, today, now).await?;
             let records = leave::list_ledger(conn, member.id).await?;
@@ -428,7 +413,7 @@ pub async fn list_requests(
 ) -> ServiceResult<Vec<LeaveRequestDto>> {
     let now = state.now();
     let mut conn = state.read().await?;
-    let member = visible_member(&mut conn, ctx, query.member_id).await?;
+    let member = personal_records_member(&mut conn, ctx, query.member_id).await?;
     let year = match query.year {
         Some(year) if YEARS.contains(&year) => year,
         Some(_) => return Err(out_of_range("year")),

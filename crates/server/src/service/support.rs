@@ -149,6 +149,24 @@ pub async fn member_names(
     Ok(found.into_iter().map(|(id, m)| (id, m.name)).collect())
 }
 
+/// 개인 기록(근태·휴가)을 볼 대상 구성원. 생략하면 본인이다. 다른 구성원은 관할 조직장과
+/// 관리자만 볼 수 있고(`authz::view_personal_records`), 볼 수 없는 구성원은 없는 구성원과 같이
+/// `NotFound`다(ID 추측 방지).
+pub async fn personal_records_member(
+    conn: &mut Conn,
+    ctx: &AuthContext,
+    member_id: Option<MemberId>,
+) -> ServiceResult<Member> {
+    match member_id.filter(|id| *id != ctx.member_id()) {
+        None => Ok(ctx.member.clone()),
+        Some(id) => {
+            let member = found(members::find(conn, id).await?)?;
+            pango_core::authz::view_personal_records(&ctx.actor, &member.subject())?;
+            Ok(member)
+        }
+    }
+}
+
 /// 결재선·참조처럼 **새 업무의 당사자**로 지정된 구성원이 모두 재직 중인지 확인한다.
 /// 없는 ID는 `NotFound`, 재직 중이 아니면 `Conflict(MemberInactive)`.
 pub async fn require_active_members(conn: &mut Conn, ids: &[MemberId]) -> ServiceResult<()> {
