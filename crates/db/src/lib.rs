@@ -10,6 +10,7 @@ pub mod codec;
 pub mod error;
 pub mod idempotency;
 pub mod members;
+pub mod notices;
 pub mod notifications;
 pub mod org;
 pub mod pool;

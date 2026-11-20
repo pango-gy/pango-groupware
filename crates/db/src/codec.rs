@@ -3,7 +3,7 @@
 use std::str::FromStr;
 
 use chrono::NaiveDate;
-use pango_core::error::{DomainError, ValidationReason};
+use pango_core::error::DomainError;
 use pango_core::time::Timestamp;
 
 use crate::error::{DbError, DbResult};
@@ -41,16 +41,9 @@ pub fn timestamp_opt(column: &'static str, millis: Option<i64>) -> DbResult<Opti
     millis.map(|value| timestamp(column, value)).transpose()
 }
 
+/// 입력 검증과 같은 규칙([`pango_core::calendar::parse_date`])으로 읽는다.
 pub fn date(column: &'static str, raw: &str) -> DbResult<NaiveDate> {
-    // `NaiveDate::from_str`은 `2026-3-2`도 받으므로 길이를 고정해 표기를 하나로 유지한다.
-    (raw.len() == 10)
-        .then(|| raw.parse::<NaiveDate>().ok())
-        .flatten()
-        .ok_or(DomainError::validation(
-            column,
-            ValidationReason::InvalidFormat,
-        ))
-        .map_err(corrupt(column))
+    pango_core::calendar::parse_date(column, raw).map_err(corrupt(column))
 }
 
 pub fn date_opt(column: &'static str, raw: Option<&str>) -> DbResult<Option<NaiveDate>> {
