@@ -116,7 +116,11 @@ async fn reload_detail(conn: &mut Conn, id: MemberId) -> ServiceResult<MemberDet
 
 // ── 조회 ────────────────────────────────────────────────────────────────
 
-fn filter(query: &MemberQuery, include_inactive: bool) -> ServiceResult<MemberFilter> {
+fn filter(
+    query: &MemberQuery,
+    include_inactive: bool,
+    search_login_id: bool,
+) -> ServiceResult<MemberFilter> {
     let search = match &query.search {
         Some(raw) => Some(SearchTerm::parse(raw)?.into_string()).filter(|t| !t.is_empty()),
         None => None,
@@ -129,6 +133,7 @@ fn filter(query: &MemberQuery, include_inactive: bool) -> ServiceResult<MemberFi
         },
         departments: query.department_id.map(|id| vec![id]),
         search,
+        search_login_id,
     })
 }
 
@@ -140,7 +145,7 @@ pub async fn list_directory(
     query: &MemberQuery,
 ) -> ServiceResult<Vec<MemberSummary>> {
     let include_inactive = query.include_inactive && authz::view_inactive_members(&ctx.actor);
-    let filter = filter(query, include_inactive)?;
+    let filter = filter(query, include_inactive, false)?;
     let mut conn = state.read().await?;
     let list = members::list(&mut conn, &filter).await?;
     summaries(&mut conn, &list).await
@@ -168,7 +173,7 @@ pub async fn team_members(
     let filter = MemberFilter {
         statuses: vec![MemberStatus::Active],
         departments: scope.map(|departments| departments.iter().copied().collect()),
-        search: None,
+        ..MemberFilter::default()
     };
     let mut conn = state.read().await?;
     let list = members::list(&mut conn, &filter).await?;
@@ -181,7 +186,7 @@ pub async fn admin_list(
     query: &MemberQuery,
 ) -> ServiceResult<Vec<MemberDetail>> {
     authz::require_admin(&ctx.actor)?;
-    let filter = filter(query, query.include_inactive)?;
+    let filter = filter(query, query.include_inactive, true)?;
     let mut conn = state.read().await?;
     let list = members::list(&mut conn, &filter).await?;
     let names = Names::load(&mut conn, &list).await?;

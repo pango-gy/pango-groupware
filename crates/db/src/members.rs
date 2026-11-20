@@ -159,8 +159,11 @@ pub struct MemberFilter {
     pub statuses: Vec<MemberStatus>,
     /// 지정하면 이 부서들에 속한 구성원만.
     pub departments: Option<Vec<DepartmentId>>,
-    /// 이름·아이디 부분 일치.
+    /// 이름 부분 일치.
     pub search: Option<String>,
+    /// 검색어를 로그인 아이디와도 비교할지. 관리자 조회에서만 켠다
+    /// (일반 조회에서 켜면 검색 결과로 남의 아이디를 추측할 수 있다).
+    pub search_login_id: bool,
 }
 
 /// `LIKE` 패턴의 특수문자를 이스케이프한다. 검색어의 `%`, `_`가 와일드카드로 쓰이지 않게 한다.
@@ -199,9 +202,14 @@ pub async fn list(conn: &mut Conn, filter: &MemberFilter) -> DbResult<Vec<Member
         binds.extend(departments.iter().map(ToString::to_string));
     }
     if let Some(term) = filter.search.as_deref().filter(|t| !t.is_empty()) {
-        sql.push_str(" AND (name LIKE ? ESCAPE '\\' OR login_id LIKE ? ESCAPE '\\')");
         let pattern = like_contains(term);
-        binds.extend([pattern.clone(), pattern]);
+        if filter.search_login_id {
+            sql.push_str(" AND (name LIKE ? ESCAPE '\\' OR login_id LIKE ? ESCAPE '\\')");
+            binds.push(pattern.clone());
+        } else {
+            sql.push_str(" AND name LIKE ? ESCAPE '\\'");
+        }
+        binds.push(pattern);
     }
     sql.push_str(" ORDER BY name, id");
     let mut query = sqlx::query_as::<_, MemberRow>(&sql);
