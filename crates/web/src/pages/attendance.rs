@@ -614,7 +614,7 @@ fn CorrectionHistory(revision: ReadSignal<u32>) -> Element {
             {resource_view(first, move |page: Page<CorrectionDto>| {
                 let next = more.cursor(&page);
                 let has_more = next.is_some();
-                let items: Vec<CorrectionDto> = page.items.into_iter().chain(more.items()).collect();
+                let items: Vec<CorrectionDto> = more.all(page.items, |item| item.id);
                 if items.is_empty() {
                     return rsx! {
                         EmptyState {

@@ -12,6 +12,7 @@ use dioxus::prelude::*;
 
 use crate::api::{ApiError, ApiResult};
 use crate::format;
+use crate::route::Route;
 use crate::session::{use_toasts, ToastKind, Toasts};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -179,6 +180,15 @@ pub fn resource_view<T: Clone + 'static>(
         Some(Err(error)) => {
             rsx! { ErrorState { message: error.message(), onretry: move |_| resource.restart() } }
         }
+    }
+}
+
+/// 목록 조회 결과. 아직 읽는 중이거나 실패했으면 빈 목록이다(선택 상자·필터의 보조 목록용.
+/// 본 목록은 [`resource_view`]로 세 상태를 그린다).
+pub fn loaded_or_empty<T: Clone>(resource: &Resource<ApiResult<Vec<T>>>) -> Vec<T> {
+    match &*resource.read() {
+        Some(Ok(list)) => list.clone(),
+        _ => Vec::new(),
     }
 }
 
@@ -391,19 +401,66 @@ pub fn Stat(
 }
 
 /// 누르면 다른 화면으로 가는 숫자 타일(홈·관리 홈의 "처리할 일").
+///
+/// `tab`을 주면 그 화면을 이 탭으로 연다([`use_initial_tab`]).
 #[component]
 pub fn StatLink(
-    to: crate::route::Route,
+    to: Route,
     #[props(into)] label: String,
     #[props(into)] value: String,
     #[props(into, default)] hint: String,
     #[props(default)] tone: Tone,
+    #[props(default)] tab: Option<&'static str>,
 ) -> Element {
+    let pending = use_context::<PendingTab>();
+    let target = to.clone();
     rsx! {
-        Link { class: "stat-link", to,
+        Link {
+            class: "stat-link",
+            to,
+            onclick: move |_| pending.open(target.clone(), tab),
             Stat { label, value, hint, tone }
         }
     }
+}
+
+/// 다른 화면으로 가면서 열어 둘 탭. 경로를 늘리지 않고, 받는 화면이 처음 그릴 때 한 번 쓴다.
+#[derive(Clone, Copy)]
+pub struct PendingTab(Signal<Option<(Route, &'static str)>>);
+
+impl PendingTab {
+    /// `route`로 가면서 `tab`을 열게 한다. `tab`이 없으면 남아 있던 요청을 지운다.
+    pub fn open(mut self, route: Route, tab: Option<&'static str>) {
+        self.0.set(tab.map(|tab| (route, tab)));
+    }
+}
+
+pub fn provide_pending_tab() -> PendingTab {
+    use_context_provider(|| PendingTab(Signal::new(None)))
+}
+
+/// 열 탭: 이 화면(`route`)으로 오면서 요청한 탭이 있으면 그것, 없으면 `default`.
+pub fn initial_tab(
+    pending: Option<&(Route, &'static str)>,
+    route: &Route,
+    default: &'static str,
+) -> &'static str {
+    match pending {
+        Some((target, tab)) if target == route => tab,
+        _ => default,
+    }
+}
+
+/// 탭 상태. 처음 값은 [`initial_tab`]이고, 요청은 그린 뒤(렌더 밖에서) 지운다.
+pub fn use_initial_tab(route: Route, default: &'static str) -> Signal<String> {
+    let mut pending = use_context::<PendingTab>();
+    let tab = use_signal(|| initial_tab(pending.0.peek().as_ref(), &route, default).to_owned());
+    use_effect(move || {
+        if pending.0.peek().is_some() {
+            pending.0.set(None);
+        }
+    });
+    tab
 }
 
 /// 폼 상단에 띄우는 오류 문구.
@@ -628,6 +685,19 @@ pub fn use_more_pages<T: 'static>() -> MorePages<T> {
     }
 }
 
+/// `first` 뒤에 `more`를 붙인다. `key`가 이미 있는 항목은 건너뛴다(페이지 사이에 새 항목이
+/// 생겨 한 칸씩 밀리면 같은 항목이 두 페이지에 걸쳐 온다).
+pub fn merge_unique<T, K: PartialEq>(first: Vec<T>, more: Vec<T>, key: impl Fn(&T) -> K) -> Vec<T> {
+    let mut items = first;
+    for item in more {
+        let id = key(&item);
+        if !items.iter().any(|existing| key(existing) == id) {
+            items.push(item);
+        }
+    }
+    items
+}
+
 /// 다음에 불러올 커서. 이어 붙인 페이지가 있으면 그 커서가, 없으면 첫 페이지의 커서가 기준이다.
 pub fn next_cursor(first: Option<&str>, later: Option<Option<String>>) -> Option<String> {
     match later {
@@ -644,8 +714,10 @@ impl<T: Clone + serde::de::DeserializeOwned + 'static> MorePages<T> {
         self.generation.set(next);
     }
 
-    pub fn items(&self) -> Vec<T> {
-        self.items.read().clone()
+    /// 첫 페이지 뒤에 이어 붙인 항목까지 모두. 읽는 사이 목록이 바뀌어 겹친 항목은 한 번만
+    /// 나온다([`merge_unique`]).
+    pub fn all<K: PartialEq>(&self, first: Vec<T>, key: impl Fn(&T) -> K) -> Vec<T> {
+        merge_unique(first, self.items.read().clone(), key)
     }
 
     pub fn busy(&self) -> bool {
@@ -845,6 +917,42 @@ pub fn YearSwitcher(year: i32, min: i32, max: i32, onchange: EventHandler<i32>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_tab_applies_only_to_its_screen() {
+        let pending = (Route::AdminLeave {}, "requests");
+        assert_eq!(
+            initial_tab(Some(&pending), &Route::AdminLeave {}, "balances"),
+            "requests"
+        );
+        assert_eq!(
+            initial_tab(Some(&pending), &Route::AdminAttendance {}, "records"),
+            "records",
+            "다른 화면으로 온 요청"
+        );
+        assert_eq!(
+            initial_tab(None, &Route::AdminLeave {}, "balances"),
+            "balances"
+        );
+    }
+
+    #[test]
+    fn later_pages_skip_items_already_shown() {
+        let merged = merge_unique(vec![(1, "a"), (2, "b")], vec![(2, "b2"), (3, "c")], |x| x.0);
+        assert_eq!(
+            merged,
+            vec![(1, "a"), (2, "b"), (3, "c")],
+            "먼저 온 것을 둔다"
+        );
+        assert_eq!(
+            merge_unique(Vec::<(u8, u8)>::new(), vec![], |x| x.0),
+            vec![]
+        );
+        assert_eq!(
+            merge_unique(vec![], vec![(1, 1), (1, 2)], |x| x.0),
+            vec![(1, 1)]
+        );
+    }
 
     #[test]
     fn next_cursor_prefers_the_latest_page() {

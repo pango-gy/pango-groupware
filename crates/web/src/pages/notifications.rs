@@ -104,7 +104,7 @@ pub fn Notifications() -> Element {
         }
         {resource_view(first, move |page: Page<NotificationDto>| {
             let cursor = more.cursor(&page);
-            let items: Vec<NotificationDto> = page.items.into_iter().chain(more.items()).collect();
+            let items: Vec<NotificationDto> = more.all(page.items, |item| item.id);
             let read = read_ids.read().clone();
             rsx! {
                 if items.is_empty() {

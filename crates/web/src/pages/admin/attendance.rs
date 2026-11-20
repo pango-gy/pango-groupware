@@ -1,6 +1,7 @@
 //! 근태 관리(관리자): 기간·부서·구성원으로 기록을 찾고, 추가·수정하고, CSV로 내보낸다.
 
 use dioxus::prelude::*;
+use pango_api::approval::DocumentSummary;
 use pango_api::attendance::{AdminAttendanceItem, AttendanceRecordDto};
 use pango_api::org::{DepartmentDto, MemberSummary};
 use pango_api::Page;
@@ -12,12 +13,15 @@ use crate::calendar::YearMonth;
 use crate::company::use_company;
 use crate::format;
 use crate::org_tree;
+use crate::pages::approval::DocumentRow;
 use crate::pages::attendance::RecordHistory;
+use crate::route::Route;
 use crate::session::use_session;
 use crate::ui::{
-    report_error, report_success, resource_view, Badge, Button, ButtonKind, Card, EmptyState,
-    FormError, Icon, IconName, LoadMore, MemberPicker, Modal, PageHeader, PickedMember,
-    SelectField, TextArea, TextField,
+    loaded_or_empty, now, report_error, report_success, resource_view, use_initial_tab,
+    use_more_pages, Badge, Button, ButtonKind, Card, EmptyState, FormError, Icon, IconName,
+    LoadMore, MemberPicker, Modal, PageHeader, PickedMember, SelectField, Tabs, TextArea,
+    TextField,
 };
 
 use logic::{AdminRow, FailureAction, Filter};
@@ -29,18 +33,22 @@ enum Editor {
     Edit(AdminAttendanceItem),
 }
 
+/// 출퇴근 기록 탭.
+const TAB_RECORDS: &str = "records";
+/// 정정 요청 탭. 관리 홈의 "근태 정정" 타일이 이 탭으로 연다.
+pub(crate) const TAB_CORRECTIONS: &str = "corrections";
+
 #[component]
 pub fn AdminAttendance() -> Element {
     let session = use_session();
     let tz = session.zone();
     let this_month = YearMonth::of(use_company().work_today(tz));
+    let mut tab = use_initial_tab(Route::AdminAttendance {}, TAB_RECORDS);
     let mut from = use_signal(move || this_month.first_day().to_string());
     let mut to = use_signal(move || this_month.last_day().to_string());
     let mut department = use_signal(String::new);
     let mut member = use_signal(|| None::<MemberSummary>);
-    let mut extra = use_signal(Vec::<AdminAttendanceItem>::new);
-    let mut next_cursor = use_signal(|| None::<String>);
-    let mut loading_more = use_signal(|| false);
+    let more = use_more_pages::<AdminAttendanceItem>();
     let mut editor = use_signal(|| None::<Editor>);
     let mut history = use_signal(|| None::<(AttendanceRecordId, String)>);
 
@@ -53,43 +61,16 @@ pub fn AdminAttendance() -> Element {
 
     let departments =
         use_resource(|| async { api::get::<Vec<DepartmentDto>>("/departments").await });
-    // 첫 페이지. "더 보기"로 읽은 뒤 페이지는 `extra`에 붙인다.
+    // 첫 페이지와 그 요청 경로. 조건이 틀리면 읽지 않는다(`None`). 뒤 페이지는 `more`가 붙인다.
     let mut list = use_resource(move || async move {
-        let Ok(path) = logic::list_path(&filter(), None) else {
-            extra.set(Vec::new());
-            next_cursor.set(None);
+        let requested = filter();
+        more.reset();
+        let Ok(path) = logic::list_path(&requested, None) else {
             return Ok(None);
         };
         let page = api::get::<Page<AdminAttendanceItem>>(&path).await?;
-        extra.set(Vec::new());
-        next_cursor.set(page.next_cursor);
-        Ok(Some(page.items))
+        Ok(Some((path, page)))
     });
-
-    let load_more = move |_| async move {
-        if loading_more() {
-            return;
-        }
-        let requested = filter();
-        let Some(cursor) = next_cursor() else {
-            return;
-        };
-        let Ok(path) = logic::list_path(&requested, Some(&cursor)) else {
-            return;
-        };
-        loading_more.set(true);
-        let result = api::get::<Page<AdminAttendanceItem>>(&path).await;
-        loading_more.set(false);
-        match result {
-            // 기다리는 동안 조건이 바뀌었으면 버린다(새 첫 페이지가 이미 다시 읽힌다).
-            Ok(page) if filter() == requested => {
-                extra.write().extend(page.items);
-                next_cursor.set(page.next_cursor);
-            }
-            Ok(_) => {}
-            Err(error) => report_error(&error),
-        }
-    };
 
     let current = filter();
     let filter_error = logic::validate(&current)
@@ -97,10 +78,12 @@ pub fn AdminAttendance() -> Element {
         .map(|issue| issue.message().to_owned())
         .unwrap_or_default();
     let export_href = logic::export_href(&current).ok();
-    let department_options = match &*departments.read() {
-        Some(Ok(list)) => org_tree::department_options(list, "전체 부서"),
-        _ => org_tree::department_options(&[], "전체 부서"),
-    };
+    let department_options =
+        org_tree::department_options(&loaded_or_empty(&departments), "전체 부서");
+    let tabs = vec![
+        (TAB_RECORDS.to_owned(), "출퇴근 기록".to_owned(), None),
+        (TAB_CORRECTIONS.to_owned(), "정정 요청".to_owned(), None),
+    ];
 
     rsx! {
         PageHeader {
@@ -118,111 +101,122 @@ pub fn AdminAttendance() -> Element {
                 }
             },
         }
-        Card {
-            div { class: "att-admin-filters",
-                TextField {
-                    label: "시작일",
-                    kind: "date",
-                    value: from(),
-                    oninput: move |value| from.set(value),
+        Tabs { tabs, active: tab(), onselect: move |key| tab.set(key) }
+        if tab() == TAB_CORRECTIONS {
+            CorrectionRequests {}
+        } else {
+            Card {
+                div { class: "att-admin-filters",
+                    TextField {
+                        label: "시작일",
+                        kind: "date",
+                        value: from(),
+                        oninput: move |value| from.set(value),
+                    }
+                    TextField {
+                        label: "종료일",
+                        kind: "date",
+                        value: to(),
+                        oninput: move |value| to.set(value),
+                    }
+                    SelectField {
+                        label: "부서",
+                        value: department(),
+                        options: department_options,
+                        onchange: move |value| department.set(value),
+                    }
+                    if let Some(chosen) = member() {
+                        PickedMemberField { label: "구성원", member: chosen, onclear: move |_| member.set(None) }
+                    } else {
+                        MemberPicker { label: "구성원", onpick: move |picked| member.set(Some(picked)) }
+                    }
                 }
-                TextField {
-                    label: "종료일",
-                    kind: "date",
-                    value: to(),
-                    oninput: move |value| to.set(value),
-                }
-                SelectField {
-                    label: "부서",
-                    value: department(),
-                    options: department_options,
-                    onchange: move |value| department.set(value),
-                }
-                if let Some(chosen) = member() {
-                    PickedMemberField { label: "구성원", member: chosen, onclear: move |_| member.set(None) }
-                } else {
-                    MemberPicker { label: "구성원", onpick: move |picked| member.set(Some(picked)) }
-                }
+                FormError { message: filter_error }
+                p { class: "field-hint", "CSV에는 기간만 적용되고 부서·구성원 조건은 적용되지 않습니다." }
             }
-            FormError { message: filter_error }
-            p { class: "field-hint", "CSV에는 기간만 적용되고 부서·구성원 조건은 적용되지 않습니다." }
-        }
-        {resource_view(list, move |first: Option<Vec<AdminAttendanceItem>>| {
-            let Some(first) = first else {
-                return rsx! {};
-            };
-            let rows: Vec<AdminRow> = first
-                .iter()
-                .chain(extra.read().iter())
-                .map(|item| logic::admin_row(item, tz))
-                .collect();
-            if rows.is_empty() {
-                return rsx! { EmptyState { title: "조건에 맞는 기록이 없습니다.", icon: IconName::Clock } };
-            }
-            rsx! {
-                Card {
-                    div { class: "table-wrap att-desktop",
-                        table { class: "table att-table",
-                            thead {
-                                tr {
-                                    th { "날짜" }
-                                    th { "구성원" }
-                                    th { "근무 형태" }
-                                    th { "출근" }
-                                    th { "퇴근" }
-                                    th { class: "num", "근무시간" }
-                                    th { "상태" }
-                                    th { span { class: "sr-only", "동작" } }
+            {resource_view(list, move |loaded: Option<(String, Page<AdminAttendanceItem>)>| {
+                let Some((base, page)) = loaded else {
+                    return rsx! {};
+                };
+                let next = more.cursor(&page);
+                let rows: Vec<AdminRow> = more
+                    .all(page.items, |item| item.record.id)
+                    .iter()
+                    .map(|item| logic::admin_row(item, tz))
+                    .collect();
+                if rows.is_empty() {
+                    return rsx! { EmptyState { title: "조건에 맞는 기록이 없습니다.", icon: IconName::Clock } };
+                }
+                rsx! {
+                    Card {
+                        div { class: "table-wrap att-desktop",
+                            table { class: "table att-table",
+                                thead {
+                                    tr {
+                                        th { "날짜" }
+                                        th { "구성원" }
+                                        th { "근무 형태" }
+                                        th { "출근" }
+                                        th { "퇴근" }
+                                        th { class: "num", "근무시간" }
+                                        th { "상태" }
+                                        th { span { class: "sr-only", "동작" } }
+                                    }
+                                }
+                                tbody {
+                                    for row in rows.clone() {
+                                        tr { key: "{row.item.record.id}",
+                                            td { "{row.date_label}" }
+                                            td {
+                                                strong { "{row.item.member_name}" }
+                                                span { class: "att-note", "{row.member_meta}" }
+                                            }
+                                            td { "{row.cells.work_type}" }
+                                            td { "{row.cells.clock_in}" }
+                                            td { "{row.cells.clock_out}" }
+                                            td { class: "num", "{row.cells.worked}" }
+                                            td {
+                                                Badge { tone: row.cells.tone, "{row.cells.status}" }
+                                            }
+                                            td { class: "att-row-actions",
+                                                RowActions { row: row.clone(), editor, history }
+                                            }
+                                        }
+                                    }
                                 }
                             }
-                            tbody {
-                                for row in rows.clone() {
-                                    tr { key: "{row.item.record.id}",
-                                        td { "{row.date_label}" }
-                                        td {
-                                            strong { "{row.item.member_name}" }
-                                            span { class: "att-note", "{row.member_meta}" }
-                                        }
-                                        td { "{row.cells.work_type}" }
-                                        td { "{row.cells.clock_in}" }
-                                        td { "{row.cells.clock_out}" }
-                                        td { class: "num", "{row.cells.worked}" }
-                                        td {
-                                            Badge { tone: row.cells.tone, "{row.cells.status}" }
-                                        }
-                                        td { class: "att-row-actions",
+                        }
+                        ul { class: "list att-mobile",
+                            for row in rows {
+                                li { key: "{row.item.record.id}", class: "list-row att-admin-item",
+                                    div { class: "list-row-main",
+                                        strong { "{row.item.member_name} · {row.date_label}" }
+                                        small { "{row.cells.clock_in} – {row.cells.clock_out} · {row.cells.work_type}" }
+                                        small { "{row.member_meta}" }
+                                    }
+                                    div { class: "list-row-side",
+                                        Badge { tone: row.cells.tone, "{row.cells.status}" }
+                                        div { class: "att-row-actions",
                                             RowActions { row: row.clone(), editor, history }
                                         }
                                     }
                                 }
                             }
                         }
-                    }
-                    ul { class: "list att-mobile",
-                        for row in rows {
-                            li { key: "{row.item.record.id}", class: "list-row att-admin-item",
-                                div { class: "list-row-main",
-                                    strong { "{row.item.member_name} · {row.date_label}" }
-                                    small { "{row.cells.clock_in} – {row.cells.clock_out} · {row.cells.work_type}" }
-                                    small { "{row.member_meta}" }
+                        LoadMore {
+                            has_more: next.is_some(),
+                            busy: more.busy(),
+                            onclick: move |_| {
+                                if let Some(cursor) = next.clone() {
+                                    let base = base.clone();
+                                    spawn(more.load(cursor, move |c| api::with_cursor(base.clone(), Some(c))));
                                 }
-                                div { class: "list-row-side",
-                                    Badge { tone: row.cells.tone, "{row.cells.status}" }
-                                    div { class: "att-row-actions",
-                                        RowActions { row: row.clone(), editor, history }
-                                    }
-                                }
-                            }
+                            },
                         }
                     }
-                    LoadMore {
-                        has_more: next_cursor.read().is_some(),
-                        busy: loading_more(),
-                        onclick: load_more,
-                    }
                 }
-            }
-        })}
+            })}
+        }
         if let Some(open) = editor() {
             RecordEditor {
                 editor: open,
@@ -235,6 +229,48 @@ pub fn AdminAttendance() -> Element {
         }
         if let Some((record_id, title)) = history() {
             RecordHistory { record_id, title, onclose: move |_| history.set(None) }
+        }
+    }
+}
+
+/// 결재 중인 근태 정정 요청(결재 문서). 승인·반려는 결재 문서에서 한다.
+#[component]
+fn CorrectionRequests() -> Element {
+    let tz = use_session().zone();
+    let more = use_more_pages::<DocumentSummary>();
+    let first = use_resource(move || async move {
+        more.reset();
+        api::get::<Page<DocumentSummary>>(&logic::corrections_path(None)).await
+    });
+    let at = now();
+    rsx! {
+        Card {
+            p { class: "field-hint", "결재 중인 정정 요청입니다. 결재 문서에서 내용을 보고 처리합니다. 승인되면 기록에 반영됩니다." }
+            {resource_view(first, move |page: Page<DocumentSummary>| {
+                let next = more.cursor(&page);
+                let items = more.all(page.items, |doc| doc.id);
+                if items.is_empty() {
+                    return rsx! {
+                        EmptyState { title: "결재 중인 정정 요청이 없습니다.", icon: IconName::Clock }
+                    };
+                }
+                rsx! {
+                    div { class: "list",
+                        for doc in items {
+                            DocumentRow { key: "{doc.id}", doc, now: at, tz }
+                        }
+                    }
+                    LoadMore {
+                        has_more: next.is_some(),
+                        busy: more.busy(),
+                        onclick: move |_| {
+                            if let Some(cursor) = next.clone() {
+                                spawn(more.load(cursor, |c| logic::corrections_path(Some(c))));
+                            }
+                        },
+                    }
+                }
+            })}
         }
     }
 }
@@ -482,11 +518,13 @@ mod logic {
         AdminAttendanceItem, AdminCreateRecordRequest, AdminEditRecordRequest, AttendanceRecordDto,
     };
     use pango_api::API_PREFIX;
+    use pango_core::approval::{DocumentKind, DocumentStatus};
     use pango_core::attendance::WorkType;
     use pango_core::calendar::{parse_date, DateRange};
     use pango_core::id::{DepartmentId, MemberId};
 
     use crate::format;
+    use crate::pages::approval::logic::admin_documents_path;
     use crate::pages::attendance::logic::{parse_reason, parse_times, record_cells, RecordCells};
     pub use crate::pages::attendance::logic::{work_type_options, FormIssue, TEXT_MAX_CHARS};
 
@@ -553,6 +591,15 @@ mod logic {
 
     fn range_query(range: DateRange) -> String {
         format!("from={}&to={}", range.start(), range.end())
+    }
+
+    /// 결재 중인 근태 정정 문서 목록 경로.
+    pub fn corrections_path(cursor: Option<&str>) -> String {
+        admin_documents_path(
+            Some(DocumentStatus::InProgress),
+            Some(DocumentKind::AttendanceCorrection),
+            cursor,
+        )
     }
 
     /// `/admin/attendance?from=…&to=…&limit=50[&department_id=…][&member_id=…][&cursor=…]`

@@ -90,7 +90,7 @@ pub fn AdminNotices() -> Element {
         }
         {resource_view(list, move |page: Page<NoticeSummary>| {
             let cursor = more.cursor(&page);
-            let items: Vec<NoticeSummary> = page.items.into_iter().chain(more.items()).collect();
+            let items: Vec<NoticeSummary> = more.all(page.items, |item| item.id);
             rsx! {
                 if items.is_empty() {
                     EmptyState { title: "작성한 공지가 없습니다.", icon: IconName::Megaphone }

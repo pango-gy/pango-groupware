@@ -19,7 +19,7 @@ use crate::ui::{
 /// 결재 화면들이 함께 쓰는 순수 함수.
 pub(crate) mod logic {
     use pango_api::approval::{ApprovalCounts, DocumentSummary};
-    use pango_core::approval::{DocumentStatus, Mailbox};
+    use pango_core::approval::{DocumentKind, DocumentStatus, Mailbox};
 
     use crate::text;
 
@@ -31,12 +31,20 @@ pub(crate) mod logic {
         )
     }
 
-    /// `GET /admin/approval/documents` 경로. 상태가 없으면 전체.
-    pub fn admin_documents_path(status: Option<DocumentStatus>, cursor: Option<&str>) -> String {
+    /// `GET /admin/approval/documents` 경로. 상태·종류가 없으면 전체.
+    pub fn admin_documents_path(
+        status: Option<DocumentStatus>,
+        kind: Option<DocumentKind>,
+        cursor: Option<&str>,
+    ) -> String {
         let mut path = "/admin/approval/documents?limit=50".to_owned();
         if let Some(status) = status {
             path.push_str("&status=");
             path.push_str(status.as_str());
+        }
+        if let Some(kind) = kind {
+            path.push_str("&kind=");
+            path.push_str(kind.as_str());
         }
         crate::api::with_cursor(path, cursor)
     }
@@ -143,7 +151,7 @@ pub fn ApprovalList() -> Element {
         {resource_view(first, move |page: Page<DocumentSummary>| {
             let next = more.cursor(&page);
             let has_more = next.is_some();
-            let items: Vec<DocumentSummary> = page.items.into_iter().chain(more.items()).collect();
+            let items: Vec<DocumentSummary> = more.all(page.items, |item| item.id);
             rsx! {
                 if items.is_empty() {
                     EmptyState { title: logic::empty_title(current), icon: IconName::Inbox }
@@ -224,12 +232,20 @@ mod tests {
             "/approval/documents?box=drafted&cursor=a%26b%3Dc%20d"
         );
         assert_eq!(
-            admin_documents_path(None, None),
+            admin_documents_path(None, None, None),
             "/admin/approval/documents?limit=50"
         );
         assert_eq!(
-            admin_documents_path(Some(DocumentStatus::InProgress), Some("ff")),
+            admin_documents_path(Some(DocumentStatus::InProgress), None, Some("ff")),
             "/admin/approval/documents?limit=50&status=in_progress&cursor=ff"
+        );
+        assert_eq!(
+            admin_documents_path(
+                Some(DocumentStatus::InProgress),
+                Some(DocumentKind::AttendanceCorrection),
+                None
+            ),
+            "/admin/approval/documents?limit=50&status=in_progress&kind=attendance_correction"
         );
     }
 

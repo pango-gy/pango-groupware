@@ -194,7 +194,7 @@ pub fn AdminApprovalForms() -> Element {
     let docs = use_resource(move || async move {
         let current = logic::parse_status(&status());
         more.reset();
-        api::get::<Page<DocumentSummary>>(&admin_documents_path(current, None)).await
+        api::get::<Page<DocumentSummary>>(&admin_documents_path(current, None, None)).await
     });
 
     let tz = session.zone();
@@ -263,7 +263,7 @@ pub fn AdminApprovalForms() -> Element {
                 let next = more.cursor(&page);
                 let has_more = next.is_some();
                 let current = logic::parse_status(&status());
-                let items: Vec<DocumentSummary> = page.items.into_iter().chain(more.items()).collect();
+                let items: Vec<DocumentSummary> = more.all(page.items, |item| item.id);
                 rsx! {
                     if items.is_empty() {
                         EmptyState { title: "조건에 맞는 문서가 없습니다.", icon: IconName::Inbox }
@@ -278,7 +278,7 @@ pub fn AdminApprovalForms() -> Element {
                             busy: more.busy(),
                             onclick: move |_| {
                                 if let Some(cursor) = next.clone() {
-                                    spawn(more.load(cursor, move |c| admin_documents_path(current, Some(c))));
+                                    spawn(more.load(cursor, move |c| admin_documents_path(current, None, Some(c))));
                                 }
                             },
                         }

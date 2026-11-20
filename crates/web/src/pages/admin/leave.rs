@@ -15,20 +15,21 @@ use crate::route::Route;
 use crate::session::{use_session, use_toasts};
 use crate::text;
 use crate::ui::{
-    report_error, report_success, resource_view, today, use_more_pages, Badge, Button, ButtonKind,
-    Card, Checkbox, ConfirmModal, DateField, EmptyState, FormError, IconName, LoadMore, Modal,
-    PageHeader, SelectField, Tabs, TextArea, TextField, Tone,
+    report_error, report_success, resource_view, today, use_initial_tab, use_more_pages, Badge,
+    Button, ButtonKind, Card, Checkbox, ConfirmModal, DateField, EmptyState, FormError, IconName,
+    LoadMore, Modal, PageHeader, SelectField, Tabs, TextArea, TextField, Tone,
 };
 
 const TAB_BALANCES: &str = "balances";
-const TAB_REQUESTS: &str = "requests";
+/// 신청 내역 탭. 관리 홈의 "휴가 신청" 타일이 이 탭으로 연다.
+pub(crate) const TAB_REQUESTS: &str = "requests";
 const TAB_TYPES: &str = "types";
 
 #[component]
 pub fn AdminLeave() -> Element {
     let tz = use_session().zone();
     let today = today(tz);
-    let mut tab = use_signal(|| TAB_BALANCES.to_owned());
+    let mut tab = use_initial_tab(Route::AdminLeave {}, TAB_BALANCES);
     let mut running = use_signal(|| false);
     let mut last_run = use_signal(|| None::<AccrualRunResult>);
     let mut balances =
@@ -290,7 +291,7 @@ fn RequestsTab() -> Element {
         }
         {resource_view(first, move |page: Page<LeaveRequestDto>| {
             let next = more.cursor(&page);
-            let items: Vec<LeaveRequestDto> = logic::merge_pages(page.items, more.items());
+            let items: Vec<LeaveRequestDto> = more.all(page.items, |item| item.id);
             rsx! {
                 if items.is_empty() {
                     EmptyState { title: "조건에 맞는 신청이 없습니다.", icon: IconName::Calendar }
@@ -715,20 +716,6 @@ pub(crate) mod logic {
         api::with_cursor(path, cursor)
     }
 
-    /// 첫 페이지 뒤에 더 읽은 항목을 붙인다. 그 사이 목록이 바뀌어 겹친 항목은 한 번만.
-    pub fn merge_pages(
-        first: Vec<LeaveRequestDto>,
-        more: Vec<LeaveRequestDto>,
-    ) -> Vec<LeaveRequestDto> {
-        let mut items = first;
-        for item in more {
-            if !items.iter().any(|existing| existing.id == item.id) {
-                items.push(item);
-            }
-        }
-        items
-    }
-
     /// 관리자는 시작한 휴가도 취소할 수 있다. 끝난 신청(반려·취소)만 제외.
     pub fn admin_can_cancel(status: LeaveRequestStatus) -> bool {
         matches!(
@@ -986,18 +973,8 @@ pub(crate) mod logic {
         }
 
         #[test]
-        fn pages_merge_without_duplicates() {
-            let a = request("a");
-            let b = request("b");
-            let merged = merge_pages(vec![a.clone(), b.clone()], vec![b, request("c")]);
-            assert_eq!(
-                merged
-                    .iter()
-                    .map(|r| r.member_name.as_str())
-                    .collect::<Vec<_>>(),
-                ["a", "b", "c"]
-            );
-            assert!(admin_cancel_message(&a).contains("a님"));
+        fn cancel_message_names_the_member() {
+            assert!(admin_cancel_message(&request("a")).contains("a님"));
         }
 
         #[test]

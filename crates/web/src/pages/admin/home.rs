@@ -46,6 +46,7 @@ pub fn AdminHome() -> Element {
                                     value: item.tile.value,
                                     hint: item.hint,
                                     tone: item.tile.tone,
+                                    tab: item.tab,
                                 }
                             }
                         }
@@ -137,6 +138,8 @@ mod logic {
 
     use crate::format;
     use crate::layout::{admin_nav, NavItem};
+    use crate::pages::admin::attendance as admin_attendance;
+    use crate::pages::admin::leave as admin_leave;
     use crate::pages::attendance::logic::Tile;
     use crate::route::Route;
     use crate::ui::Tone;
@@ -192,11 +195,12 @@ mod logic {
         }
     }
 
-    /// 처리할 일 한 칸: 숫자와 처리할 화면.
+    /// 처리할 일 한 칸: 숫자와 처리할 화면(과 그 화면에서 열 탭).
     pub struct PendingItem {
         pub tile: Tile,
         pub hint: &'static str,
         pub to: Route,
+        pub tab: Option<&'static str>,
     }
 
     pub fn pending_items(pending: &DashboardPending) -> Vec<PendingItem> {
@@ -205,6 +209,7 @@ mod logic {
                 tile: Tile::count("휴가 신청", pending.leave_requests, "건", Tone::Warning),
                 hint: "결재 중인 신청",
                 to: Route::AdminLeave {},
+                tab: Some(admin_leave::TAB_REQUESTS),
             },
             PendingItem {
                 tile: Tile::count(
@@ -215,11 +220,13 @@ mod logic {
                 ),
                 hint: "결재 중인 요청",
                 to: Route::AdminAttendance {},
+                tab: Some(admin_attendance::TAB_CORRECTIONS),
             },
             PendingItem {
                 tile: Tile::count("진행 중 결재", pending.approval_documents, "건", Tone::Info),
                 hint: "휴가·정정 문서 포함",
                 to: Route::AdminApprovalForms {},
+                tab: None,
             },
         ]
     }
@@ -309,8 +316,19 @@ mod logic {
             });
             assert_eq!(items.len(), 3);
             assert_eq!(items[0].to, Route::AdminLeave {});
+            assert_eq!(
+                items[0].tab,
+                Some(admin_leave::TAB_REQUESTS),
+                "신청 내역 탭"
+            );
             assert_eq!(items[0].tile.tone, Tone::Warning);
             assert_eq!(items[1].to, Route::AdminAttendance {});
+            assert_eq!(
+                items[1].tab,
+                Some(admin_attendance::TAB_CORRECTIONS),
+                "정정 요청 탭"
+            );
+            assert_eq!(items[2].tab, None);
             assert_eq!(items[1].tile.tone, Tone::Neutral, "0건은 강조하지 않는다");
             assert_eq!(items[2].to, Route::AdminApprovalForms {});
             assert_eq!(items[2].tile.value, "7건");
