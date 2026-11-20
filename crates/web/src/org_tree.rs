@@ -128,6 +128,27 @@ pub fn department_options(list: &[DepartmentDto], none_label: &str) -> Vec<(Stri
         .collect()
 }
 
+/// 구성원 목록 조회 쿼리 `(이름, 값)`(`GET /members`, `GET /admin/members`). 빈 값과 형식이
+/// 틀린 부서 ID는 보내지 않는다.
+pub fn member_query(
+    search: &str,
+    department: &str,
+    include_inactive: bool,
+) -> Vec<(&'static str, String)> {
+    let mut pairs = Vec::new();
+    let search = search.trim();
+    if !search.is_empty() {
+        pairs.push(("search", search.to_owned()));
+    }
+    if let Ok(id) = DepartmentId::parse(department) {
+        pairs.push(("department_id", id.to_string()));
+    }
+    if include_inactive {
+        pairs.push(("include_inactive", "true".to_owned()));
+    }
+    pairs
+}
+
 /// 상위 부서 선택 항목. 수정 중인 부서 자신과 그 하위 부서는 고를 수 없다(순환 방지).
 pub fn parent_options(
     list: &[DepartmentDto],
@@ -177,6 +198,21 @@ pub fn position_options(list: &[PositionDto], none_label: &str) -> Vec<(String, 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn member_query_omits_empty_and_invalid_values() {
+        assert!(member_query("  ", "", false).is_empty());
+        assert!(member_query("", "not-an-id", false).is_empty());
+        let id = DepartmentId::new();
+        assert_eq!(
+            member_query(" 홍 ", &id.to_string(), true),
+            vec![
+                ("search", "홍".to_owned()),
+                ("department_id", id.to_string()),
+                ("include_inactive", "true".to_owned()),
+            ]
+        );
+    }
 
     pub(crate) fn dept(name: &str, parent: Option<DepartmentId>, sort_order: i64) -> DepartmentDto {
         DepartmentDto {

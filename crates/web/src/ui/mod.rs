@@ -4,7 +4,7 @@ pub mod approval_line;
 mod icon;
 mod member_picker;
 
-pub use approval_line::{ApprovalLineEditor, ApproverEntry};
+pub use approval_line::{use_line_draft, ApprovalLineEditor, ApproverEntry};
 pub use icon::{Icon, IconName};
 pub use member_picker::{MemberPicker, PickedMember};
 

@@ -4,7 +4,6 @@
 //! 오늘 카드(`TodayBody`)는 홈도 함께 쓴다.
 
 use dioxus::prelude::*;
-use pango_api::approval::LineSuggestion;
 use pango_api::attendance::{
     AttendanceEventDto, AttendanceRecordDto, CorrectionDto, MonthRecords, MonthlySummaryDto,
     TodayResponse,
@@ -20,11 +19,12 @@ use crate::format;
 use crate::route::Route;
 use crate::session::{use_session, use_toasts};
 use crate::text;
-use crate::ui::approval_line::{from_suggestion, line_problem};
+use crate::ui::approval_line::line_problem;
 use crate::ui::{
-    report_error, report_success, resource_view, use_more_pages, ApprovalLineEditor, ApproverEntry,
-    Badge, Button, ButtonKind, Card, ConfirmModal, EmptyState, FormError, IconName, LoadMore,
-    Modal, MonthSwitcher, PageHeader, SelectField, Spinner, Stat, TextArea, TextField, Tone,
+    report_error, report_success, resource_view, use_line_draft, use_more_pages,
+    ApprovalLineEditor, ApproverEntry, Badge, Button, ButtonKind, Card, ConfirmModal, EmptyState,
+    FormError, IconName, LoadMore, Modal, MonthSwitcher, PageHeader, SelectField, Spinner, Stat,
+    TextArea, TextField, Tone,
 };
 
 use logic::{CorrectionSlot, CorrectionTarget, DayRow, MonthEndpoint, TodayStage};
@@ -410,21 +410,9 @@ fn CorrectionModal(
     let mut form = use_signal(move || initial);
     // 창을 열 때 한 번 만든다. 두 번 눌러도 요청은 하나만 생긴다.
     let key = use_signal(api::new_idempotency_key);
-    let mut line = use_signal(Vec::<ApproverEntry>::new);
-    let mut line_touched = use_signal(|| false);
+    let mut line = use_line_draft(me_id.into_iter().collect());
     let mut busy = use_signal(|| false);
     let mut problem = use_signal(|| None::<(CorrectionSlot, String)>);
-    let suggestion = use_resource(move || async move {
-        let result = api::get::<LineSuggestion>("/approval/line-suggestion").await;
-        if let Ok(found) = &result {
-            // 사용자가 이미 고쳤다면 추천으로 덮어쓰지 않는다.
-            if !*line_touched.peek() {
-                let exclude: Vec<_> = me_id.into_iter().collect();
-                line.set(from_suggestion(&exclude, &found.steps));
-            }
-        }
-        result
-    });
 
     let work_date = target.date;
     let submit = move |event: FormEvent| async move {
@@ -432,7 +420,7 @@ fn CorrectionModal(
         if busy() {
             return;
         }
-        let request = match logic::correction_request(work_date, &form(), &line(), tz) {
+        let request = match logic::correction_request(work_date, &form(), &line.steps(), tz) {
             Ok(request) => request,
             Err(issue) => {
                 problem.set(Some((issue.slot(), issue.message().to_owned())));
@@ -475,7 +463,7 @@ fn CorrectionModal(
         }
     };
     let current = form();
-    let line_now = line();
+    let line_now = line.steps();
     let line_message = {
         let from_problem = message_for(CorrectionSlot::Line);
         if from_problem.is_empty() {
@@ -546,7 +534,7 @@ fn CorrectionModal(
                 }
                 div { class: "field",
                     p { class: "field-hint", "마지막 결재자는 내 조직장 또는 관리자여야 합니다. 추천 결재선을 쓰면 이 조건을 맞춥니다." }
-                    if suggestion.read().is_none() {
+                    if !line.ready() {
                         Spinner {}
                     } else {
                         ApprovalLineEditor {
@@ -555,7 +543,6 @@ fn CorrectionModal(
                             disabled: busy(),
                             error: line_message,
                             onchange: move |next: Vec<ApproverEntry>| {
-                                line_touched.set(true);
                                 line.set(next);
                                 problem.set(None);
                             },

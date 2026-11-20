@@ -1,7 +1,6 @@
 //! 휴가 신청 폼.
 
 use dioxus::prelude::*;
-use pango_api::approval::LineSuggestion;
 use pango_api::leave::{BalanceDto, LeaveRequestDto, LeaveTypeDto};
 use pango_core::leave::LeaveUnit;
 
@@ -10,10 +9,9 @@ use crate::company::use_company;
 use crate::route::Route;
 use crate::session::use_session;
 use crate::text;
-use crate::ui::approval_line::from_suggestion;
 use crate::ui::{
-    report_success, today, ApprovalLineEditor, ApproverEntry, Button, ButtonKind, Card, DateField,
-    ErrorState, FormError, PageHeader, SelectField, Spinner, TextArea,
+    report_success, today, use_line_draft, ApprovalLineEditor, ApproverEntry, Button, ButtonKind,
+    Card, DateField, ErrorState, FormError, PageHeader, SelectField, Spinner, TextArea,
 };
 
 use logic::Slot;
@@ -34,24 +32,12 @@ pub fn LeaveNew() -> Element {
     let mut start = use_signal(|| today.to_string());
     let mut end = use_signal(|| today.to_string());
     let mut reason = use_signal(String::new);
-    let mut line = use_signal(Vec::<ApproverEntry>::new);
-    let mut line_touched = use_signal(|| false);
+    let mut line = use_line_draft(me_id.into_iter().collect());
     let mut busy = use_signal(|| false);
     let mut server_error = use_signal(|| None::<(Slot, String)>);
 
     let mut types = use_resource(|| async { api::get::<Vec<LeaveTypeDto>>("/leave/types").await });
     let balance = use_resource(|| async { api::get::<BalanceDto>("/leave/balance").await });
-    let suggestion = use_resource(move || async move {
-        let result = api::get::<LineSuggestion>("/approval/line-suggestion").await;
-        if let Ok(found) = &result {
-            // 사용자가 이미 고쳤다면 추천으로 덮어쓰지 않는다.
-            if !*line_touched.peek() {
-                let exclude: Vec<_> = me_id.into_iter().collect();
-                line.set(from_suggestion(&exclude, &found.steps));
-            }
-        }
-        result
-    });
 
     let type_list: Vec<LeaveTypeDto> = match &*types.read() {
         Some(Ok(list)) => logic::usable_types(list),
@@ -64,7 +50,7 @@ pub fn LeaveNew() -> Element {
         _ => None,
     };
     let preview = logic::preview(&start(), &end(), unit(), chosen.as_ref(), remaining, week);
-    let line_problem = crate::ui::approval_line::line_problem(&line());
+    let line_problem = crate::ui::approval_line::line_problem(&line.steps());
     let reason_problem = logic::reason_problem(&reason());
     let can_submit =
         chosen.is_some() && preview.is_ok() && line_problem.is_none() && reason_problem.is_none();
@@ -88,7 +74,7 @@ pub fn LeaveNew() -> Element {
             &start(),
             &end(),
             &reason(),
-            &line(),
+            &line.steps(),
             week,
         ) {
             Ok(request) => request,
@@ -241,16 +227,15 @@ pub fn LeaveNew() -> Element {
                     }
                 }
                 Card { title: "결재선",
-                    if suggestion.read().is_none() {
+                    if !line.ready() {
                         Spinner {}
                     } else {
                         ApprovalLineEditor {
-                            steps: line(),
+                            steps: line.steps(),
                             exclude: me_id.into_iter().collect::<Vec<_>>(),
                             disabled: busy(),
                             error: logic::line_error(error_for(Slot::Line), line_problem),
                             onchange: move |next: Vec<ApproverEntry>| {
-                                line_touched.set(true);
                                 line.set(next);
                                 server_error.set(None);
                             },

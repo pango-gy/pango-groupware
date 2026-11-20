@@ -565,27 +565,6 @@ pub(crate) mod logic {
         pub recorded: String,
     }
 
-    fn ledger_detail(entry: &LedgerEntryDto) -> String {
-        let ymd = |d: NaiveDate| format::date_ymd(d);
-        match entry.kind {
-            LedgerKind::Grant => match (entry.valid_from, entry.expires_on) {
-                (Some(from), Some(until)) => format!("{} ~ {} 사용 가능", ymd(from), ymd(until)),
-                (Some(from), None) => format!("{}부터 사용 가능 · 소멸 없음", ymd(from)),
-                (None, Some(until)) => format!("{}까지 사용 가능", ymd(until)),
-                (None, None) => "소멸 없음".into(),
-            },
-            LedgerKind::Use => entry
-                .effective_on
-                .map(|d| format!("{} 휴가", ymd(d)))
-                .unwrap_or_else(|| "휴가 사용".into()),
-            LedgerKind::Restore => "신청 취소·반려로 복원".into(),
-            LedgerKind::Adjust => entry
-                .effective_on
-                .map(|d| format!("{} 적용 · 관리자 조정", ymd(d)))
-                .unwrap_or_else(|| "관리자 조정".into()),
-        }
-    }
-
     /// 사용 내역. 최근 기록이 위로 온다.
     pub fn ledger_lines(entries: &[LedgerEntryDto], tz: Tz) -> Vec<LedgerLine> {
         let mut sorted: Vec<&LedgerEntryDto> = entries.iter().collect();
@@ -599,7 +578,7 @@ pub(crate) mod logic {
                     label: text::ledger_kind_label(entry.kind),
                     tone: text::ledger_kind_tone(entry.kind),
                     amount: signed_days(signed),
-                    detail: ledger_detail(entry),
+                    detail: text::ledger_detail(entry),
                     memo: entry.memo.clone().filter(|m| !m.trim().is_empty()),
                     recorded: recorded_on(entry.created_at, tz),
                 }

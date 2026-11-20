@@ -5,7 +5,7 @@ mod audit;
 mod forms;
 mod home;
 pub(crate) mod leave;
-pub(crate) mod members;
+mod members;
 mod notices;
 mod org;
 mod policy;

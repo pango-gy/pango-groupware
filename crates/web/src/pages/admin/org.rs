@@ -9,9 +9,9 @@ use crate::api;
 use crate::org_tree;
 use crate::text;
 use crate::ui::{
-    report_error, report_form_error, report_success, resource_view, Button, ButtonKind, Card,
-    ConfirmModal, EmptyState, FormError, Icon, IconName, MemberPicker, Modal, PageHeader,
-    PickedMember, SelectField, Tabs, TextField,
+    loaded_or_empty, report_error, report_form_error, report_success, resource_view, Button,
+    ButtonKind, Card, ConfirmModal, EmptyState, FormError, Icon, IconName, MemberPicker, Modal,
+    PageHeader, PickedMember, SelectField, Tabs, TextField,
 };
 
 use self::logic::{DepartmentForm, PositionForm};
@@ -277,10 +277,7 @@ pub fn AdminOrg() -> Element {
         }
     };
 
-    let department_list: Vec<DepartmentDto> = match &*departments.read() {
-        Some(Ok(list)) => list.clone(),
-        _ => Vec::new(),
-    };
+    let department_list = loaded_or_empty(&departments);
     let on_departments = tab() == DEPARTMENTS;
 
     rsx! {

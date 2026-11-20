@@ -11,12 +11,13 @@ use pango_core::text::{Body, Title};
 use crate::api;
 use crate::badges::refresh_badges;
 use crate::format;
+use crate::org_tree;
 use crate::pages::notices::NoticeFlags;
 use crate::session::use_session;
 use crate::ui::{
-    report_error, report_success, resource_view, use_more_pages, Badge, Button, ButtonKind, Card,
-    Checkbox, ConfirmModal, EmptyState, FormError, IconName, LoadMore, Modal, PageHeader,
-    SelectField, TextArea, TextField, Tone,
+    loaded_or_empty, report_error, report_success, resource_view, use_more_pages, Badge, Button,
+    ButtonKind, Card, Checkbox, ConfirmModal, EmptyState, FormError, IconName, LoadMore, Modal,
+    PageHeader, SelectField, TextArea, TextField, Tone,
 };
 
 use logic::{build_input, count_label, NoticeForm, LIST_PATH};
@@ -44,13 +45,9 @@ pub fn AdminNotices() -> Element {
         use_resource(|| async { api::get::<Vec<DepartmentDto>>("/departments").await });
     let tz = session.zone();
 
-    let department_options: Vec<(String, String)> = match &*departments.read() {
-        Some(Ok(items)) => items
-            .iter()
-            .map(|d| (d.id.to_string(), d.name.clone()))
-            .collect(),
-        _ => Vec::new(),
-    };
+    // 대상 부서 선택지. 조직도와 같은 순서·들여쓰기로 보인다.
+    let department_options =
+        org_tree::department_options(&loaded_or_empty(&departments), "부서 선택");
 
     let saved = move |_| {
         dialog.set(Dialog::Closed);
@@ -289,8 +286,6 @@ fn NoticeEditor(
     };
 
     let current = form.read().clone();
-    let mut department_options = vec![(String::new(), "부서 선택".to_owned())];
-    department_options.extend(departments);
     let audience_options = vec![
         (
             AudienceKind::All.as_str().to_owned(),
@@ -343,7 +338,7 @@ fn NoticeEditor(
                     SelectField {
                         label: "대상 부서",
                         value: current.department.clone(),
-                        options: department_options,
+                        options: departments,
                         required: true,
                         onchange: move |value| form.write().department = value,
                     }

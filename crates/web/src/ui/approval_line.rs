@@ -133,6 +133,61 @@ pub fn line_problem(steps: &[ApproverEntry]) -> Option<&'static str> {
     None
 }
 
+/// 추천 결재선을 읽어 편집용 단계로 바꾼다(제외 대상은 [`from_suggestion`]이 거른다).
+async fn fetch_suggestion(exclude: &[MemberId]) -> api::ApiResult<Vec<ApproverEntry>> {
+    let suggestion = api::get::<LineSuggestion>("/approval/line-suggestion").await?;
+    Ok(from_suggestion(exclude, &suggestion.steps))
+}
+
+/// 추천 결재선으로 미리 채워 두는 결재선 상태. 휴가 신청·근태 정정 요청이 함께 쓴다.
+///
+/// 추천이 오기 전에 사용자가 고쳤으면 덮어쓰지 않는다. 추천을 읽지 못하면 빈 결재선으로
+/// 시작한다(편집기의 "추천 결재선 불러오기"로 다시 받을 수 있다).
+#[derive(Clone, Copy)]
+pub struct LineDraft {
+    steps: Signal<Vec<ApproverEntry>>,
+    touched: Signal<bool>,
+    suggestion: Resource<()>,
+}
+
+impl LineDraft {
+    pub fn steps(&self) -> Vec<ApproverEntry> {
+        self.steps.read().clone()
+    }
+
+    /// 추천을 받아 봤는지(성공·실패 모두). 그 전에는 편집기 대신 불러오는 중을 보여 준다.
+    pub fn ready(&self) -> bool {
+        self.suggestion.read().is_some()
+    }
+
+    /// 사용자가 고친 결재선.
+    pub fn set(&mut self, next: Vec<ApproverEntry>) {
+        self.touched.set(true);
+        self.steps.set(next);
+    }
+}
+
+/// [`LineDraft`]를 만든다. `exclude`는 보통 기안자 본인이다.
+pub fn use_line_draft(exclude: Vec<MemberId>) -> LineDraft {
+    let mut steps = use_signal(Vec::<ApproverEntry>::new);
+    let touched = use_signal(|| false);
+    let suggestion = use_resource(move || {
+        let exclude = exclude.clone();
+        async move {
+            if let Ok(suggested) = fetch_suggestion(&exclude).await {
+                if !*touched.peek() {
+                    steps.set(suggested);
+                }
+            }
+        }
+    });
+    LineDraft {
+        steps,
+        touched,
+        suggestion,
+    }
+}
+
 /// 결재선 편집기.
 ///
 /// - `steps`: 현재 결재선(순서대로).
@@ -163,9 +218,8 @@ pub fn ApprovalLineEditor(
                     return;
                 }
                 loading.set(true);
-                match api::get::<LineSuggestion>("/approval/line-suggestion").await {
-                    Ok(suggestion) => {
-                        let next = from_suggestion(&exclude, &suggestion.steps);
+                match fetch_suggestion(&exclude).await {
+                    Ok(next) => {
                         if next.is_empty() {
                             toasts
                                 .success("추천할 결재선이 없습니다. 결재자를 직접 지정해 주세요.");
