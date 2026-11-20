@@ -123,6 +123,12 @@ pub fn require_updated(updated: bool) -> ServiceResult<()> {
     }
 }
 
+/// 저장소가 센 건수(`COUNT(*)`, `i64`)를 응답의 `u32`로 바꾼다. 음수나 너무 큰 값은 저장소가
+/// 돌려줄 수 없는 값이므로 내부 오류다.
+pub fn count_u32(count: i64) -> ServiceResult<u32> {
+    u32::try_from(count).map_err(ServiceError::internal)
+}
+
 /// 조회 결과가 없으면 `NotFound`.
 pub fn found<T>(value: Option<T>) -> ServiceResult<T> {
     value.ok_or(ServiceError::Domain(DomainError::NotFound))

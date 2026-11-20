@@ -14,7 +14,7 @@ use pango_db::org::{self, Department, Position};
 use pango_db::{members, Conn, DbError};
 
 use super::support::{
-    audit, current_actor, department_tree, found, member_names, require_updated, Audit,
+    audit, count_u32, current_actor, department_tree, found, member_names, require_updated, Audit,
     AuthContext, Changes, Idempotency,
 };
 use crate::error::{ServiceError, ServiceResult};
@@ -94,7 +94,7 @@ async fn department_dtos(
                 head_member_id: d.head_member_id,
                 name: d.name,
                 sort_order: d.sort_order,
-                member_count: u32::try_from(count).map_err(ServiceError::internal)?,
+                member_count: count_u32(count)?,
                 version: d.version,
             })
         })

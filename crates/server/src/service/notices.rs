@@ -15,7 +15,7 @@ use pango_db::notices::{self, Notice, NoticeCursor, NoticeFilter, NoticeListItem
 use pango_db::{notifications, Conn};
 
 use super::support::{
-    audit, department_subtree, department_tree, found, members_by_id, next_page, notify,
+    audit, count_u32, department_subtree, department_tree, found, members_by_id, next_page, notify,
     require_current_admin, require_updated, Audit, AuthContext, Idempotency, Notify,
 };
 use crate::error::{ServiceError, ServiceResult};
@@ -260,10 +260,9 @@ pub async fn unread_count_tx(conn: &mut Conn, actor: &Actor) -> ServiceResult<No
         include_archived: false,
     };
     let (unread, must_read) = notices::count_unread(conn, &filter).await?;
-    let count = |n: i64| u32::try_from(n).map_err(ServiceError::internal);
     Ok(NoticeUnreadCount {
-        unread: count(unread)?,
-        must_read_unread: count(must_read)?,
+        unread: count_u32(unread)?,
+        must_read_unread: count_u32(must_read)?,
     })
 }
 

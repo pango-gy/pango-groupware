@@ -12,9 +12,9 @@ use pango_api::PageQuery;
 use pango_core::authz;
 use pango_db::{approval as documents, attendance_corrections, leave as leave_requests, Conn};
 
-use super::support::{AuthContext, Company};
+use super::support::{count_u32, AuthContext, Company};
 use super::{approval, attendance, audit_log, leave, notices, notifications};
-use crate::error::{ServiceError, ServiceResult};
+use crate::error::ServiceResult;
 use crate::state::AppState;
 
 /// 홈에 보여 줄 최근 공지 수.
@@ -26,10 +26,6 @@ const MISSING_CLOCK_OUT_DAYS: u64 = 7;
 const MISSING_CLOCK_OUT_MEMBERS: usize = 20;
 /// 대시보드에 보여 줄 최근 감사 로그 수.
 const RECENT_AUDIT_ENTRIES: u32 = 10;
-
-fn count(value: i64) -> ServiceResult<u32> {
-    u32::try_from(value).map_err(ServiceError::internal)
-}
 
 /// 구성원 홈. 조직장·관리자에게는 볼 수 있는 구성원의 오늘 현황이 함께 간다.
 ///
@@ -109,9 +105,9 @@ pub async fn admin_dashboard(state: &AppState, ctx: &AuthContext) -> ServiceResu
             late: headcount.late,
         },
         pending: DashboardPending {
-            leave_requests: count(leave_requests::count_pending(conn).await?)?,
-            correction_requests: count(attendance_corrections::count_pending(conn).await?)?,
-            approval_documents: count(documents::count_in_progress(conn).await?)?,
+            leave_requests: count_u32(leave_requests::count_pending(conn).await?)?,
+            correction_requests: count_u32(attendance_corrections::count_pending(conn).await?)?,
+            approval_documents: count_u32(documents::count_in_progress(conn).await?)?,
         },
         missing_clock_out: attendance::missing_clock_outs_tx(
             conn,

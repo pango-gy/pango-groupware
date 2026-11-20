@@ -7,8 +7,8 @@ use pango_core::DomainError;
 use pango_db::notifications::{self, Notification};
 use pango_db::Conn;
 
-use super::support::{next_page, AuthContext};
-use crate::error::{ServiceError, ServiceResult};
+use super::support::{count_u32, next_page, AuthContext};
+use crate::error::ServiceResult;
 use crate::state::AppState;
 
 fn dto(notification: Notification) -> NotificationDto {
@@ -51,7 +51,7 @@ pub async fn unread_count(state: &AppState, ctx: &AuthContext) -> ServiceResult<
 pub async fn unread_count_tx(conn: &mut Conn, member_id: MemberId) -> ServiceResult<UnreadCount> {
     let count = notifications::count_unread(conn, member_id).await?;
     Ok(UnreadCount {
-        unread: u32::try_from(count).map_err(ServiceError::internal)?,
+        unread: count_u32(count)?,
     })
 }
 

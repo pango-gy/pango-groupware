@@ -33,8 +33,9 @@ use pango_db::members::{self, Member};
 use pango_db::{org, Conn};
 
 use super::support::{
-    audit, department_tree_of, found, member_names, next_page, notify, require_active_members,
-    require_current_admin, require_updated, Audit, AuthContext, Company, Idempotency, Notify,
+    audit, count_u32, department_tree_of, found, member_names, next_page, notify,
+    require_active_members, require_current_admin, require_updated, Audit, AuthContext, Company,
+    Idempotency, Notify,
 };
 use super::{attendance, leave};
 use crate::error::{ServiceError, ServiceResult};
@@ -478,11 +479,10 @@ pub async fn counts(state: &AppState, ctx: &AuthContext) -> ServiceResult<Approv
 /// 한 구성원의 결재함 건수. 홈 화면도 같은 값을 쓴다.
 pub async fn counts_tx(conn: &mut Conn, member_id: MemberId) -> ServiceResult<ApprovalCounts> {
     let counts = approval::mailbox_counts(conn, member_id).await?;
-    let clamp = |count: i64| u32::try_from(count).unwrap_or(u32::MAX);
     Ok(ApprovalCounts {
-        todo: clamp(counts.todo),
-        in_progress_drafted: clamp(counts.in_progress_drafted),
-        unread_reference: clamp(counts.unread_reference),
+        todo: count_u32(counts.todo)?,
+        in_progress_drafted: count_u32(counts.in_progress_drafted)?,
+        unread_reference: count_u32(counts.unread_reference)?,
     })
 }
 
