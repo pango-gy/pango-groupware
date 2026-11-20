@@ -3,6 +3,7 @@
 pub mod approval_line;
 mod icon;
 mod member_picker;
+pub mod workday_bar;
 
 pub use approval_line::{use_line_draft, ApprovalLineEditor, ApproverEntry};
 pub use icon::{Icon, IconName};
