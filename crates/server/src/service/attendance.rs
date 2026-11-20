@@ -45,9 +45,9 @@ use pango_db::{org, settings, Conn};
 
 use super::approval::{self, LinkedOutcome, SystemDocument};
 use super::support::{
-    audit, audit_as, current_member, department_tree, found, member_names, next_page, notify,
-    push_csv_row, require_current_admin, require_updated, Audit, AuthContext, Company, Idempotency,
-    Notify,
+    audit, audit_as, current_member, department_tree, found, member_names, members_by_id,
+    next_page, notify, push_csv_row, require_current_admin, require_updated, Audit, AuthContext,
+    Company, Idempotency, Notify,
 };
 use crate::error::{ServiceError, ServiceResult};
 use crate::state::AppState;
@@ -223,23 +223,8 @@ fn member_ids_of(rows: &[RecordWithMember]) -> Vec<MemberId> {
     rows.iter().map(|r| r.record.member_id).collect()
 }
 
-/// 기록 주인들을 한 번씩만 읽어 둔다(판정에 추적 기간이 필요하다).
-async fn record_owners(
-    conn: &mut Conn,
-    member_ids: Vec<MemberId>,
-) -> ServiceResult<HashMap<MemberId, Member>> {
-    let mut ids = member_ids;
-    ids.sort();
-    ids.dedup();
-    Ok(members::find_many(conn, &ids)
-        .await?
-        .into_iter()
-        .map(|m| (m.id, m))
-        .collect())
-}
-
 /// 기록의 주인. 기록은 외래 키로 구성원에 묶여 있으므로 없으면 내부 오류다.
-fn owner_of(owners: &HashMap<MemberId, Member>, member_id: MemberId) -> ServiceResult<&Member> {
+fn owner_of(owners: &BTreeMap<MemberId, Member>, member_id: MemberId) -> ServiceResult<&Member> {
     owners
         .get(&member_id)
         .ok_or_else(|| ServiceError::internal("attendance record has no member"))
@@ -503,14 +488,7 @@ pub async fn record_events(
     let record = found(attendance::find(&mut conn, record_id).await?)?;
     viewable_member(&mut conn, ctx, Some(record.member_id)).await?;
     let events = attendance::list_events(&mut conn, record_id).await?;
-    let mut actor_ids: Vec<_> = events.iter().map(|e| e.actor_id).collect();
-    actor_ids.sort();
-    actor_ids.dedup();
-    let names: HashMap<_, _> = members::find_many(&mut conn, &actor_ids)
-        .await?
-        .into_iter()
-        .map(|m| (m.id, m.name))
-        .collect();
+    let names = member_names(&mut conn, events.iter().map(|e| e.actor_id)).await?;
     Ok(events
         .into_iter()
         .map(|e| AttendanceEventDto {
@@ -671,7 +649,7 @@ pub async fn missing_clock_outs_tx(
         .ok_or_else(|| DomainError::validation("date", ValidationReason::OutOfRange))?;
     let range = DateRange::new(start, today)?;
     let open = attendance::list_open(conn, range).await?;
-    let owners = record_owners(conn, member_ids_of(&open)).await?;
+    let owners = members_by_id(conn, member_ids_of(&open)).await?;
     let evaluator = Evaluator::new(conn, company, range, now).await?;
     let mut missing: Vec<MissingClockOut> = Vec::new();
     for row in open {
@@ -1077,7 +1055,7 @@ pub async fn admin_list(
     let filter = admin_filter(&mut conn, range, query).await?;
     let (rows, has_more) = attendance::list_page(&mut conn, &filter, after, page.limit()).await?;
     let leaves = leaves_for(&mut conn, member_ids_of(&rows), range).await?;
-    let owners = record_owners(&mut conn, member_ids_of(&rows)).await?;
+    let owners = members_by_id(&mut conn, member_ids_of(&rows)).await?;
     let company = Company::load(&mut conn).await?;
     let evaluator = Evaluator::new(&mut conn, company, range, now).await?;
     let items = rows
@@ -1302,7 +1280,7 @@ pub async fn export_body_tx(
     };
     let rows = attendance::list_for_export(conn, &filter).await?;
     let leaves = leaves_for(conn, member_ids_of(&rows), range).await?;
-    let owners = record_owners(conn, member_ids_of(&rows)).await?;
+    let owners = members_by_id(conn, member_ids_of(&rows)).await?;
     let company = Company::load(conn).await?;
     let evaluator = Evaluator::new(conn, company, range, now).await?;
     let mut body = String::from("\u{feff}");

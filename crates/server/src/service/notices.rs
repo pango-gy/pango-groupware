@@ -16,8 +16,8 @@ use pango_db::notices::{self, Notice, NoticeCursor, NoticeFilter, NoticeListItem
 use pango_db::{notifications, org, Conn};
 
 use super::support::{
-    audit, department_tree, found, next_page, notify, require_current_admin, require_updated,
-    Audit, AuthContext, Idempotency, Notify,
+    audit, department_tree, found, members_by_id, next_page, notify, require_current_admin,
+    require_updated, Audit, AuthContext, Idempotency, Notify,
 };
 use crate::error::{ServiceError, ServiceResult};
 use crate::state::AppState;
@@ -81,11 +81,11 @@ async fn withdraw_alerts_tx(
         return Ok(0);
     }
     let tree = department_tree(conn).await?;
-    let people = members::find_many(conn, &recipients).await?;
+    let people = members_by_id(conn, recipients.iter().copied()).await?;
     let hidden: Vec<MemberId> = recipients
         .into_iter()
         .filter(|recipient| {
-            let Some(member) = people.iter().find(|member| member.id == *recipient) else {
+            let Some(member) = people.get(recipient) else {
                 return true;
             };
             let ancestors = member

@@ -14,8 +14,8 @@ use pango_db::org::{self, Department, Position};
 use pango_db::{members, Conn, DbError};
 
 use super::support::{
-    audit, current_actor, department_tree, found, require_updated, Audit, AuthContext, Changes,
-    Idempotency,
+    audit, current_actor, department_tree, found, member_names, require_updated, Audit,
+    AuthContext, Changes, Idempotency,
 };
 use crate::error::{ServiceError, ServiceResult};
 use crate::state::AppState;
@@ -79,17 +79,7 @@ async fn department_dtos(
         .await?
         .into_iter()
         .collect();
-    let mut head_ids: Vec<MemberId> = departments
-        .iter()
-        .filter_map(|d| d.head_member_id)
-        .collect();
-    head_ids.sort();
-    head_ids.dedup();
-    let heads: BTreeMap<MemberId, String> = members::find_many(conn, &head_ids)
-        .await?
-        .into_iter()
-        .map(|m| (m.id, m.name))
-        .collect();
+    let heads = member_names(conn, departments.iter().filter_map(|d| d.head_member_id)).await?;
     departments
         .into_iter()
         .map(|d| {

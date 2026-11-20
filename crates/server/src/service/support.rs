@@ -127,16 +127,26 @@ pub fn found<T>(value: Option<T>) -> ServiceResult<T> {
     value.ok_or(ServiceError::Domain(DomainError::NotFound))
 }
 
+/// 구성원 ID → 구성원. 여러 행의 주인을 한 번에 읽을 때 쓴다. ID가 겹쳐도 한 번만 읽고,
+/// 없는 ID는 결과에서 빠진다.
+pub async fn members_by_id(
+    conn: &mut Conn,
+    ids: impl IntoIterator<Item = MemberId>,
+) -> ServiceResult<BTreeMap<MemberId, Member>> {
+    let mut unique: Vec<MemberId> = ids.into_iter().collect();
+    unique.sort_unstable();
+    unique.dedup();
+    let found = members::find_many(conn, &unique).await?;
+    Ok(found.into_iter().map(|m| (m.id, m)).collect())
+}
+
 /// 구성원 ID → 이름. 목록·상세 응답에 이름을 붙일 때 쓴다. 없는 ID는 결과에서 빠진다.
 pub async fn member_names(
     conn: &mut Conn,
     ids: impl IntoIterator<Item = MemberId>,
 ) -> ServiceResult<BTreeMap<MemberId, String>> {
-    let mut unique: Vec<MemberId> = ids.into_iter().collect();
-    unique.sort_unstable();
-    unique.dedup();
-    let found = members::find_many(conn, &unique).await?;
-    Ok(found.into_iter().map(|m| (m.id, m.name)).collect())
+    let found = members_by_id(conn, ids).await?;
+    Ok(found.into_iter().map(|(id, m)| (id, m.name)).collect())
 }
 
 /// 결재선·참조처럼 **새 업무의 당사자**로 지정된 구성원이 모두 재직 중인지 확인한다.

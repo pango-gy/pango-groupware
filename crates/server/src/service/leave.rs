@@ -37,8 +37,8 @@ use pango_db::{org, Conn};
 
 use super::approval::{self, LinkedOutcome, SystemDocument};
 use super::support::{
-    audit, current_member, found, member_names, next_page, notify, require_current_admin,
-    require_updated, Audit, AuthContext, Company, Idempotency, Notify,
+    audit, current_member, found, member_names, members_by_id, next_page, notify,
+    require_current_admin, require_updated, Audit, AuthContext, Company, Idempotency, Notify,
 };
 use crate::error::{ServiceError, ServiceResult};
 use crate::state::AppState;
@@ -484,17 +484,10 @@ async fn scheduled_in_month(
         ..RequestFilter::default()
     };
     let (requests, _) = leave::list_requests(conn, &filter, None).await?;
-    let mut ids: Vec<MemberId> = requests.iter().map(|request| request.member_id).collect();
-    ids.sort_unstable();
-    ids.dedup();
-    let people = members::find_many(conn, &ids).await?;
+    let people = members_by_id(conn, requests.iter().map(|request| request.member_id)).await?;
     let mut shown: Vec<LeaveRequest> = requests
         .into_iter()
-        .filter(|request| {
-            people
-                .iter()
-                .any(|member| member.id == request.member_id && visible(member))
-        })
+        .filter(|request| people.get(&request.member_id).is_some_and(&visible))
         .collect();
     shown.sort_by_key(|request| (request.range.start(), request.id));
     Ok(shown)

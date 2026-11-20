@@ -1,18 +1,16 @@
 //! 감사 로그 조회(관리자). 조회 자체는 기록하지 않는다(조회할 때마다 로그가 늘어나면
 //! 페이지를 넘기는 동안 목록이 움직인다).
 
-use std::collections::{BTreeMap, BTreeSet};
-
 use pango_api::admin::{AuditEntryDto, AuditLogQuery};
 use pango_api::Page;
 use pango_core::authz;
 use pango_core::error::ValidationReason;
-use pango_core::id::{AuditLogId, MemberId};
+use pango_core::id::AuditLogId;
 use pango_core::DomainError;
 use pango_db::audit::{self, AuditEntry, AuditFilter};
-use pango_db::{members, Conn};
+use pango_db::Conn;
 
-use super::support::{next_page, AuthContext};
+use super::support::{member_names, next_page, AuthContext};
 use crate::error::ServiceResult;
 use crate::state::AppState;
 
@@ -54,17 +52,7 @@ async fn with_actor_names(
     conn: &mut Conn,
     entries: Vec<AuditEntry>,
 ) -> ServiceResult<Vec<AuditEntryDto>> {
-    let actor_ids: Vec<MemberId> = entries
-        .iter()
-        .filter_map(|e| e.actor_id)
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    let names: BTreeMap<MemberId, String> = members::find_many(conn, &actor_ids)
-        .await?
-        .into_iter()
-        .map(|m| (m.id, m.name))
-        .collect();
+    let names = member_names(conn, entries.iter().filter_map(|e| e.actor_id)).await?;
     Ok(entries
         .into_iter()
         .map(|e| AuditEntryDto {
