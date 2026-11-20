@@ -58,17 +58,12 @@ async fn fixture() -> Fixture {
             .expect("member");
         ids.push(member.id);
     }
-    let form = Form {
-        id: FormId::new(),
-        code: "attendance_correction".into(),
-        name: "근태 정정 신청서".into(),
-        description: String::new(),
-        kind: DocumentKind::AttendanceCorrection,
-        body_template: String::new(),
-        active: true,
-        sort_order: 0,
-        version: 1,
-    };
+    let form = Form::plain(
+        FormId::new(),
+        "attendance_correction",
+        "근태 정정 신청서",
+        DocumentKind::AttendanceCorrection,
+    );
     approval::insert_form(&mut tx, &form, ts(1))
         .await
         .expect("form");

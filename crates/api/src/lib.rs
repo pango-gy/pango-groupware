@@ -14,7 +14,7 @@ pub mod notice;
 pub mod notification;
 pub mod org;
 
-pub use common::{Empty, ErrorBody, ErrorDetail, Page, PageQuery, Versioned};
+pub use common::{Empty, ErrorBody, ErrorDetail, FieldErrorDto, Page, PageQuery, Versioned};
 
 /// API 경로 접두사.
 pub const API_PREFIX: &str = "/api/v1";

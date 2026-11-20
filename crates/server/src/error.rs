@@ -3,7 +3,7 @@
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use http::{header, HeaderValue, StatusCode};
-use pango_api::{ErrorBody, ErrorDetail};
+use pango_api::{ErrorBody, ErrorDetail, FieldErrorDto};
 use pango_core::DomainError;
 use pango_db::DbError;
 
@@ -13,6 +13,9 @@ pub type ServiceResult<T> = Result<T, ServiceError>;
 pub enum ServiceError {
     #[error(transparent)]
     Domain(#[from] DomainError),
+    /// 여러 필드의 입력 오류를 한꺼번에 알린다(결재 양식의 값, 양식 정의). 비어 있지 않다.
+    #[error("validation failed on {} field(s)", .0.len())]
+    InvalidFields(Vec<FieldErrorDto>),
     /// 아이디가 없거나, 비밀번호가 틀렸거나, 로그인할 수 없는 계정. 구분해서 알려 주지 않는다.
     #[error("invalid credentials")]
     InvalidCredentials,
@@ -42,9 +45,9 @@ impl ServiceError {
 
     pub fn status(&self) -> StatusCode {
         match self {
-            Self::Domain(DomainError::Validation { .. }) | Self::Malformed(_) => {
-                StatusCode::BAD_REQUEST
-            }
+            Self::Domain(DomainError::Validation { .. })
+            | Self::InvalidFields(_)
+            | Self::Malformed(_) => StatusCode::BAD_REQUEST,
             Self::Domain(DomainError::Unauthenticated) | Self::InvalidCredentials => {
                 StatusCode::UNAUTHORIZED
             }
@@ -64,6 +67,7 @@ impl ServiceError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::Domain(error) => error.code(),
+            Self::InvalidFields(_) => "validation_failed",
             Self::InvalidCredentials => "invalid_credentials",
             Self::TooManyAttempts { .. } => "too_many_attempts",
             Self::PasswordChangeRequired => "password_change_required",
@@ -81,7 +85,16 @@ impl ServiceError {
             Self::Domain(DomainError::Validation { field, reason }) => {
                 (Some((*field).to_owned()), Some(reason.code().to_owned()))
             }
+            // 예전 클라이언트는 `field`·`reason`만 읽으므로 첫 오류를 거기에도 싣는다.
+            Self::InvalidFields(fields) => (
+                fields.first().map(|first| first.key.clone()),
+                fields.first().map(|first| first.reason.clone()),
+            ),
             _ => (None, None),
+        };
+        let fields = match self {
+            Self::InvalidFields(fields) => fields.clone(),
+            _ => Vec::new(),
         };
         // 내부 오류의 원인은 응답에 싣지 않는다(로그에만 남긴다).
         let message = match self {
@@ -94,6 +107,7 @@ impl ServiceError {
                 message,
                 field,
                 reason,
+                fields,
             },
         }
     }
@@ -169,6 +183,43 @@ mod tests {
         let body = error.body();
         assert_eq!(body.error.field.as_deref(), Some("title"));
         assert_eq!(body.error.reason.as_deref(), Some("too_long"));
+    }
+
+    #[test]
+    fn field_errors_are_listed_and_the_first_one_fills_the_single_field() {
+        let cell = FieldErrorDto {
+            key: "items".into(),
+            row: Some(1),
+            column: Some("amount".into()),
+            reason: "out_of_range".into(),
+        };
+        let plain = FieldErrorDto {
+            key: "reason".into(),
+            row: None,
+            column: None,
+            reason: "empty".into(),
+        };
+        let error = ServiceError::InvalidFields(vec![cell.clone(), plain.clone()]);
+        assert_eq!(
+            (error.status().as_u16(), error.code()),
+            (400, "validation_failed")
+        );
+        let body = error.body();
+        assert_eq!(body.error.field.as_deref(), Some("items"));
+        assert_eq!(body.error.reason.as_deref(), Some("out_of_range"));
+        assert_eq!(body.error.fields, vec![cell, plain]);
+        let json = serde_json::to_value(&body).expect("json");
+        assert_eq!(
+            json["error"]["fields"],
+            serde_json::json!([
+                { "key": "items", "row": 1, "column": "amount", "reason": "out_of_range" },
+                { "key": "reason", "row": null, "column": null, "reason": "empty" }
+            ])
+        );
+        // 다른 오류의 본문에는 `fields`가 없다.
+        let single: ServiceError = DomainError::validation("title", ValidationReason::Empty).into();
+        let json = serde_json::to_value(single.body()).expect("json");
+        assert!(json["error"].get("fields").is_none());
     }
 
     #[test]

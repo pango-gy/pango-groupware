@@ -1,14 +1,40 @@
 //! 전자결재: 양식, 문서, 결재함.
 
 use pango_core::approval::{
-    DocumentKind, DocumentStatus, EventKind, Mailbox, StepKind, StepStatus,
+    DocumentKind, DocumentStatus, EventKind, FormCategory, FormOrigin, Mailbox, StepKind,
+    StepStatus,
 };
+use pango_core::form_schema::FormSchema;
 use pango_core::id::{DocumentId, FormId, MemberId};
+use pango_core::string_enum;
 use pango_core::time::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::common::PageQuery;
 
+string_enum! {
+    /// 이 양식의 문서를 어느 화면에서 만드는지. 주소가 아니라 화면의 이름이다.
+    pub enum FormRoute("route") {
+        /// 일반 기안 화면(`POST /approval/documents`).
+        ApprovalNew => "approval_new",
+        /// 휴가 신청 화면. 휴가 신청서는 휴가 기능이 만든다.
+        LeaveNew => "leave_new",
+        /// 근태 화면의 정정 요청. 근태 정정 신청서는 근태 기능이 만든다.
+        Attendance => "attendance",
+    }
+}
+
+impl FormRoute {
+    pub const fn of(kind: DocumentKind) -> Self {
+        match kind {
+            DocumentKind::General => Self::ApprovalNew,
+            DocumentKind::Leave => Self::LeaveNew,
+            DocumentKind::AttendanceCorrection => Self::Attendance,
+        }
+    }
+}
+
+/// 양식 전체(관리 화면).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FormDto {
     pub id: FormId,
@@ -20,9 +46,95 @@ pub struct FormDto {
     pub active: bool,
     pub sort_order: i64,
     pub version: i64,
+    pub category: FormCategory,
+    pub category_label: String,
+    pub schema: FormSchema,
+    /// 필드 정의를 고칠 때마다 1씩 오른다.
+    pub schema_version: i64,
+    /// 자유 입력 본문을 쓰는지(쓰면 필수).
+    pub use_body: bool,
+    /// 상신할 때 자동으로 붙는 참조자.
+    pub default_reference_ids: Vec<MemberId>,
+    pub origin: FormOrigin,
+    /// 시스템 양식(휴가·근태 정정)인지. 일반 기안으로는 만들 수 없다.
+    pub system: bool,
+    pub route: FormRoute,
 }
 
-/// 관리자가 만드는 양식. 종류는 항상 일반(`general`)이다. 시스템 양식은 초기화 때만 만든다.
+/// 기안 화면의 양식 하나. 사용 중인 양식만 내려간다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FormListItem {
+    pub id: FormId,
+    pub code: String,
+    pub name: String,
+    pub description: String,
+    pub kind: DocumentKind,
+    pub body_template: String,
+    pub use_body: bool,
+    pub schema: FormSchema,
+    pub schema_version: i64,
+    /// `true`면 `route`의 화면에서만 만들 수 있다.
+    pub system: bool,
+    pub route: FormRoute,
+}
+
+/// `GET /approval/forms`의 한 묶음. 분류 순서대로, 양식이 없는 분류는 빠진다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FormGroup {
+    pub category: FormCategory,
+    pub category_label: String,
+    pub forms: Vec<FormListItem>,
+}
+
+/// 관리자가 만드는 양식(`POST /admin/approval/forms`). 종류는 항상 일반(`general`)이다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NewFormRequest {
+    pub code: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub body_template: String,
+    #[serde(default)]
+    pub sort_order: i64,
+    /// 생략하면 `general`.
+    #[serde(default)]
+    pub category: Option<FormCategory>,
+    /// 생략하면 필드 없음.
+    #[serde(default)]
+    pub schema: Option<FormSchema>,
+    /// 생략하면 `true`.
+    #[serde(default)]
+    pub use_body: Option<bool>,
+    #[serde(default)]
+    pub default_reference_ids: Vec<MemberId>,
+}
+
+/// 양식 수정(`PATCH /admin/approval/forms/{id}`). `code`와 종류는 바꿀 수 없다.
+/// `category`·`schema`·`use_body`·`default_reference_ids`는 생략하면 그대로 둔다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EditFormRequest {
+    pub version: i64,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub body_template: String,
+    pub active: bool,
+    #[serde(default)]
+    pub sort_order: i64,
+    #[serde(default)]
+    pub category: Option<FormCategory>,
+    #[serde(default)]
+    pub schema: Option<FormSchema>,
+    #[serde(default)]
+    pub use_body: Option<bool>,
+    #[serde(default)]
+    pub default_reference_ids: Option<Vec<MemberId>>,
+}
+
+/// [`NewFormRequest`]의 예전 모양(분류·필드 정의 없음). 웹이 새 타입으로 옮겨 가면 지운다.
+/// 서버는 [`NewFormRequest`]로 읽으므로 이 모양의 요청도 그대로 받는다.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateFormRequest {
     pub code: String,
@@ -35,7 +147,7 @@ pub struct CreateFormRequest {
     pub sort_order: i64,
 }
 
-/// `code`와 종류는 바꿀 수 없다.
+/// [`EditFormRequest`]의 예전 모양. 웹이 새 타입으로 옮겨 가면 지운다.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateFormRequest {
     pub version: i64,
@@ -55,6 +167,41 @@ pub struct StepInput {
     pub kind: StepKind,
 }
 
+/// 기안(`POST /approval/documents`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NewDocumentRequest {
+    pub form_id: FormId,
+    pub title: String,
+    /// 양식이 본문을 쓰면(`use_body`) 필수, 아니면 비워도 된다.
+    #[serde(default)]
+    pub body: String,
+    /// 양식 필드의 값(`{필드 key: 값}`). 필드가 없는 양식이면 생략한다.
+    #[serde(default)]
+    pub values: Option<serde_json::Value>,
+    pub steps: Vec<StepInput>,
+    #[serde(default)]
+    pub references: Vec<MemberId>,
+    /// `true`면 저장과 동시에 상신한다. 아니면 임시저장.
+    #[serde(default)]
+    pub submit: bool,
+}
+
+/// 임시저장 문서 수정(`PATCH /approval/documents/{id}`). 제목·본문·결재선을 통째로 바꾼다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EditDocumentRequest {
+    pub version: i64,
+    pub title: String,
+    #[serde(default)]
+    pub body: String,
+    /// 보내면 값을 통째로 바꾸고, 생략하면 저장된 값을 그대로 둔다.
+    #[serde(default)]
+    pub values: Option<serde_json::Value>,
+    pub steps: Vec<StepInput>,
+    #[serde(default)]
+    pub references: Vec<MemberId>,
+}
+
+/// [`NewDocumentRequest`]의 예전 모양(값 없음). 웹이 새 타입으로 옮겨 가면 지운다.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateDocumentRequest {
     pub form_id: FormId,
@@ -68,7 +215,7 @@ pub struct CreateDocumentRequest {
     pub submit: bool,
 }
 
-/// 임시저장 문서 수정. 제목·본문·결재선을 통째로 바꾼다.
+/// [`EditDocumentRequest`]의 예전 모양(값 없음). 웹이 새 타입으로 옮겨 가면 지운다.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateDocumentRequest {
     pub version: i64,
@@ -138,6 +285,24 @@ pub struct EventDto {
     pub created_at: Timestamp,
 }
 
+/// 일반 양식 문서의 구조화된 내용. 문서를 낸 시점의 양식 정의가 함께 들어 있어, 그 뒤에
+/// 양식이 바뀌어도 이 값만으로 읽기 전용 화면을 그릴 수 있다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FormSnapshot {
+    pub category: FormCategory,
+    pub category_label: String,
+    pub use_body: bool,
+    /// 값을 검증한 양식 정의의 버전. 필드 정의가 없던 때의 문서는 0이다.
+    pub schema_version: i64,
+    pub schema: FormSchema,
+    /// `{필드 key: 값}`. 입력하지 않은 필드는 없다.
+    pub values: serde_json::Map<String, serde_json::Value>,
+    /// 값에서 계산한 것: 금액 열이 있는 표는 `{"totals": {열 key: 합계}}`, 기간은 `{"days": 일수}`.
+    pub computed: serde_json::Map<String, serde_json::Value>,
+    /// `member` 필드에 지정된 구성원의 이름(`{구성원 ID: 이름}`).
+    pub member_names: std::collections::BTreeMap<MemberId, String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DocumentDetail {
     pub id: DocumentId,
@@ -151,8 +316,10 @@ pub struct DocumentDetail {
     pub drafter_department_name: Option<String>,
     pub title: String,
     pub body: String,
-    /// 시스템 양식(휴가 신청 등)의 구조화된 내용.
+    /// 시스템 양식(휴가 신청 등)의 구조화된 내용. 일반 양식 문서에서는 `null`이다.
     pub payload: Option<serde_json::Value>,
+    /// 일반 양식 문서의 양식 정의와 값. 시스템 양식 문서에서는 `null`이다.
+    pub form_snapshot: Option<FormSnapshot>,
     pub steps: Vec<StepDto>,
     pub references: Vec<ReferenceDto>,
     pub events: Vec<EventDto>,
@@ -171,6 +338,11 @@ pub struct DocumentQuery {
     pub mailbox: Mailbox,
     #[serde(default)]
     pub status: Option<DocumentStatus>,
+    #[serde(default)]
+    pub form_id: Option<FormId>,
+    /// 양식의 지금 분류.
+    #[serde(default)]
+    pub category: Option<FormCategory>,
     #[serde(default)]
     pub limit: Option<u32>,
     #[serde(default)]
@@ -192,6 +364,10 @@ pub struct AdminDocumentQuery {
     pub kind: Option<DocumentKind>,
     #[serde(default)]
     pub drafter_id: Option<MemberId>,
+    #[serde(default)]
+    pub form_id: Option<FormId>,
+    #[serde(default)]
+    pub category: Option<FormCategory>,
     #[serde(default)]
     pub limit: Option<u32>,
     #[serde(default)]
@@ -242,11 +418,75 @@ mod tests {
 
     #[test]
     fn create_request_defaults_to_draft_without_references() {
-        let parsed: CreateDocumentRequest = serde_json::from_value(serde_json::json!({
+        let parsed: NewDocumentRequest = serde_json::from_value(serde_json::json!({
             "form_id": FormId::new(), "title": "t", "body": "b", "steps": []
         }))
         .expect("parse");
         assert!(!parsed.submit);
         assert!(parsed.references.is_empty());
+        assert_eq!(parsed.values, None);
+    }
+
+    /// 예전 모양으로 보낸 요청은 새 타입으로 그대로 읽힌다(웹이 옮겨 가는 동안의 호환).
+    #[test]
+    fn legacy_request_shapes_parse_as_the_new_types() {
+        let form_id = FormId::new();
+        let legacy = CreateDocumentRequest {
+            form_id,
+            title: "t".into(),
+            body: "b".into(),
+            steps: Vec::new(),
+            references: Vec::new(),
+            submit: true,
+        };
+        let parsed: NewDocumentRequest =
+            serde_json::from_value(serde_json::to_value(&legacy).expect("json")).expect("parse");
+        assert_eq!(
+            (parsed.form_id, parsed.body.as_str(), parsed.submit),
+            (form_id, "b", true)
+        );
+
+        let legacy = UpdateFormRequest {
+            version: 3,
+            name: "n".into(),
+            description: String::new(),
+            body_template: String::new(),
+            active: true,
+            sort_order: 0,
+        };
+        let parsed: EditFormRequest =
+            serde_json::from_value(serde_json::to_value(&legacy).expect("json")).expect("parse");
+        assert_eq!(parsed.version, 3);
+        assert_eq!(
+            (
+                parsed.category,
+                parsed.schema,
+                parsed.use_body,
+                parsed.default_reference_ids
+            ),
+            (None, None, None, None)
+        );
+    }
+
+    #[test]
+    fn form_route_follows_the_document_kind() {
+        assert_eq!(
+            FormRoute::of(DocumentKind::General).as_str(),
+            "approval_new"
+        );
+        assert_eq!(FormRoute::of(DocumentKind::Leave).as_str(), "leave_new");
+        assert_eq!(
+            FormRoute::of(DocumentKind::AttendanceCorrection).as_str(),
+            "attendance"
+        );
+    }
+
+    #[test]
+    fn document_query_takes_form_and_category_filters() {
+        let parsed: DocumentQuery =
+            serde_json::from_str(r#"{"box":"drafted","category":"accounting"}"#).expect("parse");
+        assert_eq!(parsed.category, Some(FormCategory::Accounting));
+        assert_eq!(parsed.form_id, None);
+        assert!(serde_json::from_str::<DocumentQuery>(r#"{"box":"todo","category":"x"}"#).is_err());
     }
 }

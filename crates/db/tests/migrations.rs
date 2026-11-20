@@ -339,3 +339,113 @@ async fn ledger_is_append_only_again_after_the_rekey() {
     let mut empty = database_before_grant_keys(&empty_dir).await;
     migrate_grant_keys(&mut empty).await;
 }
+
+// ── 0006: 결재 양식의 분류와 필드 정의 ───────────────────────────────────
+
+const BEFORE_FORM_SCHEMA: [&str; 5] = [
+    include_str!("../migrations/0001_init.sql"),
+    include_str!("../migrations/0002_attendance_corrections.sql"),
+    include_str!("../migrations/0003_member_date_checks.sql"),
+    GRANT_KEYS,
+    include_str!("../migrations/0005_calendar.sql"),
+];
+const FORM_SCHEMA: &str = include_str!("../migrations/0006_approval_form_schema.sql");
+
+#[tokio::test]
+async fn existing_forms_get_categories_and_keep_their_content() {
+    use pango_core::approval::{FormCategory, FormOrigin};
+    use pango_core::form_schema::FormSchema;
+    use pango_db::approval;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut conn = SqliteConnectOptions::new()
+        .filename(dir.path().join("staged.db"))
+        .create_if_missing(true)
+        .foreign_keys(true)
+        .connect()
+        .await
+        .expect("connect");
+    for sql in BEFORE_FORM_SCHEMA {
+        sqlx::raw_sql(sql).execute(&mut conn).await.expect("schema");
+    }
+    // 0006 이전의 서버가 만든 양식: 최초 설정의 세 개와 관리자가 만든 것 하나.
+    let old_forms = [
+        ("general", "품의서(우리 회사)", "general", 1),
+        ("leave", "휴가 신청서", "leave", 1),
+        (
+            "attendance_correction",
+            "근태 정정 신청서",
+            "attendance_correction",
+            1,
+        ),
+        ("expense", "지출 결의서", "general", 0),
+        // 코드만 같고 종류가 다른 양식은 기본 양식으로 보지 않는다.
+        ("leave_extra", "휴가 관련", "general", 1),
+    ];
+    for (index, (code, name, kind, active)) in old_forms.into_iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO approval_forms
+                (id, code, name, kind, body_template, active, sort_order, created_at, updated_at,
+                 version)
+             VALUES (?, ?, ?, ?, '1. 목적', ?, ?, 1, 1, 7)",
+        )
+        .bind(format!("00000000-0000-7000-8000-00000000000{index}"))
+        .bind(code)
+        .bind(name)
+        .bind(kind)
+        .bind(active)
+        .bind(i64::try_from(index).expect("index"))
+        .execute(&mut conn)
+        .await
+        .expect("form");
+    }
+
+    let mut tx = conn.begin().await.expect("begin");
+    sqlx::raw_sql(FORM_SCHEMA)
+        .execute(&mut *tx)
+        .await
+        .expect("0006");
+    tx.commit().await.expect("commit");
+
+    let forms = approval::list_forms(&mut conn, false).await.expect("list");
+    let summary: Vec<_> = forms
+        .iter()
+        .map(|form| (form.code.as_str(), form.category, form.origin, form.active))
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            ("general", FormCategory::General, FormOrigin::Catalog, true),
+            ("leave", FormCategory::Hr, FormOrigin::Catalog, true),
+            (
+                "attendance_correction",
+                FormCategory::Attendance,
+                FormOrigin::Catalog,
+                true
+            ),
+            ("expense", FormCategory::General, FormOrigin::Custom, false),
+            (
+                "leave_extra",
+                FormCategory::General,
+                FormOrigin::Custom,
+                true
+            ),
+        ]
+    );
+    for form in &forms {
+        assert_eq!(form.schema, FormSchema::default());
+        assert_eq!(
+            (form.schema_version, form.use_body, form.version),
+            (1, true, 7)
+        );
+        assert!(form.default_reference_ids.is_empty());
+        assert_eq!(form.body_template, "1. 목적");
+    }
+    assert_eq!(forms[0].name, "품의서(우리 회사)", "고친 이름은 그대로다");
+
+    // 분류는 정해진 값만 받는다.
+    let bad = sqlx::query("UPDATE approval_forms SET category = 'finance' WHERE code = 'expense'")
+        .execute(&mut conn)
+        .await;
+    assert!(bad.is_err());
+}

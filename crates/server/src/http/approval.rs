@@ -5,9 +5,9 @@ use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use http::StatusCode;
 use pango_api::approval::{
-    AdminDocumentQuery, ApprovalCounts, ApproveRequest, CreateDocumentRequest, CreateFormRequest,
-    DocumentDetail, DocumentQuery, DocumentSummary, FormDto, LineSuggestion, RejectRequest,
-    UpdateDocumentRequest, UpdateFormRequest,
+    AdminDocumentQuery, ApprovalCounts, ApproveRequest, DocumentDetail, DocumentQuery,
+    DocumentSummary, EditDocumentRequest, EditFormRequest, FormDto, FormGroup, LineSuggestion,
+    NewDocumentRequest, NewFormRequest, RejectRequest,
 };
 use pango_api::{Empty, Page};
 use pango_core::id::{DocumentId, FormId};
@@ -41,6 +41,10 @@ pub fn routes() -> Router<AppState> {
             get(admin_list_forms).post(admin_create_form),
         )
         .route("/admin/approval/forms/{id}", patch(admin_update_form))
+        .route(
+            "/admin/approval/forms/{id}/duplicate",
+            post(admin_duplicate_form),
+        )
         .route("/admin/approval/documents", get(admin_list_documents))
         .route("/admin/approval/documents/{id}/reject", post(admin_reject))
 }
@@ -48,7 +52,7 @@ pub fn routes() -> Router<AppState> {
 async fn list_forms(
     State(state): State<AppState>,
     Auth(_): Auth,
-) -> ServiceResult<Json<Vec<FormDto>>> {
+) -> ServiceResult<Json<Vec<FormGroup>>> {
     approval::list_forms(&state).await.map(Json)
 }
 
@@ -79,7 +83,7 @@ async fn list_documents(
 async fn create_document(
     State(state): State<AppState>,
     Auth(ctx): Auth,
-    request: IdempotentJson<CreateDocumentRequest>,
+    request: IdempotentJson<NewDocumentRequest>,
 ) -> ServiceResult<(StatusCode, Json<DocumentDetail>)> {
     let detail =
         approval::create_document(&state, &ctx, &request.body, request.idempotency.as_ref())
@@ -99,7 +103,7 @@ async fn update_document(
     State(state): State<AppState>,
     Auth(ctx): Auth,
     ApiPath(id): ApiPath<DocumentId>,
-    ApiJson(request): ApiJson<UpdateDocumentRequest>,
+    ApiJson(request): ApiJson<EditDocumentRequest>,
 ) -> ServiceResult<Json<DocumentDetail>> {
     approval::update_document(&state, &ctx, id, &request)
         .await
@@ -161,7 +165,7 @@ async fn admin_list_forms(
 async fn admin_create_form(
     State(state): State<AppState>,
     Auth(ctx): Auth,
-    request: IdempotentJson<CreateFormRequest>,
+    request: IdempotentJson<NewFormRequest>,
 ) -> ServiceResult<(StatusCode, Json<FormDto>)> {
     let form =
         approval::admin_create_form(&state, &ctx, &request.body, request.idempotency.as_ref())
@@ -173,11 +177,23 @@ async fn admin_update_form(
     State(state): State<AppState>,
     Auth(ctx): Auth,
     ApiPath(id): ApiPath<FormId>,
-    ApiJson(request): ApiJson<UpdateFormRequest>,
+    ApiJson(request): ApiJson<EditFormRequest>,
 ) -> ServiceResult<Json<FormDto>> {
     approval::admin_update_form(&state, &ctx, id, &request)
         .await
         .map(Json)
+}
+
+/// 본문은 빈 객체(`{}`)다.
+async fn admin_duplicate_form(
+    State(state): State<AppState>,
+    Auth(ctx): Auth,
+    ApiPath(id): ApiPath<FormId>,
+    request: IdempotentJson<Empty>,
+) -> ServiceResult<(StatusCode, Json<FormDto>)> {
+    let form =
+        approval::admin_duplicate_form(&state, &ctx, id, request.idempotency.as_ref()).await?;
+    Ok((StatusCode::CREATED, Json(form)))
 }
 
 async fn admin_list_documents(

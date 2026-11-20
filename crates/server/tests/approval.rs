@@ -71,21 +71,7 @@ async fn promote_to_admin(app: &TestApp, member_id: MemberId) {
 }
 
 async fn form_id(app: &TestApp, token: &str, code: &str) -> String {
-    let forms = app
-        .get("/approval/forms")
-        .bearer(token)
-        .send()
-        .await
-        .expect(StatusCode::OK);
-    forms
-        .as_array()
-        .expect("forms")
-        .iter()
-        .find(|form| form["code"] == code)
-        .unwrap_or_else(|| panic!("form {code}"))["id"]
-        .as_str()
-        .expect("id")
-        .to_owned()
+    id_of(&app.approval_form(token, code).await)
 }
 
 fn step(member: &TestMember, kind: &str) -> Value {
@@ -1461,36 +1447,29 @@ async fn line_suggestion_walks_up_the_department_tree() {
 #[tokio::test]
 async fn default_forms_are_seeded() {
     let w = world().await;
-    let forms = w
-        .app
-        .get("/approval/forms")
-        .bearer(&w.drafter.token)
-        .send()
-        .await
-        .expect(StatusCode::OK);
-    let summary: Vec<(&str, &str, &str)> = forms
-        .as_array()
-        .expect("forms")
-        .iter()
-        .map(|form| {
-            (
-                form["code"].as_str().expect("code"),
-                form["name"].as_str().expect("name"),
-                form["kind"].as_str().expect("kind"),
-            )
-        })
-        .collect();
+    let forms = w.app.approval_forms(&w.drafter.token).await;
+    let find = |code: &str| {
+        let form = forms
+            .iter()
+            .find(|form| form["code"] == code)
+            .unwrap_or_else(|| panic!("form {code}"));
+        (
+            form["name"].as_str().expect("name").to_owned(),
+            form["kind"].as_str().expect("kind").to_owned(),
+        )
+    };
+    // 처음부터 있던 세 양식은 코드·이름·종류가 그대로다(나머지 기본 양식은 approval_forms.rs).
+    assert_eq!(find("general"), ("품의서".to_owned(), "general".to_owned()));
     assert_eq!(
-        summary,
-        [
-            ("general", "품의서", "general"),
-            ("leave", "휴가 신청서", "leave"),
-            (
-                "attendance_correction",
-                "근태 정정 신청서",
-                "attendance_correction"
-            ),
-        ]
+        find("leave"),
+        ("휴가 신청서".to_owned(), "leave".to_owned())
+    );
+    assert_eq!(
+        find("attendance_correction"),
+        (
+            "근태 정정 신청서".to_owned(),
+            "attendance_correction".to_owned()
+        )
     );
 }
 
@@ -1593,18 +1572,8 @@ async fn admin_manages_forms_and_system_forms_stay_on() {
         .send()
         .await
         .expect_error(StatusCode::CONFLICT, "form_inactive");
-    let visible = w
-        .app
-        .get("/approval/forms")
-        .bearer(&w.drafter.token)
-        .send()
-        .await
-        .expect(StatusCode::OK);
-    assert!(visible
-        .as_array()
-        .expect("forms")
-        .iter()
-        .all(|form| form["code"] != "expense"));
+    let visible = w.app.approval_forms(&w.drafter.token).await;
+    assert!(visible.iter().all(|form| form["code"] != "expense"));
     let all = w
         .app
         .get("/admin/approval/forms")
@@ -1612,7 +1581,13 @@ async fn admin_manages_forms_and_system_forms_stay_on() {
         .send()
         .await
         .expect(StatusCode::OK);
-    assert_eq!(all.as_array().expect("forms").len(), 4);
+    let all = all.as_array().expect("forms");
+    assert!(all.iter().any(|form| form["code"] == "expense"));
+    assert_eq!(
+        i64::try_from(all.len()).expect("count"),
+        w.app.count("SELECT COUNT(*) FROM approval_forms").await,
+        "꺼 둔 양식도 관리 목록에는 나온다"
+    );
 
     // 시스템 양식은 끌 수 없다.
     let leave_form = form_id(&w.app, &w.owner, "leave").await;
@@ -2278,6 +2253,8 @@ async fn admin_reject_racing_with_the_final_approval_has_exactly_one_winner() {
         status: Some(DocumentStatus::Rejected),
         kind: None,
         drafter_id: None,
+        form_id: None,
+        category: None,
         before: None,
     };
     let (rejected_documents, _) = documents::list_documents(&mut conn, &filter, 200)

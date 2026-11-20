@@ -8,20 +8,24 @@
 //! 그래도 저장은 `version`이 읽은 값과 같을 때만 하고, 진행 중 단계가 문서당 하나라는
 //! 유일 인덱스가 마지막 방어선이다.
 
+use std::collections::BTreeMap;
+
 use chrono::Datelike;
 use pango_api::approval::{
-    AdminDocumentQuery, ApprovalCounts, ApproveRequest, CreateDocumentRequest, CreateFormRequest,
-    DocumentDetail, DocumentQuery, DocumentSummary, EventDto, FormDto, LineSuggestion,
-    ReferenceDto, RejectRequest, StepDto, StepInput, SuggestedStep, UpdateDocumentRequest,
-    UpdateFormRequest,
+    AdminDocumentQuery, ApprovalCounts, ApproveRequest, DocumentDetail, DocumentQuery,
+    DocumentSummary, EditDocumentRequest, EditFormRequest, EventDto, FormDto, FormGroup,
+    FormListItem, FormRoute, FormSnapshot, LineSuggestion, NewDocumentRequest, NewFormRequest,
+    ReferenceDto, RejectRequest, StepDto, StepInput, SuggestedStep,
 };
-use pango_api::{Page, PageQuery};
+use pango_api::{FieldErrorDto, Page, PageQuery};
 use pango_core::approval::{
     self as rules, ApprovalLine, Document, DocumentEvent, DocumentKind, DocumentNumber,
-    DocumentStatus, LineStep, Participant, StepKind, Transition,
+    DocumentStatus, FormCategory, FormOrigin, LineStep, Participant, StepKind, Transition,
+    MAX_REFERENCES,
 };
 use pango_core::authz;
 use pango_core::error::{ConflictReason, ValidationReason};
+use pango_core::form_schema::{FieldError, FieldKind, FormSchema};
 use pango_core::id::{ApprovalEventId, DocumentId, FormId, MemberId};
 use pango_core::text::{self, Body, Code, Comment, LabelName, Reason, Title};
 use pango_core::time::Timestamp;
@@ -33,9 +37,9 @@ use pango_db::members::{self, Member};
 use pango_db::{org, Conn};
 
 use super::support::{
-    audit, count_u32, department_tree_of, found, member_names, next_page, notify,
-    require_active_members, require_current_admin, require_updated, Audit, AuthContext, Company,
-    Idempotency, Notify,
+    audit, audit_as, count_u32, department_tree_of, found, member_names, members_by_id, next_page,
+    notify, require_active_members, require_current_admin, require_updated, Audit, AuthContext,
+    Company, Idempotency, Notify,
 };
 use super::{attendance, leave};
 use crate::error::{ServiceError, ServiceResult};
@@ -70,36 +74,6 @@ impl LinkedOutcome {
     }
 }
 
-// ───────────── 초기 데이터 ─────────────
-
-/// 기본 양식을 만든다. 최초 설정과 같은 트랜잭션에서 한 번만 부른다.
-pub async fn seed_defaults_tx(conn: &mut Conn, now: Timestamp) -> ServiceResult<()> {
-    let defaults = [
-        ("general", "품의서", DocumentKind::General),
-        (LEAVE_FORM_CODE, "휴가 신청서", DocumentKind::Leave),
-        (
-            ATTENDANCE_CORRECTION_FORM_CODE,
-            "근태 정정 신청서",
-            DocumentKind::AttendanceCorrection,
-        ),
-    ];
-    for ((code, name, kind), sort_order) in defaults.into_iter().zip(0i64..) {
-        let form = Form {
-            id: FormId::new(),
-            code: code.to_owned(),
-            name: name.to_owned(),
-            description: String::new(),
-            kind,
-            body_template: String::new(),
-            active: true,
-            sort_order,
-            version: 1,
-        };
-        approval::insert_form(conn, &form, now).await?;
-    }
-    Ok(())
-}
-
 // ───────────── 양식 ─────────────
 
 fn form_dto(form: Form) -> FormDto {
@@ -113,13 +87,53 @@ fn form_dto(form: Form) -> FormDto {
         active: form.active,
         sort_order: form.sort_order,
         version: form.version,
+        category: form.category,
+        category_label: form.category.label().to_owned(),
+        schema: form.schema,
+        schema_version: form.schema_version,
+        use_body: form.use_body,
+        default_reference_ids: form.default_reference_ids,
+        origin: form.origin,
+        system: form.kind.is_system(),
+        route: FormRoute::of(form.kind),
     }
 }
 
-/// 사용 중인 양식. 시스템 양식도 보이지만 이 API로 기안할 수 있는 것은 일반 양식뿐이다.
-pub async fn list_forms(state: &AppState) -> ServiceResult<Vec<FormDto>> {
-    let forms = approval::list_forms(&mut *state.read().await?, true).await?;
-    Ok(forms.into_iter().map(form_dto).collect())
+fn form_list_item(form: Form) -> FormListItem {
+    FormListItem {
+        id: form.id,
+        code: form.code,
+        name: form.name,
+        description: form.description,
+        kind: form.kind,
+        body_template: form.body_template,
+        use_body: form.use_body,
+        schema: form.schema,
+        schema_version: form.schema_version,
+        system: form.kind.is_system(),
+        route: FormRoute::of(form.kind),
+    }
+}
+
+/// 사용 중인 양식을 분류별로 묶는다(분류 순서, 그 안에서는 정렬 순서). 시스템 양식도 보이지만
+/// 이 API로 기안할 수 있는 것은 일반 양식뿐이고, 시스템 양식은 `route`의 화면에서 만든다.
+pub async fn list_forms(state: &AppState) -> ServiceResult<Vec<FormGroup>> {
+    let mut forms = approval::list_forms(&mut *state.read().await?, true).await?;
+    let mut groups = Vec::new();
+    for category in FormCategory::ALL {
+        let (matching, rest): (Vec<Form>, Vec<Form>) = forms
+            .into_iter()
+            .partition(|form| form.category == *category);
+        forms = rest;
+        if !matching.is_empty() {
+            groups.push(FormGroup {
+                category: *category,
+                category_label: category.label().to_owned(),
+                forms: matching.into_iter().map(form_list_item).collect(),
+            });
+        }
+    }
+    Ok(groups)
 }
 
 pub async fn admin_list_forms(state: &AppState, ctx: &AuthContext) -> ServiceResult<Vec<FormDto>> {
@@ -138,6 +152,56 @@ fn optional_text(
     Ok(parsed.unwrap_or_default())
 }
 
+/// core의 필드 오류를 응답의 모양으로 바꾼다. `prefix`는 양식 정의 오류의 위치 앞에 붙인다.
+fn invalid_fields(prefix: &str, errors: Vec<FieldError>) -> ServiceError {
+    let fields = errors
+        .into_iter()
+        .map(|error| FieldErrorDto {
+            key: format!("{prefix}{}", error.key),
+            row: error.row.and_then(|row| u32::try_from(row).ok()),
+            column: error.column,
+            reason: error.reason.code().to_owned(),
+        })
+        .collect();
+    ServiceError::InvalidFields(fields)
+}
+
+/// 관리자가 보낸 필드 정의를 검증하고 저장할 모양으로 다듬는다.
+fn parse_schema(schema: &FormSchema) -> ServiceResult<FormSchema> {
+    schema
+        .clone()
+        .normalized()
+        .map_err(|errors| invalid_fields("schema.", errors))
+}
+
+/// 본문도 필수 필드도 없는 양식은 빈 문서를 받게 되므로 만들 수 없다.
+fn require_some_content(use_body: bool, schema: &FormSchema) -> ServiceResult<()> {
+    if use_body || schema.fields.iter().any(|field| field.required) {
+        Ok(())
+    } else {
+        Err(DomainError::validation("use_body", ValidationReason::Inconsistent).into())
+    }
+}
+
+/// 기본 참조자의 모양(개수·중복)과 존재·재직 여부를 확인한다. 없는 구성원은 `NotFound`,
+/// 재직 중이 아니면 `Conflict(MemberInactive)`다.
+async fn check_default_references_tx(conn: &mut Conn, ids: &[MemberId]) -> ServiceResult<()> {
+    let invalid = |reason| DomainError::validation("default_reference_ids", reason);
+    if ids.len() > MAX_REFERENCES {
+        return Err(invalid(ValidationReason::TooLong {
+            max: MAX_REFERENCES,
+        })
+        .into());
+    }
+    let mut unique = ids.to_vec();
+    unique.sort_unstable();
+    unique.dedup();
+    if unique.len() != ids.len() {
+        return Err(invalid(ValidationReason::Duplicate).into());
+    }
+    require_active_members(conn, ids).await
+}
+
 async fn audit_form(
     conn: &mut Conn,
     now: Timestamp,
@@ -153,7 +217,10 @@ async fn audit_form(
             target_type: "approval_form",
             target_id: Some(form.id.to_string()),
             detail: Some(serde_json::json!({
-                "code": form.code, "name": form.name, "active": form.active
+                "code": form.code, "name": form.name, "active": form.active,
+                "category": form.category, "schema_version": form.schema_version,
+                "use_body": form.use_body,
+                "default_reference_ids": form.default_reference_ids,
             })),
             ctx: Some(ctx),
         },
@@ -162,14 +229,20 @@ async fn audit_form(
 }
 
 /// 일반 양식을 만든다. 시스템 양식(휴가·근태 정정)은 연결된 기능이 하나씩만 쓰므로 만들 수 없다.
+/// 필드 정의가 잘못됐으면 모든 오류를 `fields`에 담아 400으로 답한다(위치는 `schema.fields[0].key`).
 pub async fn admin_create_form(
     state: &AppState,
     ctx: &AuthContext,
-    request: &CreateFormRequest,
+    request: &NewFormRequest,
     idempotency: Option<&Idempotency>,
 ) -> ServiceResult<FormDto> {
     authz::require_admin(&ctx.actor)?;
     let now = state.now();
+    let schema = match &request.schema {
+        Some(schema) => parse_schema(schema)?,
+        None => FormSchema::default(),
+    };
+    let use_body = request.use_body.unwrap_or(true);
     let form = Form {
         id: FormId::new(),
         code: Code::parse(&request.code)?.into_string(),
@@ -184,7 +257,14 @@ pub async fn admin_create_form(
         active: true,
         sort_order: request.sort_order,
         version: 1,
+        category: request.category.unwrap_or(FormCategory::General),
+        schema,
+        schema_version: 1,
+        use_body,
+        default_reference_ids: request.default_reference_ids.clone(),
+        origin: FormOrigin::Custom,
     };
+    require_some_content(form.use_body, &form.schema)?;
     state
         .write_idempotent(ctx.member_id(), idempotency, async |conn: &mut Conn| {
             require_current_admin(conn, ctx).await?;
@@ -194,6 +274,7 @@ pub async fn admin_create_form(
             {
                 return Err(DomainError::Conflict(ConflictReason::AlreadyExists).into());
             }
+            check_default_references_tx(conn, &form.default_reference_ids).await?;
             approval::insert_form(conn, &form, now).await?;
             audit_form(conn, now, ctx, "approval_form.create", &form).await?;
             Ok(form_dto(form.clone()))
@@ -201,12 +282,18 @@ pub async fn admin_create_form(
         .await
 }
 
-/// 양식 수정. `code`와 종류는 바꿀 수 없고, 시스템 양식은 끌 수 없다(`InUse`).
+/// 양식 수정. `code`와 종류는 바꿀 수 없다.
+///
+/// - `category`·`schema`·`use_body`·`default_reference_ids`는 보낸 것만 바꾼다.
+/// - 필드 정의가 실제로 달라지면 `schema_version`을 1 올린다. 이미 낸 문서는 낼 때의 정의를
+///   갖고 있으므로 영향받지 않는다.
+/// - 시스템 양식은 끌 수 없고 분류·필드 정의·본문 사용·기본 참조자를 바꿀 수 없다(`InUse`).
+///   그 문서의 내용은 연결된 기능이 정한다.
 pub async fn admin_update_form(
     state: &AppState,
     ctx: &AuthContext,
     id: FormId,
-    request: &UpdateFormRequest,
+    request: &EditFormRequest,
 ) -> ServiceResult<FormDto> {
     authz::require_admin(&ctx.actor)?;
     let now = state.now();
@@ -217,13 +304,11 @@ pub async fn admin_update_form(
     let body_template = optional_text(&request.body_template, "body_template", |raw| {
         Body::parse(raw).map(Body::into_string)
     })?;
+    let schema = request.schema.as_ref().map(parse_schema).transpose()?;
     state
         .write(async |conn: &mut Conn| {
             require_current_admin(conn, ctx).await?;
             let current = found(approval::find_form(conn, id).await?)?;
-            if current.kind != DocumentKind::General && !request.active {
-                return Err(DomainError::Conflict(ConflictReason::InUse).into());
-            }
             let form = Form {
                 name,
                 description,
@@ -231,8 +316,33 @@ pub async fn admin_update_form(
                 active: request.active,
                 sort_order: request.sort_order,
                 version: request.version,
-                ..current
+                category: request.category.unwrap_or(current.category),
+                schema: schema.unwrap_or_else(|| current.schema.clone()),
+                use_body: request.use_body.unwrap_or(current.use_body),
+                default_reference_ids: request
+                    .default_reference_ids
+                    .clone()
+                    .unwrap_or_else(|| current.default_reference_ids.clone()),
+                ..current.clone()
             };
+            let form = Form {
+                schema_version: current.schema_version + i64::from(form.schema != current.schema),
+                ..form
+            };
+            if current.kind.is_system() {
+                let structure_changed = form.category != current.category
+                    || form.schema != current.schema
+                    || form.use_body != current.use_body
+                    || form.default_reference_ids != current.default_reference_ids;
+                if !form.active || structure_changed {
+                    return Err(DomainError::Conflict(ConflictReason::InUse).into());
+                }
+            } else {
+                require_some_content(form.use_body, &form.schema)?;
+            }
+            if form.default_reference_ids != current.default_reference_ids {
+                check_default_references_tx(conn, &form.default_reference_ids).await?;
+            }
             require_updated(approval::update_form(conn, &form, now).await?)?;
             audit_form(conn, now, ctx, "approval_form.update", &form).await?;
             Ok(form_dto(Form {
@@ -241,6 +351,165 @@ pub async fn admin_update_form(
             }))
         })
         .await
+}
+
+/// 복제본의 코드 `<code>_copy_N`. 코드 길이 제한 안에 들도록 원본 코드를 자르고, 비어 있는 가장
+/// 작은 N을 쓴다.
+async fn copy_code_tx(conn: &mut Conn, source: &str) -> ServiceResult<String> {
+    const SUFFIX: &str = "_copy_";
+    const MAX_COPIES: u32 = 999;
+    // 코드는 ASCII뿐이라 바이트로 잘라도 된다. 숫자 세 자리까지 붙일 자리를 남긴다.
+    let keep = source.len().min(Code::MAX_LEN - SUFFIX.len() - 3);
+    let prefix = format!("{}{SUFFIX}", &source[..keep]);
+    let taken = approval::form_codes_with_prefix(conn, &prefix).await?;
+    (1..=MAX_COPIES)
+        .map(|n| format!("{prefix}{n}"))
+        .find(|candidate| !taken.contains(candidate))
+        .ok_or_else(|| DomainError::Conflict(ConflictReason::AlreadyExists).into())
+}
+
+/// 양식을 복제한다: 내용은 같고 코드는 `<code>_copy_N`, 이름은 `… 사본`인 **꺼진** 새 양식.
+/// 관리자가 고친 뒤 켜서 쓴다. 시스템 양식은 복제할 수 없다(`InUse`).
+pub async fn admin_duplicate_form(
+    state: &AppState,
+    ctx: &AuthContext,
+    id: FormId,
+    idempotency: Option<&Idempotency>,
+) -> ServiceResult<FormDto> {
+    const NAME_SUFFIX: &str = " 사본";
+    authz::require_admin(&ctx.actor)?;
+    let now = state.now();
+    state
+        .write_idempotent(ctx.member_id(), idempotency, async |conn: &mut Conn| {
+            require_current_admin(conn, ctx).await?;
+            let source = found(approval::find_form(conn, id).await?)?;
+            if source.kind.is_system() {
+                return Err(DomainError::Conflict(ConflictReason::InUse).into());
+            }
+            let room = LabelName::RULE.max_chars - NAME_SUFFIX.chars().count();
+            let base: String = source.name.chars().take(room).collect();
+            let form = Form {
+                id: FormId::new(),
+                code: copy_code_tx(conn, &source.code).await?,
+                name: format!("{}{NAME_SUFFIX}", base.trim_end()),
+                active: false,
+                version: 1,
+                schema_version: 1,
+                origin: FormOrigin::Custom,
+                ..source.clone()
+            };
+            approval::insert_form(conn, &form, now).await?;
+            audit(
+                conn,
+                now,
+                Audit {
+                    action: "approval_form.duplicate",
+                    target_type: "approval_form",
+                    target_id: Some(form.id.to_string()),
+                    detail: Some(serde_json::json!({
+                        "code": form.code, "name": form.name, "source_id": source.id,
+                        "source_code": source.code,
+                    })),
+                    ctx: Some(ctx),
+                },
+            )
+            .await?;
+            Ok(form_dto(form))
+        })
+        .await
+}
+
+// ───────────── 양식의 값 ─────────────
+
+/// 일반 양식 문서의 `payload`. 낸 시점의 양식 정의를 값과 함께 저장해, 그 뒤에 양식이 바뀌어도
+/// 문서가 낼 때의 모양대로 보이게 한다.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+struct FiledForm {
+    /// 값을 검증한 양식 정의의 버전. 필드 정의 없이 낸 예전 문서는 0으로 본다.
+    form_schema_version: i64,
+    category: FormCategory,
+    use_body: bool,
+    schema: FormSchema,
+    values: serde_json::Map<String, serde_json::Value>,
+    computed: serde_json::Map<String, serde_json::Value>,
+}
+
+impl FiledForm {
+    /// 저장된 문서에서 읽는다. 이 기능 이전에 만든 일반 문서는 `payload`가 없다.
+    fn of(record: &DocumentRecord) -> ServiceResult<Option<Self>> {
+        record
+            .payload
+            .as_ref()
+            .map(|payload| serde_json::from_value(payload.clone()).map_err(ServiceError::internal))
+            .transpose()
+    }
+
+    fn to_payload(&self) -> ServiceResult<serde_json::Value> {
+        serde_json::to_value(self).map_err(ServiceError::internal)
+    }
+
+    /// `member` 필드에 지정된 구성원.
+    fn members(&self) -> impl Iterator<Item = MemberId> + '_ {
+        self.schema
+            .fields
+            .iter()
+            .filter(|field| field.kind == FieldKind::Member)
+            .filter_map(|field| self.values.get(&field.key)?.as_str())
+            .filter_map(|raw| MemberId::parse(raw).ok())
+    }
+}
+
+/// 값을 양식의 **지금** 정의로 검증하고 저장할 모양으로 만든다. 오류는 전부 모아
+/// `InvalidFields`(400)로 답한다. `member` 필드의 구성원은 있어야 하고(`not_found`) 재직
+/// 중이어야 한다(`member_inactive`).
+async fn file_values_tx(
+    conn: &mut Conn,
+    form: &Form,
+    values: &serde_json::Value,
+) -> ServiceResult<FiledForm> {
+    let normalized = form
+        .schema
+        .validate_values(values)
+        .map_err(|errors| invalid_fields("", errors))?;
+    let people = members_by_id(conn, normalized.members.iter().map(|(_, id)| *id)).await?;
+    let errors: Vec<FieldErrorDto> = normalized
+        .members
+        .iter()
+        .filter_map(|(key, id)| {
+            let reason = match people.get(id) {
+                None => "not_found",
+                Some(member) if member.status.require_active().is_err() => "member_inactive",
+                Some(_) => return None,
+            };
+            Some(FieldErrorDto {
+                key: key.clone(),
+                row: None,
+                column: None,
+                reason: reason.to_owned(),
+            })
+        })
+        .collect();
+    if !errors.is_empty() {
+        return Err(ServiceError::InvalidFields(errors));
+    }
+    Ok(FiledForm {
+        form_schema_version: form.schema_version,
+        category: form.category,
+        use_body: form.use_body,
+        schema: form.schema.clone(),
+        values: normalized.values,
+        computed: normalized.computed,
+    })
+}
+
+/// 본문. 양식이 본문을 쓰면 필수이고, 아니면 비워도 된다(적었다면 같은 규칙으로 검증해 남긴다).
+fn parse_body(form: &Form, raw: &str) -> ServiceResult<String> {
+    if form.use_body {
+        return Ok(Body::parse(raw)?.into_string());
+    }
+    Ok(text::optional(Some(raw), Body::parse)?
+        .map(Body::into_string)
+        .unwrap_or_default())
 }
 
 // ───────────── 문서 읽기 ─────────────
@@ -304,8 +573,35 @@ async fn detail_tx(
         .chain(references.iter().map(|reference| reference.member_id))
         .chain(events.iter().map(|event| event.actor_id))
         .chain([record.drafter_id]);
-    let names = member_names(conn, people).await?;
+    // 일반 양식 문서는 낼 때의 양식 정의와 값을, 시스템 양식 문서는 그 기능의 내용을 싣는다.
+    let filed = if record.kind.is_system() {
+        None
+    } else {
+        Some(FiledForm::of(&record)?.unwrap_or_else(|| FiledForm {
+            form_schema_version: 0,
+            category: form.category,
+            use_body: true,
+            schema: FormSchema::default(),
+            values: serde_json::Map::new(),
+            computed: serde_json::Map::new(),
+        }))
+    };
+    let field_members: Vec<MemberId> = filed.iter().flat_map(FiledForm::members).collect();
+    let names = member_names(conn, people.chain(field_members.iter().copied())).await?;
     let name_of = |member: MemberId| names.get(&member).cloned().unwrap_or_default();
+    let form_snapshot = filed.map(|filed| FormSnapshot {
+        category: filed.category,
+        category_label: filed.category.label().to_owned(),
+        use_body: filed.use_body,
+        schema_version: filed.form_schema_version,
+        schema: filed.schema,
+        values: filed.values,
+        computed: filed.computed,
+        member_names: field_members
+            .iter()
+            .map(|member| (*member, name_of(*member)))
+            .collect::<BTreeMap<_, _>>(),
+    });
 
     Ok(DocumentDetail {
         id: record.id,
@@ -319,7 +615,8 @@ async fn detail_tx(
         drafter_department_name: department.map(|d| d.name),
         title: record.title,
         body: record.body,
-        payload: record.payload,
+        payload: record.payload.filter(|_| record.kind.is_system()),
+        form_snapshot,
         steps: document
             .steps()
             .iter()
@@ -457,6 +754,8 @@ pub async fn list_documents(
         status: query.status,
         kind: None,
         drafter_id: None,
+        form_id: query.form_id,
+        category: query.category,
         before: None,
     };
     list_page(state, ctx.member_id(), filter, &query.page()).await
@@ -474,6 +773,8 @@ pub async fn admin_list_documents(
         status: query.status,
         kind: query.kind,
         drafter_id: query.drafter_id,
+        form_id: query.form_id,
+        category: query.category,
         before: None,
     };
     list_page(state, ctx.member_id(), filter, &query.page()).await
@@ -816,7 +1117,7 @@ async fn run_linked_effect_tx(
 ) -> ServiceResult<()> {
     // 개인 신청의 최종 승인은, 승인하는 시점에도 권한이 있어야 한다
     // (신청 뒤에 조직장이 바뀌었거나 관리자에서 해제됐을 수 있다).
-    if record.kind != DocumentKind::General && matches!(outcome, LinkedOutcome::Completed) {
+    if record.kind.is_system() && matches!(outcome, LinkedOutcome::Completed) {
         let requester = found(members::find(conn, record.drafter_id).await?)?;
         if !can_resolve_for_tx(conn, actor_id, &requester).await? {
             return Err(DomainError::Forbidden.into());
@@ -841,7 +1142,8 @@ struct NewDocument {
     kind: DocumentKind,
     form_id: FormId,
     title: Title,
-    body: Body,
+    /// 본문을 쓰지 않는 양식이면 비어 있을 수 있다.
+    body: String,
     payload: Option<serde_json::Value>,
     line: ApprovalLine,
 }
@@ -862,7 +1164,7 @@ async fn insert_draft_tx(
         drafter_id: drafter.id,
         drafter_department_id: drafter.department_id,
         title: new.title.into_string(),
-        body: new.body.into_string(),
+        body: new.body,
         payload: new.payload,
         status: document.status(),
         submitted_at: None,
@@ -883,27 +1185,155 @@ async fn submit_tx(
     now: Timestamp,
 ) -> ServiceResult<()> {
     let mut loaded = load(conn, id).await?;
+    submit_loaded_tx(conn, actor_id, &mut loaded, now).await
+}
+
+async fn submit_loaded_tx(
+    conn: &mut Conn,
+    actor_id: MemberId,
+    loaded: &mut Loaded,
+    now: Timestamp,
+) -> ServiceResult<()> {
+    finalize_draft_tx(conn, actor_id, loaded, now).await?;
     if let Transition::Applied(events) = loaded.document.submit(actor_id, now)? {
-        commit_transition_tx(conn, actor_id, &loaded, &events, now).await?;
+        commit_transition_tx(conn, actor_id, loaded, &events, now).await?;
     }
     Ok(())
 }
 
+/// 기안자가 일반 양식의 임시저장 문서를 상신하기 직전에 내용을 확정한다.
+///
+/// 임시저장해 둔 사이에 양식이 바뀌었을 수 있으므로 값을 **지금의 양식 정의**로 다시 검증하고
+/// (구성원 필드의 재직 여부 포함), 그 정의를 문서에 남긴다. 맞지 않으면 상신은 400으로 실패하고
+/// 기안자가 문서를 고쳐야 한다. 그런 다음 양식의 기본 참조자를 붙인다.
+///
+/// 그 밖의 경우(시스템 양식, 이미 상신됨, 기안자가 아님)는 아무것도 하지 않고 상태 기계가
+/// 판정하게 둔다.
+async fn finalize_draft_tx(
+    conn: &mut Conn,
+    actor_id: MemberId,
+    loaded: &mut Loaded,
+    now: Timestamp,
+) -> ServiceResult<()> {
+    let editable = loaded.document.status() == DocumentStatus::Draft
+        && loaded.document.drafter() == actor_id
+        && !loaded.record.kind.is_system();
+    if !editable {
+        return Ok(());
+    }
+    let form = found(approval::find_form(conn, loaded.record.form_id).await?)?;
+    if !form.active {
+        return Err(DomainError::Conflict(ConflictReason::FormInactive).into());
+    }
+    if form.use_body && loaded.record.body.is_empty() {
+        return Err(DomainError::validation("body", ValidationReason::Empty).into());
+    }
+    let values =
+        FiledForm::of(&loaded.record)?.map_or(serde_json::Value::Null, |filed| filed.values.into());
+    let payload = file_values_tx(conn, &form, &values).await?.to_payload()?;
+    if loaded.record.payload.as_ref() != Some(&payload) {
+        approval::refresh_draft_payload(conn, loaded.record.id, &payload).await?;
+        loaded.record.payload = Some(payload);
+    }
+    apply_default_references_tx(conn, actor_id, &form, loaded, now).await
+}
+
+/// 양식의 기본 참조자를 문서의 참조자에 더한다(예: 회계 양식은 늘 재무 담당자에게 참조).
+///
+/// 이미 문서의 당사자(기안자·결재자·참조자)인 사람은 건너뛴다. 재직 중이 아니거나 없어진
+/// 사람, 참조자 한도를 넘는 사람은 **조용히 빼고** 상신을 막지 않되 감사 로그
+/// (`approval.default_reference_skipped`)에 남긴다.
+async fn apply_default_references_tx(
+    conn: &mut Conn,
+    actor_id: MemberId,
+    form: &Form,
+    loaded: &mut Loaded,
+    now: Timestamp,
+) -> ServiceResult<()> {
+    if form.default_reference_ids.is_empty() {
+        return Ok(());
+    }
+    let document = &loaded.document;
+    let people = members_by_id(conn, form.default_reference_ids.iter().copied()).await?;
+    let mut references = document.references().to_vec();
+    let (mut inactive, mut over_limit) = (Vec::new(), Vec::new());
+    for id in &form.default_reference_ids {
+        let on_document = *id == document.drafter()
+            || references.contains(id)
+            || document.steps().iter().any(|step| step.approver == *id);
+        if on_document {
+            continue;
+        }
+        let active = people
+            .get(id)
+            .is_some_and(|member| member.status.require_active().is_ok());
+        if !active {
+            inactive.push(*id);
+        } else if references.len() >= MAX_REFERENCES {
+            over_limit.push(*id);
+        } else {
+            references.push(*id);
+        }
+    }
+    if references.len() != document.references().len() {
+        let steps = document
+            .steps()
+            .iter()
+            .map(|step| LineStep {
+                approver: step.approver,
+                kind: step.kind,
+            })
+            .collect();
+        let line = ApprovalLine::new(document.drafter(), steps, references)?;
+        let _ = loaded.document.replace_line(actor_id, line)?;
+        let document = &loaded.document;
+        approval::replace_line(
+            conn,
+            loaded.record.id,
+            document.steps(),
+            document.references(),
+        )
+        .await?;
+    }
+    if inactive.is_empty() && over_limit.is_empty() {
+        return Ok(());
+    }
+    audit_as(
+        conn,
+        now,
+        actor_id,
+        Audit {
+            action: "approval.default_reference_skipped",
+            target_type: "approval_document",
+            target_id: Some(loaded.record.id.to_string()),
+            detail: Some(serde_json::json!({
+                "form_id": form.id, "form_code": form.code,
+                "inactive": inactive, "over_limit": over_limit,
+            })),
+            ctx: None,
+        },
+    )
+    .await
+}
+
 /// 일반 양식의 문서를 기안한다. `submit`이면 같은 트랜잭션에서 상신까지 한다.
+///
+/// 양식 필드의 값(`values`)은 임시저장이어도 양식 정의대로 검증하고, 잘못된 필드는 전부
+/// `fields`에 담아 400으로 답한다.
 pub async fn create_document(
     state: &AppState,
     ctx: &AuthContext,
-    request: &CreateDocumentRequest,
+    request: &NewDocumentRequest,
     idempotency: Option<&Idempotency>,
 ) -> ServiceResult<DocumentDetail> {
     let now = state.now();
     let title = Title::parse(&request.title)?;
-    let body = Body::parse(&request.body)?;
+    let values = request.values.as_ref().unwrap_or(&serde_json::Value::Null);
     state
         .write_idempotent(ctx.member_id(), idempotency, async |conn: &mut Conn| {
             let form = found(approval::find_form(conn, request.form_id).await?)?;
             // 시스템 양식의 문서는 그 기능(휴가 신청 등)만 만든다. 내용이 정해진 구조여야 하기 때문이다.
-            if form.kind != DocumentKind::General {
+            if form.kind.is_system() {
                 return Err(
                     DomainError::validation("form_id", ValidationReason::Inconsistent).into(),
                 );
@@ -911,6 +1341,8 @@ pub async fn create_document(
             if !form.active {
                 return Err(DomainError::Conflict(ConflictReason::FormInactive).into());
             }
+            let body = parse_body(&form, &request.body)?;
+            let filed = file_values_tx(conn, &form, values).await?;
             let line =
                 build_line_tx(conn, ctx.member_id(), &request.steps, &request.references).await?;
             let new = NewDocument {
@@ -918,7 +1350,7 @@ pub async fn create_document(
                 form_id: form.id,
                 title,
                 body,
-                payload: None,
+                payload: Some(filed.to_payload()?),
                 line,
             };
             let id = insert_draft_tx(conn, &ctx.member, new, now).await?;
@@ -954,7 +1386,7 @@ pub async fn create_submitted_tx(
         kind: document.kind,
         form_id: form.id,
         title: document.title,
-        body: document.body,
+        body: document.body.into_string(),
         payload: Some(document.payload),
         line: document.line,
     };
@@ -963,16 +1395,16 @@ pub async fn create_submitted_tx(
     Ok(id)
 }
 
-/// 임시저장 문서 수정(기안자만). 제목·본문·결재선을 통째로 바꾼다.
+/// 임시저장 문서 수정(기안자만). 제목·본문·결재선을 통째로 바꾼다. `values`는 보내면 통째로
+/// 바꾸고 생략하면 저장된 값을 그대로 두되, 어느 쪽이든 양식의 지금 정의로 다시 검증한다.
 pub async fn update_document(
     state: &AppState,
     ctx: &AuthContext,
     id: DocumentId,
-    request: &UpdateDocumentRequest,
+    request: &EditDocumentRequest,
 ) -> ServiceResult<DocumentDetail> {
     let now = state.now();
     let title = Title::parse(&request.title)?;
-    let body = Body::parse(&request.body)?;
     state
         .write(async |conn: &mut Conn| {
             let mut loaded = load(conn, id).await?;
@@ -982,12 +1414,21 @@ pub async fn update_document(
             let replaced = loaded.document.replace_line(ctx.member_id(), line)?;
             let approvers = loaded.document.steps().iter().map(|step| step.approver);
             require_line_active_tx(conn, approvers, loaded.document.references()).await?;
+            let form = found(approval::find_form(conn, loaded.record.form_id).await?)?;
+            let body = parse_body(&form, &request.body)?;
+            let values = match &request.values {
+                Some(values) => values.clone(),
+                None => FiledForm::of(&loaded.record)?
+                    .map_or(serde_json::Value::Null, |filed| filed.values.into()),
+            };
+            let payload = file_values_tx(conn, &form, &values).await?.to_payload()?;
             let updated = approval::update_draft_content(
                 conn,
                 id,
                 request.version,
                 title.as_str(),
-                body.as_str(),
+                &body,
+                Some(&payload),
                 now,
             )
             .await?;
@@ -1060,13 +1501,22 @@ async fn transition(
         .await
 }
 
+/// 임시저장 문서를 상신한다. 일반 양식 문서는 상신 직전에 값을 지금의 양식 정의로 다시
+/// 확인하고 기본 참조자를 붙인다([`finalize_draft_tx`]).
 pub async fn submit_document(
     state: &AppState,
     ctx: &AuthContext,
     id: DocumentId,
 ) -> ServiceResult<DocumentDetail> {
-    let actor = ctx.member_id();
-    transition(state, ctx, id, |document, now| document.submit(actor, now)).await
+    let now = state.now();
+    state
+        .write(async |conn: &mut Conn| {
+            let mut loaded = load(conn, id).await?;
+            rules::view(&ctx.actor, &loaded.document)?;
+            submit_loaded_tx(conn, ctx.member_id(), &mut loaded, now).await?;
+            detail_tx(conn, ctx.member_id(), id).await
+        })
+        .await
 }
 
 /// 승인(결재·합의). 같은 요청이 다시 오면 현재 상태를 그대로 돌려준다.

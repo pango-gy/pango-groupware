@@ -1,8 +1,10 @@
 //! 전자결재: 양식, 문서, 결재 단계, 참조자, 이력, 문서 번호.
 
 use pango_core::approval::{
-    DocumentKind, DocumentStatus, EventKind, Mailbox, Step, StepKind, StepStatus,
+    DocumentKind, DocumentStatus, EventKind, FormCategory, FormOrigin, Mailbox, Step, StepKind,
+    StepStatus,
 };
+use pango_core::form_schema::FormSchema;
 use pango_core::id::{ApprovalEventId, ApprovalStepId, DepartmentId, DocumentId, FormId, MemberId};
 use pango_core::text::Comment;
 use pango_core::time::Timestamp;
@@ -24,6 +26,39 @@ pub struct Form {
     pub active: bool,
     pub sort_order: i64,
     pub version: i64,
+    pub category: FormCategory,
+    /// 필드 정의. 저장 전에 서비스가 검증한다.
+    pub schema: FormSchema,
+    /// 필드 정의가 바뀔 때마다 서비스가 올린다.
+    pub schema_version: i64,
+    /// 자유 입력 본문을 쓰는지.
+    pub use_body: bool,
+    /// 상신할 때 자동으로 붙는 참조자.
+    pub default_reference_ids: Vec<MemberId>,
+    pub origin: FormOrigin,
+}
+
+impl Form {
+    /// 필드가 없는 일반 양식. 테스트와 최소 정의에서 나머지 값을 채울 때 쓴다.
+    pub fn plain(id: FormId, code: &str, name: &str, kind: DocumentKind) -> Self {
+        Self {
+            id,
+            code: code.to_owned(),
+            name: name.to_owned(),
+            description: String::new(),
+            kind,
+            body_template: String::new(),
+            active: true,
+            sort_order: 0,
+            version: 1,
+            category: FormCategory::General,
+            schema: FormSchema::default(),
+            schema_version: 1,
+            use_body: true,
+            default_reference_ids: Vec::new(),
+            origin: FormOrigin::Custom,
+        }
+    }
 }
 
 #[derive(sqlx::FromRow)]
@@ -37,6 +72,12 @@ struct FormRow {
     active: i64,
     sort_order: i64,
     version: i64,
+    category: String,
+    schema: String,
+    schema_version: i64,
+    use_body: i64,
+    default_reference_ids: Option<String>,
+    origin: String,
 }
 
 impl TryFrom<FormRow> for Form {
@@ -53,12 +94,31 @@ impl TryFrom<FormRow> for Form {
             active: row.active != 0,
             sort_order: row.sort_order,
             version: row.version,
+            category: codec::parse_with("category", &row.category, FormCategory::parse)?,
+            schema: codec::json("schema", &row.schema)?,
+            schema_version: row.schema_version,
+            use_body: row.use_body != 0,
+            default_reference_ids: row
+                .default_reference_ids
+                .as_deref()
+                .map(|raw| codec::json("default_reference_ids", raw))
+                .transpose()?
+                .unwrap_or_default(),
+            origin: codec::parse_with("origin", &row.origin, FormOrigin::parse)?,
         })
     }
 }
 
-const FORM_COLUMNS: &str =
-    "id, code, name, description, kind, body_template, active, sort_order, version";
+const FORM_COLUMNS: &str = "id, code, name, description, kind, body_template, active, sort_order, \
+     version, category, schema, schema_version, use_body, default_reference_ids, origin";
+
+/// 참조자가 없으면 `NULL`로 저장한다.
+fn default_references_text(form: &Form) -> DbResult<Option<String>> {
+    if form.default_reference_ids.is_empty() {
+        return Ok(None);
+    }
+    codec::json_text("default_reference_ids", &form.default_reference_ids).map(Some)
+}
 
 /// 정렬 순서대로. `active_only`면 사용 중인 양식만.
 pub async fn list_forms(conn: &mut Conn, active_only: bool) -> DbResult<Vec<Form>> {
@@ -97,12 +157,28 @@ pub async fn find_form_by_code(conn: &mut Conn, code: &str) -> DbResult<Option<F
 }
 
 pub async fn insert_form(conn: &mut Conn, form: &Form, now: Timestamp) -> DbResult<()> {
-    sqlx::query(
+    insert_form_with(conn, form, now, "").await.map(|_| ())
+}
+
+/// 같은 `code`의 양식이 없을 때만 넣는다(꺼 둔 양식도 있는 것으로 본다). 넣었으면 `true`.
+/// 유일 제약으로 판정하므로 여러 번, 동시에 불러도 한 줄만 생긴다.
+pub async fn insert_form_if_absent(conn: &mut Conn, form: &Form, now: Timestamp) -> DbResult<bool> {
+    insert_form_with(conn, form, now, "ON CONFLICT (code) DO NOTHING").await
+}
+
+async fn insert_form_with(
+    conn: &mut Conn,
+    form: &Form,
+    now: Timestamp,
+    on_conflict: &str,
+) -> DbResult<bool> {
+    let result = sqlx::query(&format!(
         "INSERT INTO approval_forms
             (id, code, name, description, kind, body_template, active, sort_order,
-             created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
+             category, schema, schema_version, use_body, default_reference_ids, origin,
+             created_at, updated_at, version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) {on_conflict}"
+    ))
     .bind(form.id.to_string())
     .bind(&form.code)
     .bind(&form.name)
@@ -111,18 +187,39 @@ pub async fn insert_form(conn: &mut Conn, form: &Form, now: Timestamp) -> DbResu
     .bind(&form.body_template)
     .bind(form.active)
     .bind(form.sort_order)
+    .bind(form.category.as_str())
+    .bind(codec::json_text("schema", &form.schema)?)
+    .bind(form.schema_version)
+    .bind(form.use_body)
+    .bind(default_references_text(form)?)
+    .bind(form.origin.as_str())
     .bind(now.as_millis())
     .bind(now.as_millis())
+    .bind(form.version)
     .execute(conn)
     .await?;
-    Ok(())
+    Ok(result.rows_affected() == 1)
 }
 
-/// `code`와 `kind`는 바꾸지 않는다. `form.version`이 현재 값과 같을 때만 갱신한다.
+/// `prefix`로 시작하는 양식 코드(꺼 둔 양식 포함). 복제할 때 빈 코드를 찾는 데 쓴다.
+pub async fn form_codes_with_prefix(conn: &mut Conn, prefix: &str) -> DbResult<Vec<String>> {
+    // 코드는 `[a-z0-9_]`뿐이라 `_`만 LIKE에서 이스케이프하면 된다.
+    let pattern = format!("{}%", prefix.replace('_', "\\_"));
+    Ok(
+        sqlx::query_scalar("SELECT code FROM approval_forms WHERE code LIKE ? ESCAPE '\\'")
+            .bind(pattern)
+            .fetch_all(conn)
+            .await?,
+    )
+}
+
+/// `code`·`kind`·`origin`은 바꾸지 않는다. `form.version`이 현재 값과 같을 때만 갱신한다.
 pub async fn update_form(conn: &mut Conn, form: &Form, now: Timestamp) -> DbResult<bool> {
     let result = sqlx::query(
         "UPDATE approval_forms SET
             name = ?, description = ?, body_template = ?, active = ?, sort_order = ?,
+            category = ?, schema = ?, schema_version = ?, use_body = ?,
+            default_reference_ids = ?,
             updated_at = ?, version = version + 1
          WHERE id = ? AND version = ?",
     )
@@ -131,6 +228,11 @@ pub async fn update_form(conn: &mut Conn, form: &Form, now: Timestamp) -> DbResu
     .bind(&form.body_template)
     .bind(form.active)
     .bind(form.sort_order)
+    .bind(form.category.as_str())
+    .bind(codec::json_text("schema", &form.schema)?)
+    .bind(form.schema_version)
+    .bind(form.use_body)
+    .bind(default_references_text(form)?)
     .bind(now.as_millis())
     .bind(form.id.to_string())
     .bind(form.version)
@@ -254,26 +356,49 @@ pub async fn insert_document(conn: &mut Conn, document: &DocumentRecord) -> DbRe
     Ok(())
 }
 
-/// 임시저장 문서의 제목·본문을 바꾼다. `version`이 현재 값과 같고 아직 임시저장일 때만.
+/// 임시저장 문서의 제목·본문·구조화된 내용을 바꾼다. `version`이 현재 값과 같고 아직
+/// 임시저장일 때만.
 pub async fn update_draft_content(
     conn: &mut Conn,
     id: DocumentId,
     version: i64,
     title: &str,
     body: &str,
+    payload: Option<&serde_json::Value>,
     now: Timestamp,
 ) -> DbResult<bool> {
+    let payload = payload
+        .map(|value| codec::json_text("payload", value))
+        .transpose()?;
     let result = sqlx::query(
-        "UPDATE approval_documents SET title = ?, body = ?, updated_at = ?, version = version + 1
+        "UPDATE approval_documents
+         SET title = ?, body = ?, payload = ?, updated_at = ?, version = version + 1
          WHERE id = ? AND version = ? AND status = 'draft'",
     )
     .bind(title)
     .bind(body)
+    .bind(payload)
     .bind(now.as_millis())
     .bind(id.to_string())
     .bind(version)
     .execute(conn)
     .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+/// 상신 직전에 임시저장 문서의 구조화된 내용을 지금의 양식 정의로 다시 맞춘다. 같은
+/// 트랜잭션의 [`save_state`]가 버전을 올리므로 여기서는 버전을 건드리지 않는다.
+pub async fn refresh_draft_payload(
+    conn: &mut Conn,
+    id: DocumentId,
+    payload: &serde_json::Value,
+) -> DbResult<bool> {
+    let result =
+        sqlx::query("UPDATE approval_documents SET payload = ? WHERE id = ? AND status = 'draft'")
+            .bind(codec::json_text("payload", payload)?)
+            .bind(id.to_string())
+            .execute(conn)
+            .await?;
     Ok(result.rows_affected() == 1)
 }
 
@@ -570,6 +695,9 @@ pub struct DocumentFilter {
     pub status: Option<DocumentStatus>,
     pub kind: Option<DocumentKind>,
     pub drafter_id: Option<MemberId>,
+    pub form_id: Option<FormId>,
+    /// 양식의 **지금** 분류로 거른다.
+    pub category: Option<FormCategory>,
     /// 이 ID보다 오래된 문서부터(다음 페이지).
     pub before: Option<DocumentId>,
 }
@@ -680,7 +808,9 @@ pub async fn list_documents(
            AND (?3 IS NULL OR d.kind = ?3)
            AND (?4 IS NULL OR d.drafter_id = ?4)
            AND (?5 IS NULL OR d.id < ?5)
-         ORDER BY d.id DESC LIMIT ?6",
+           AND (?6 IS NULL OR d.form_id = ?6)
+           AND (?7 IS NULL OR f.category = ?7)
+         ORDER BY d.id DESC LIMIT ?8",
         scope_condition(filter.scope)
     );
     let rows = sqlx::query_as::<_, ListRow>(&sql)
@@ -689,6 +819,8 @@ pub async fn list_documents(
         .bind(filter.kind.map(DocumentKind::as_str))
         .bind(filter.drafter_id.map(|id| id.to_string()))
         .bind(filter.before.map(|id| id.to_string()))
+        .bind(filter.form_id.map(|id| id.to_string()))
+        .bind(filter.category.map(FormCategory::as_str))
         .bind(codec::limit_plus_one(limit))
         .fetch_all(conn)
         .await?;

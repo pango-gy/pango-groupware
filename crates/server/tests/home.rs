@@ -319,14 +319,7 @@ async fn home_counts_match_approval_notifications_and_notices() {
     // kim: 진행 중인 기안 2건(휴가), 참조 문서 1건(lee의 품의).
     request_leave(&s.app, &s.kim, "2026-03-10", "2026-03-10").await;
     request_leave(&s.app, &s.kim, "2026-03-12", "2026-03-12").await;
-    let forms = get(&s.app, &s.lee.token, "/approval/forms").await;
-    let general = forms
-        .as_array()
-        .expect("forms")
-        .iter()
-        .find(|f| f["code"] == "general")
-        .expect("general")["id"]
-        .clone();
+    let general = s.app.approval_form(&s.lee.token, "general").await["id"].clone();
     let draft = json!({
         "form_id": general, "title": "장비 구매", "body": "모니터 2대",
         "steps": [{ "approver_id": s.lead.id, "kind": "approve" }],
@@ -716,14 +709,7 @@ async fn dashboard_today_and_pending_counts() {
     );
     let reason = json!({ "reason": "근거 부족" });
     post(&s.app, &s.lead.token, &reject, &reason, StatusCode::OK).await;
-    let forms = get(&s.app, &s.carol.token, "/approval/forms").await;
-    let general = forms
-        .as_array()
-        .expect("forms")
-        .iter()
-        .find(|f| f["code"] == "general")
-        .expect("general")["id"]
-        .clone();
+    let general = s.app.approval_form(&s.carol.token, "general").await["id"].clone();
     let mut draft = json!({
         "form_id": general, "title": "출장 신청", "body": "부산",
         "steps": [{ "approver_id": s.shead.id, "kind": "approve" }], "submit": true,

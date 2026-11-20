@@ -113,6 +113,11 @@ async fn run(cli: Cli) -> Result<(), AnyError> {
                     "초기화되지 않았습니다. 먼저 `pango-groupware init`을 실행하세요.".into(),
                 );
             }
+            // 판올림으로 새로 생긴 기본 결재 양식을 채운다(이미 있는 양식은 건드리지 않는다).
+            let added = pango_server::service::form_catalog::ensure_form_catalog(&state).await?;
+            if !added.is_empty() {
+                tracing::info!(count = added.len(), "added default approval forms");
+            }
             tokio::spawn(pango_server::service::maintenance::run_forever(
                 state.clone(),
                 std::time::Duration::from_secs(3600),

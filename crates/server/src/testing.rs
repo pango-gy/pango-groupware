@@ -417,6 +417,31 @@ impl TestApp {
             .expect(StatusCode::OK)
     }
 
+    /// 기안 화면의 양식 목록(`GET /approval/forms`)을 분류 묶음을 풀어 한 줄로 돌려준다.
+    pub async fn approval_forms(&self, token: &str) -> Vec<Value> {
+        let groups = self
+            .get("/approval/forms")
+            .bearer(token)
+            .send()
+            .await
+            .expect(StatusCode::OK);
+        groups
+            .as_array()
+            .expect("groups")
+            .iter()
+            .flat_map(|group| group["forms"].as_array().expect("forms").clone())
+            .collect()
+    }
+
+    /// 사용 중인 양식 하나(`code`로 찾는다). 없으면 실패한다.
+    pub async fn approval_form(&self, token: &str, code: &str) -> Value {
+        self.approval_forms(token)
+            .await
+            .into_iter()
+            .find(|form| form["code"] == code)
+            .unwrap_or_else(|| panic!("no active form {code}"))
+    }
+
     /// 근태 기록 하나의 변경 이력(`GET /attendance/records/{id}/events`, 200이어야 한다).
     pub async fn attendance_events(&self, token: &str, record_id: &str) -> Vec<Value> {
         self.get(&format!("/attendance/records/{record_id}/events"))
