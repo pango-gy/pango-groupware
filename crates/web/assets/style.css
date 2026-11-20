@@ -779,7 +779,11 @@ body:has(.action-bar) .toasts { bottom: calc(24px + var(--action-bar-h) + env(sa
 .workday-track { position: relative; height: 12px; border-radius: 6px; background: var(--grey-100); overflow: hidden; }
 .workday-band, .workday-late, .workday-worked { position: absolute; top: 0; bottom: 0; }
 .workday-band { background: var(--blue); opacity: .16; }
-.workday-late { background: var(--orange); }
+/* 늦은 구간은 근무한 시간이 아니므로 채우지 않고 빗금으로 표시한다. */
+.workday-late {
+  background: repeating-linear-gradient(135deg, var(--orange) 0 2px, transparent 2px 6px);
+  opacity: .7;
+}
 .workday-worked { background: var(--blue); }
 .workday-mark { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--blue-strong); }
 .workday-mark-now { background: var(--grey-900); }
