@@ -9,6 +9,8 @@ pub mod calendar;
 pub mod error;
 pub mod id;
 pub mod leave;
+pub mod macros;
+pub mod member;
 pub mod org;
 pub mod password;
 pub mod text;

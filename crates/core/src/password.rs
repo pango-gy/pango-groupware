@@ -35,7 +35,7 @@ impl PlainPassword {
             return Err(err(ValidationReason::InvalidCharacter));
         }
         let lowered = raw.to_lowercase();
-        let all_same = raw.chars().all(|c| Some(c) == raw.chars().next());
+        let all_same = raw.chars().all(|c| raw.starts_with(c));
         if all_same || lowered.contains(login_id.as_str()) {
             return Err(err(ValidationReason::InvalidFormat));
         }

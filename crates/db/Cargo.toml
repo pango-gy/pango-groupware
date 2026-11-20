@@ -1,0 +1,27 @@
+[package]
+name = "pango-db"
+description = "pango-groupware SQLite 스키마와 저장소"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+pango-core.workspace = true
+sqlx.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+tempfile = { workspace = true, optional = true }
+
+[features]
+# 테스트용 임시 DB 도우미. 다른 크레이트의 통합 테스트에서도 쓴다.
+testing = ["dep:tempfile"]
+
+[dev-dependencies]
+pango-db = { path = ".", features = ["testing"] }
+tokio.workspace = true
+
+[lints]
+workspace = true
