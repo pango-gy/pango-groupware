@@ -13,7 +13,8 @@ use crate::ui::{Card, EmptyState, Icon, IconName, PageHeader};
 pub fn More() -> Element {
     let session = use_session();
     let nav = navigator();
-    let unread = use_badges().notifications();
+    let badges = use_badges();
+    let unread = badges.notifications();
     let Some(me) = session.me() else {
         return rsx! {};
     };
@@ -23,9 +24,18 @@ pub fn More() -> Element {
             Card { title: if title.is_empty() { "메뉴" } else { title },
                 div { class: "menu-list",
                     for item in items {
-                        Link { key: "{item.label}", class: "menu-row", to: item.to.clone(),
+                        Link {
+                            key: "{item.label}",
+                            class: "menu-row",
+                            to: item.to.clone(),
+                            "aria-label": badges::unread_label(item.label, badges.for_route(&item.to)),
                             Icon { name: item.icon }
                             span { class: "menu-row-label", "{item.label}" }
+                            if badges.for_route(&item.to) > 0 {
+                                span { class: "nav-count", "aria-hidden": "true",
+                                    "{badges::count_text(badges.for_route(&item.to))}"
+                                }
+                            }
                             Icon { name: IconName::Chevron }
                         }
                     }

@@ -13,7 +13,7 @@ use dioxus::prelude::*;
 use crate::api::{ApiError, ApiResult};
 use crate::format;
 use crate::route::Route;
-use crate::session::{use_toasts, ToastKind, Toasts};
+use crate::session::{use_toasts, Toast, ToastKind, Toasts};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ButtonKind {
@@ -320,21 +320,51 @@ pub fn SelectField(
     }
 }
 
-/// 화면 위에 뜨는 대화 상자. 바깥을 누르거나 닫기 버튼으로 닫는다.
+/// 화면 위에 뜨는 대화 상자. 바깥을 누르거나 닫기 버튼·Esc로 닫는다.
+///
+/// 열리면 초점을 대화 상자로 옮기고, Tab·Shift+Tab은 대화 상자 안에서만 돈다. 닫히면 연 버튼
+/// (열기 전 초점)으로 초점을 돌려준다.
 #[component]
 pub fn Modal(
     #[props(into)] title: String,
     onclose: EventHandler<()>,
     children: Element,
 ) -> Element {
+    let id = use_hook(dialog::next_id);
+    // 첫 렌더는 대화 상자가 그려지기 전이라 아직 연 버튼에 초점이 있다.
+    let opener = use_hook(dialog::active_element);
+    {
+        let id = id.clone();
+        use_effect(move || dialog::focus(&id));
+    }
+    use_drop(move || dialog::restore(opener.as_ref()));
+    let keydown = {
+        let id = id.clone();
+        move |event: KeyboardEvent| match event.key() {
+            Key::Escape => {
+                event.stop_propagation();
+                onclose.call(());
+            }
+            Key::Tab => {
+                let backward = event.modifiers().contains(Modifiers::SHIFT);
+                if dialog::trap_tab(&id, backward) {
+                    event.prevent_default();
+                }
+            }
+            _ => {}
+        }
+    };
     rsx! {
         div { class: "modal-backdrop", onclick: move |_| onclose.call(()),
             div {
+                id: "{id}",
                 class: "modal",
                 role: "dialog",
                 "aria-modal": "true",
                 "aria-label": "{title}",
+                tabindex: "-1",
                 onclick: move |event| event.stop_propagation(),
+                onkeydown: keydown,
                 header { class: "modal-header",
                     h2 { class: "modal-title", "{title}" }
                     button {
@@ -347,6 +377,114 @@ pub fn Modal(
                 }
                 div { class: "modal-body", {children} }
             }
+        }
+    }
+}
+
+/// Tab을 눌렀을 때 초점을 어디로 둘지.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabMove {
+    /// 브라우저 기본 이동에 맡긴다(대화 상자 안에서 다음·이전 칸으로 간다).
+    Browser,
+    /// 이 순서의 칸으로 옮긴다(끝에서 처음으로, 처음에서 끝으로 돈다).
+    Focus(usize),
+    /// 옮길 칸이 없다. 대화 상자 밖으로 나가지 않게 그대로 둔다.
+    Stay,
+}
+
+/// 대화 상자 안의 초점 칸 `count`개 중 지금 `current`에 있을 때 Tab(`backward`면 Shift+Tab).
+/// 지금 초점이 칸이 아니면(대화 상자 자체 등) 앞으로는 첫 칸, 뒤로는 마지막 칸이다.
+pub fn tab_move(count: usize, current: Option<usize>, backward: bool) -> TabMove {
+    let Some(last) = count.checked_sub(1) else {
+        return TabMove::Stay;
+    };
+    match (current, backward) {
+        (None, false) => TabMove::Focus(0),
+        (None, true) => TabMove::Focus(last),
+        (Some(0), true) => TabMove::Focus(last),
+        (Some(index), false) if index >= last => TabMove::Focus(0),
+        (Some(index), true) if index > last => TabMove::Focus(last),
+        _ => TabMove::Browser,
+    }
+}
+
+/// 대화 상자의 초점 처리(브라우저 DOM). 계산은 [`tab_move`]가 한다.
+mod dialog {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use wasm_bindgen::JsCast;
+    use web_sys::HtmlElement;
+
+    use super::{tab_move, TabMove};
+
+    /// 초점을 받을 수 있는 칸.
+    const FOCUSABLE: &str =
+        "a[href], button:not([disabled]), input:not([disabled]):not([type=\"hidden\"]), \
+        select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex=\"-1\"])";
+
+    /// 겹쳐 뜬 대화 상자도 서로 구분하는 요소 ID.
+    pub fn next_id() -> String {
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        format!("dialog-{}", NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+
+    fn document() -> Option<web_sys::Document> {
+        web_sys::window()?.document()
+    }
+
+    pub fn active_element() -> Option<HtmlElement> {
+        document()?.active_element()?.dyn_into::<HtmlElement>().ok()
+    }
+
+    fn element(id: &str) -> Option<HtmlElement> {
+        document()?
+            .get_element_by_id(id)?
+            .dyn_into::<HtmlElement>()
+            .ok()
+    }
+
+    /// 열릴 때: 대화 상자 자체에 초점(화면 낭독기가 제목을 읽고, Tab은 첫 칸부터).
+    /// 입력 칸에 바로 두지 않는 것은 모바일에서 키보드가 바로 올라오지 않게 하려는 것이다.
+    pub fn focus(id: &str) {
+        if let Some(dialog) = element(id) {
+            let _ = dialog.focus();
+        }
+    }
+
+    /// 닫힐 때: 연 버튼이 아직 화면에 있으면 그리로 돌려준다.
+    pub fn restore(opener: Option<&HtmlElement>) {
+        if let Some(opener) = opener.filter(|el| el.is_connected()) {
+            let _ = opener.focus();
+        }
+    }
+
+    /// Tab을 대화 상자 안에 가둔다. 초점을 직접 옮겼으면(기본 동작을 막아야 하면) `true`.
+    pub fn trap_tab(id: &str, backward: bool) -> bool {
+        let Some(dialog) = element(id) else {
+            return false;
+        };
+        let Ok(nodes) = dialog.query_selector_all(FOCUSABLE) else {
+            return false;
+        };
+        let items: Vec<HtmlElement> = (0..nodes.length())
+            .filter_map(|index| nodes.item(index))
+            .filter_map(|node| node.dyn_into::<HtmlElement>().ok())
+            // 숨겨진 칸(`display: none` 등)은 건너뛴다.
+            .filter(|el| el.get_client_rects().length() > 0)
+            .collect();
+        let active = active_element();
+        let current = active
+            .as_ref()
+            .and_then(|active| items.iter().position(|el| el == active));
+        match tab_move(items.len(), current, backward) {
+            TabMove::Browser => false,
+            TabMove::Focus(index) => {
+                if let Some(target) = items.get(index) {
+                    let _ = target.focus();
+                }
+                true
+            }
+            TabMove::Stay => true,
         }
     }
 }
@@ -473,19 +611,44 @@ pub fn FormError(#[props(into)] message: String) -> Element {
 }
 
 /// 전역 토스트 표시 영역. 앱 최상단에 한 번만 둔다.
+///
+/// 알림 영역(`aria-live`)은 처음부터 있어야 화면 낭독기가 새 내용을 읽으므로 두 영역을 늘 둔다.
+/// 성공은 차례를 기다려(`polite`), 실패는 바로(`assertive`) 읽는다. 토스트는 버튼이라 눌러서나
+/// 키보드(Enter·Space)로 닫을 수 있다.
 #[component]
 pub fn ToastHost() -> Element {
-    let mut toasts = use_toasts();
+    let toasts = use_toasts();
+    let (errors, others): (Vec<Toast>, Vec<Toast>) = toasts
+        .items()
+        .into_iter()
+        .partition(|toast| toast.kind == ToastKind::Error);
     rsx! {
-        div { class: "toasts", "aria-live": "polite",
-            for toast in toasts.items() {
-                div {
-                    key: "{toast.id}",
-                    class: if toast.kind == ToastKind::Error { "toast toast-error" } else { "toast" },
-                    onclick: move |_| toasts.dismiss(toast.id),
-                    "{toast.message}"
+        div { class: "toasts",
+            div { class: "toast-region", role: "status", "aria-live": "polite",
+                for toast in others {
+                    ToastItem { key: "{toast.id}", toast }
                 }
             }
+            div { class: "toast-region", role: "alert", "aria-live": "assertive",
+                for toast in errors {
+                    ToastItem { key: "{toast.id}", toast }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn ToastItem(toast: Toast) -> Element {
+    let mut toasts = use_toasts();
+    let id = toast.id;
+    rsx! {
+        button {
+            class: if toast.kind == ToastKind::Error { "toast toast-error" } else { "toast" },
+            r#type: "button",
+            onclick: move |_| toasts.dismiss(id),
+            "{toast.message}"
+            span { class: "sr-only", " (눌러서 닫기)" }
         }
     }
 }
@@ -917,6 +1080,31 @@ pub fn YearSwitcher(year: i32, min: i32, max: i32, onchange: EventHandler<i32>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tab_wraps_inside_the_dialog() {
+        assert_eq!(
+            tab_move(0, None, false),
+            TabMove::Stay,
+            "칸이 없으면 그대로"
+        );
+        assert_eq!(tab_move(0, None, true), TabMove::Stay);
+        // 대화 상자 자체에 초점이 있을 때(처음 열림).
+        assert_eq!(tab_move(3, None, false), TabMove::Focus(0));
+        assert_eq!(tab_move(3, None, true), TabMove::Focus(2));
+        // 중간에서는 브라우저가 옮긴다.
+        assert_eq!(tab_move(3, Some(0), false), TabMove::Browser);
+        assert_eq!(tab_move(3, Some(1), true), TabMove::Browser);
+        // 끝에서 돈다.
+        assert_eq!(tab_move(3, Some(2), false), TabMove::Focus(0));
+        assert_eq!(tab_move(3, Some(0), true), TabMove::Focus(2));
+        // 한 칸뿐이면 그 칸에 머문다.
+        assert_eq!(tab_move(1, Some(0), false), TabMove::Focus(0));
+        assert_eq!(tab_move(1, Some(0), true), TabMove::Focus(0));
+        // 목록이 줄어 위치가 범위를 벗어났으면 끝으로 본다.
+        assert_eq!(tab_move(2, Some(5), false), TabMove::Focus(0));
+        assert_eq!(tab_move(2, Some(5), true), TabMove::Focus(1));
+    }
 
     #[test]
     fn pending_tab_applies_only_to_its_screen() {

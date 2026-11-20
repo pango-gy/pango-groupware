@@ -28,6 +28,8 @@
   --sidebar-w: 248px;
   --tabbar-h: 60px;
   --topbar-h: 54px;
+  /* 화면 아래에 붙는 동작 줄(.action-bar)의 높이. 토스트를 그 위로 올릴 때 쓴다. */
+  --action-bar-h: 66px;
   --font: -apple-system, BlinkMacSystemFont, "Pretendard", "Apple SD Gothic Neo", "Noto Sans KR",
     "Malgun Gothic", "Segoe UI", Roboto, sans-serif;
   color-scheme: light dark;
@@ -150,7 +152,8 @@ html,
     display: flex; align-items: center; justify-content: space-between;
     position: sticky; top: 0; z-index: 10;
     height: calc(var(--topbar-h) + env(safe-area-inset-top));
-    padding: env(safe-area-inset-top) 12px 0 16px;
+    /* 가로로 돌린 노치 기기에서 양옆이 가려지지 않게 */
+    padding: env(safe-area-inset-top) calc(12px + env(safe-area-inset-right)) 0 calc(16px + env(safe-area-inset-left));
     background: var(--surface); border-bottom: 1px solid var(--border);
   }
   .topbar-title { font-weight: 700; font-size: 17px; }
@@ -158,18 +161,25 @@ html,
   .tabbar {
     display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
     height: calc(var(--tabbar-h) + env(safe-area-inset-bottom));
-    padding-bottom: env(safe-area-inset-bottom);
+    padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
     background: var(--surface); border-top: 1px solid var(--border);
   }
   .tabbar-item {
+    position: relative;
     flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
     gap: 2px; font-size: 11px; font-weight: 500; color: var(--text-3);
+  }
+  /* "더보기" 안에 읽지 않은 공지·알림이 있다는 표시 */
+  .tabbar-dot {
+    position: absolute; top: 8px; left: calc(50% + 8px);
+    width: 8px; height: 8px; border-radius: 50%; background: var(--danger);
   }
   .tabbar-item:hover { text-decoration: none; }
   .tabbar-item-active { color: var(--primary); }
   .tabbar-item .icon { width: 22px; height: 22px; }
   .content {
-    padding: 16px 14px calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 24px);
+    padding: 16px calc(14px + env(safe-area-inset-right))
+      calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 24px) calc(14px + env(safe-area-inset-left));
     gap: 12px;
   }
 }
@@ -375,14 +385,20 @@ a.list-row:hover strong { color: var(--primary); }
   display: flex; flex-direction: column; gap: 8px; align-items: center;
   width: min(420px, calc(100% - 24px)); pointer-events: none;
 }
+.toast-region { display: flex; flex-direction: column; gap: 8px; align-items: center; width: 100%; }
 .toast {
-  pointer-events: auto; padding: 11px 16px; border-radius: 999px;
-  background: var(--text); color: var(--bg); font-weight: 600; font-size: 14px;
+  pointer-events: auto; padding: 11px 16px; border: 0; border-radius: 999px;
+  background: var(--text); color: var(--bg); font-weight: 600; font-size: 14px; text-align: center;
   box-shadow: var(--shadow-lg); cursor: pointer;
 }
 .toast-error { background: var(--danger); color: #fff; }
+/* 화면 아래 동작 줄(결재 승인·반려 등)이 있으면 그 위로 띄워 버튼을 가리지 않는다. */
+body:has(.action-bar) .toasts { bottom: calc(24px + var(--action-bar-h) + env(safe-area-inset-bottom)); }
 @media (max-width: 959px) {
   .toasts { bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 12px); }
+  body:has(.action-bar) .toasts {
+    bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 8px + var(--action-bar-h) + 12px);
+  }
 }
 
 /* ── 로그인 ───────────────────────────────────────── */
@@ -552,11 +568,11 @@ a.list-row:hover strong { color: var(--primary); }
 /* 목록 행 전체가 링크·버튼인 경우 */
 .row-link, .notification {
   flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px;
+  padding: 0; border: 0; background: none; font: inherit;
   color: inherit; text-align: left;
 }
 .row-link:hover { text-decoration: none; }
 .row-link:hover strong, button.notification:hover strong { color: var(--primary); }
-.notification { padding: 0; border: 0; background: none; font: inherit; }
 button.notification { cursor: pointer; }
 .notification-unread strong { font-weight: 700; }
 .notification:not(.notification-unread) strong { font-weight: 500; color: var(--text-2); }
@@ -696,8 +712,10 @@ button.notification { cursor: pointer; }
 .att-muted td, .att-muted .att-day-text { color: var(--text-3); }
 .att-row-actions { display: flex; gap: 4px; justify-content: flex-end; }
 .att-mobile { display: none; }
-.att-day { border-top: 1px solid var(--border); }
+/* 근태 날짜 줄(모바일). 오른쪽에 "정정" 버튼이 붙는다. */
+.att-day { display: flex; align-items: center; gap: 8px; border-top: 1px solid var(--border); }
 .att-day:first-child { border-top: 0; }
+.att-day > .att-day-main { flex: 1; }
 .att-day-main {
   width: 100%; display: flex; align-items: center; gap: 10px; padding: 10px 0;
   border: 0; background: none; text-align: left; color: inherit; min-width: 0;
@@ -833,7 +851,6 @@ button.att-day-main:hover strong { color: var(--primary); }
 
 /* 작성 폼 */
 .field-static { min-height: 24px; overflow-wrap: anywhere; }
-.field-with-count > .char-count { align-self: flex-end; }
 .field-foot { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
 .chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -918,13 +935,18 @@ button.att-day-main:hover strong { color: var(--primary); }
   width: 100%; border: 0; border-top: 1px solid var(--border); background: none;
   font: inherit; text-align: left; cursor: pointer;
 }
-/* 근태 날짜 줄 오른쪽의 "정정" 버튼 */
-.att-day { display: flex; align-items: center; gap: 8px; }
-.att-day > .att-day-main { flex: 1; }
 @media (max-width: 959px) {
   .home-grid { grid-template-columns: 1fr; gap: 12px; }
   .home-grid .card-actions .btn { width: 100%; }
   .dash-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* 손가락으로 누르는 칸은 40px 이상. 데스크톱은 촘촘하게 둔다.
+   각 칸의 기본 규칙보다 뒤에 있어야 이긴다. */
+@media (max-width: 959px) {
+  .btn-sm { min-height: 40px; min-width: 40px; }
+  .segmented-item { min-height: 40px; min-width: 40px; }
+  .chip-remove, .line-step-actions .icon-btn { width: 40px; height: 40px; }
 }
 
 /* 화면 폭에 따라 하나만 보이는 쌍(표 ↔ 목록 등). 다른 규칙보다 뒤에 둬야 이긴다. */

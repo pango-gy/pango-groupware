@@ -654,14 +654,10 @@ fn loaded<T: Clone>(resource: &Resource<ApiResult<Vec<T>>>) -> Vec<T> {
 }
 
 fn department_and_position(member: &MemberDetail) -> String {
-    [
-        member.summary.department_name.clone(),
-        member.summary.position_name.clone(),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>()
-    .join(" · ")
+    format::org_line(
+        member.summary.department_name.as_deref(),
+        member.summary.position_name.as_deref(),
+    )
 }
 
 #[component]

@@ -7,6 +7,7 @@ use dioxus::prelude::*;
 use pango_api::org::{DepartmentDto, MemberSummary};
 
 use crate::api;
+use crate::format;
 use crate::org_tree::{self, DepartmentRow};
 use crate::pages::admin::members::logic::member_query;
 use crate::ui::{
@@ -71,11 +72,7 @@ pub fn People() -> Element {
                                         div { class: "list-row-main",
                                             strong { "{member.name}" }
                                             small {
-                                                {[member.department_name.clone(), member.position_name.clone()]
-                                                    .into_iter()
-                                                    .flatten()
-                                                    .collect::<Vec<_>>()
-                                                    .join(" · ")}
+                                                {format::org_line(member.department_name.as_deref(), member.position_name.as_deref())}
                                             }
                                         }
                                         div { class: "list-row-side people-contact",

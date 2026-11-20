@@ -14,7 +14,7 @@ pub enum SessionState {
     Loading,
     /// 서버가 로그인 세션이 없다고 답했다(401).
     SignedOut,
-    SignedIn(Me),
+    SignedIn(Box<Me>),
     /// 서버에 닿지 못했거나 서버가 실패했다(오프라인, 서버 재시작 등). 쿠키 세션은 살아 있을 수
     /// 있으므로 로그인 화면으로 보내지 않는다. 로그인을 다시 하면 서버 세션이 하나 더 생긴다.
     Unreachable(String),
@@ -26,7 +26,7 @@ pub enum SessionState {
 /// (네트워크 오류·5xx) 지금 상태를 그대로 둔다.
 pub fn next_state(current: &SessionState, result: ApiResult<Me>) -> SessionState {
     match result {
-        Ok(me) => SessionState::SignedIn(me),
+        Ok(me) => SessionState::SignedIn(Box::new(me)),
         Err(error) if error.is_unauthenticated() => SessionState::SignedOut,
         Err(_) if matches!(current, SessionState::SignedIn(_)) => current.clone(),
         Err(error) => SessionState::Unreachable(error.message()),
@@ -82,7 +82,7 @@ impl Session {
 
     pub fn me(&self) -> Option<Me> {
         match &*self.state.read() {
-            SessionState::SignedIn(me) => Some(me.clone()),
+            SessionState::SignedIn(me) => Some((**me).clone()),
             _ => None,
         }
     }
@@ -95,7 +95,7 @@ impl Session {
     /// 로그인·로그아웃 직후. 서버가 이미 답했으므로 그대로 반영한다.
     pub fn set(&mut self, me: Option<Me>) {
         self.state.set(match me {
-            Some(me) => SessionState::SignedIn(me),
+            Some(me) => SessionState::SignedIn(Box::new(me)),
             None => SessionState::SignedOut,
         });
     }
@@ -328,7 +328,7 @@ mod tests {
         let signed_in = me();
         assert_eq!(
             next_state(&loading, Ok(signed_in.clone())),
-            SessionState::SignedIn(signed_in)
+            SessionState::SignedIn(Box::new(signed_in))
         );
         assert_eq!(
             next_state(&loading, Err(error(401, "unauthenticated"))),
@@ -350,7 +350,7 @@ mod tests {
 
     #[test]
     fn refresh_failure_keeps_a_signed_in_user() {
-        let signed_in = SessionState::SignedIn(me());
+        let signed_in = SessionState::SignedIn(Box::new(me()));
         assert_eq!(
             next_state(&signed_in, Err(error(0, "network_error"))),
             signed_in
@@ -368,7 +368,7 @@ mod tests {
         changed.capabilities.team = true;
         assert_eq!(
             next_state(&signed_in, Ok(changed.clone())),
-            SessionState::SignedIn(changed)
+            SessionState::SignedIn(Box::new(changed))
         );
     }
 

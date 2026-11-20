@@ -32,6 +32,11 @@ impl Badges {
         }
     }
 
+    /// 하단 탭 "더보기"에 점을 찍을지(그 안의 공지·알림에 읽지 않은 것이 있는지).
+    pub fn more_dot(&self) -> bool {
+        more_dot(self.notices(), self.notifications())
+    }
+
     pub async fn refresh(mut self) {
         // 배지는 보조 정보라 실패하면 이전 값을 둔다. 세션 만료는 화면의 본 요청이 처리한다.
         if let Ok(count) = api::get::<UnreadCount>("/notifications/unread-count").await {
@@ -62,6 +67,11 @@ pub fn refresh_badges() {
     }
 }
 
+/// 모바일 "더보기"에 모아 둔 공지·알림 중 하나라도 읽지 않은 것이 있는지.
+pub fn more_dot(notices: u32, notifications: u32) -> bool {
+    notices > 0 || notifications > 0
+}
+
 /// 배지 숫자. 너무 크면 `99+`.
 pub fn count_text(count: u32) -> String {
     if count > 99 {
@@ -90,6 +100,14 @@ mod tests {
         assert_eq!(count_text(99), "99");
         assert_eq!(count_text(100), "99+");
         assert_eq!(count_text(u32::MAX), "99+");
+    }
+
+    #[test]
+    fn more_tab_dot_shows_when_either_is_unread() {
+        assert!(!more_dot(0, 0));
+        assert!(more_dot(1, 0));
+        assert!(more_dot(0, 1));
+        assert!(more_dot(u32::MAX, u32::MAX));
     }
 
     #[test]

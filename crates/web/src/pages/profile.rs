@@ -51,11 +51,7 @@ pub fn Profile() -> Element {
                 div {
                     h2 { class: "profile-name", "{me.name}" }
                     p { class: "profile-meta",
-                        {[me.department_name.clone(), me.position_name.clone()]
-                            .into_iter()
-                            .flatten()
-                            .collect::<Vec<_>>()
-                            .join(" · ")}
+                        {format::org_line(me.department_name.as_deref(), me.position_name.as_deref())}
                     }
                     Badge { tone: Tone::Info, {text::role_label(me.role)} }
                 }

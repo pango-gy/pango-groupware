@@ -83,7 +83,10 @@ fn is_active(current: &Route, target: &Route) -> bool {
 #[component]
 fn NavLink(item: NavItem, #[props(default)] compact: bool) -> Element {
     let current = use_route::<Route>();
-    let count = use_badges().for_route(&item.to);
+    let badges = use_badges();
+    let count = badges.for_route(&item.to);
+    // 하단 탭의 "더보기"는 숫자 대신 점으로 알린다(공지·알림이 그 안에 있다).
+    let dot = compact && item.to == (Route::More {}) && badges.more_dot();
     let active = is_active(&current, &item.to);
     let class = match (compact, active) {
         (true, true) => "tabbar-item tabbar-item-active",
@@ -100,6 +103,10 @@ fn NavLink(item: NavItem, #[props(default)] compact: bool) -> Element {
                     span { class: "sr-only", "읽지 않음 " }
                     "{badges::count_text(count)}"
                 }
+            }
+            if dot {
+                span { class: "tabbar-dot", "aria-hidden": "true" }
+                span { class: "sr-only", ", 읽지 않은 공지·알림 있음" }
             }
         }
     }
@@ -221,7 +228,7 @@ pub fn Shell() -> Element {
     });
 
     let me = match gate(&session.state()) {
-        Gate::Show(me) => me,
+        Gate::Show(me) => *me,
         Gate::Unreachable(message) => {
             return rsx! {
                 main { class: "auth",
@@ -266,7 +273,7 @@ pub enum Gate {
     ChangePassword,
     /// 서버에 닿지 못했다. 이 문구와 다시 시도를 보여 준다.
     Unreachable(String),
-    Show(Me),
+    Show(Box<Me>),
 }
 
 pub fn gate(state: &SessionState) -> Gate {
@@ -336,11 +343,14 @@ mod tests {
             Gate::Unreachable("끊김".into())
         );
         let forced = me(MEMBER, true);
-        assert_eq!(gate(&SessionState::SignedIn(forced)), Gate::ChangePassword);
+        assert_eq!(
+            gate(&SessionState::SignedIn(Box::new(forced))),
+            Gate::ChangePassword
+        );
         let normal = me(MEMBER, false);
         assert_eq!(
-            gate(&SessionState::SignedIn(normal.clone())),
-            Gate::Show(normal)
+            gate(&SessionState::SignedIn(Box::new(normal.clone()))),
+            Gate::Show(Box::new(normal))
         );
     }
 

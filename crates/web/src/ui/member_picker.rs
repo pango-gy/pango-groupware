@@ -6,6 +6,7 @@ use pango_core::id::MemberId;
 
 use super::{Avatar, Icon, IconName};
 use crate::api;
+use crate::format;
 
 /// 이름으로 찾아 한 명을 고른다. 고르면 `onpick`이 불리고 검색어가 비워진다.
 ///
@@ -52,35 +53,33 @@ pub fn MemberPicker(
                 }
             }
             if searching {
-                ul { class: "picker-results", role: "listbox",
+                div { class: "picker-results",
                     if candidates.is_empty() {
-                        li { class: "picker-empty", "찾는 구성원이 없습니다." }
-                    }
-                    for member in candidates {
-                        li { key: "{member.id}",
-                            button {
-                                class: "picker-option",
-                                r#type: "button",
-                                role: "option",
-                                onclick: {
-                                    let member = member.clone();
-                                    move |_| {
-                                        term.set(String::new());
-                                        onpick.call(member.clone());
+                        p { class: "picker-empty", role: "status", "찾는 구성원이 없습니다." }
+                    } else {
+                        // 목록 상자에는 선택지만 둔다(빈 안내는 밖에).
+                        div { role: "listbox", "aria-label": "{label} 검색 결과",
+                            for member in candidates {
+                                button {
+                                    key: "{member.id}",
+                                    class: "picker-option",
+                                    r#type: "button",
+                                    role: "option",
+                                    "aria-selected": "false",
+                                    onclick: {
+                                        let member = member.clone();
+                                        move |_| {
+                                            term.set(String::new());
+                                            onpick.call(member.clone());
+                                        }
+                                    },
+                                    Avatar { name: member.name.clone() }
+                                    span { class: "picker-option-text",
+                                        strong { "{member.name}" }
+                                        small { {format::org_line(member.department_name.as_deref(), member.position_name.as_deref())} }
                                     }
-                                },
-                                Avatar { name: member.name.clone() }
-                                span { class: "picker-option-text",
-                                    strong { "{member.name}" }
-                                    small {
-                                        {[member.department_name.clone(), member.position_name.clone()]
-                                            .into_iter()
-                                            .flatten()
-                                            .collect::<Vec<_>>()
-                                            .join(" · ")}
-                                    }
+                                    Icon { name: IconName::Plus }
                                 }
-                                Icon { name: IconName::Plus }
                             }
                         }
                     }
