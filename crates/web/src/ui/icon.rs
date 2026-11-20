@@ -7,6 +7,8 @@ pub enum IconName {
     Home,
     Clock,
     Calendar,
+    /// 일정이 표시된 달력(캘린더 메뉴). 휴가의 `Calendar`와 구분한다.
+    Schedule,
     Document,
     Megaphone,
     Bell,
@@ -35,6 +37,13 @@ impl IconName {
             Self::Home => &["M3 11l9-8 9 8", "M5 10v10h5v-6h4v6h5V10"],
             Self::Clock => &["M12 3a9 9 0 100 18 9 9 0 000-18z", "M12 7v5l3 2"],
             Self::Calendar => &["M4 6h16v14H4z", "M4 10h16", "M8 3v4", "M16 3v4"],
+            Self::Schedule => &[
+                "M4 6h16v14H4z",
+                "M4 10h16",
+                "M8 3v4",
+                "M16 3v4",
+                "M15.5 13.5a2 2 0 100 4 2 2 0 000-4z",
+            ],
             Self::Document => &["M6 3h8l4 4v14H6z", "M14 3v4h4", "M9 12h6", "M9 16h6"],
             Self::Megaphone => &["M4 10v4h3l8 4V6l-8 4z", "M18 9a4 4 0 010 6"],
             Self::Bell => &["M6 17V11a6 6 0 0112 0v6l2 2H4z", "M10 21h4"],

@@ -8,8 +8,9 @@ use crate::pages::admin::{
     AdminNotices, AdminOrg, AdminPolicy,
 };
 use crate::pages::{
-    ApprovalDetail, ApprovalList, ApprovalNew, Attendance, ChangePassword, Home, Leave, LeaveNew,
-    Login, More, NotFound, NoticeDetail, Notices, Notifications, People, Profile, Team,
+    ApprovalDetail, ApprovalList, ApprovalNew, Attendance, Calendar, CalendarEvent, ChangePassword,
+    Home, Leave, LeaveNew, Login, More, NotFound, NoticeDetail, Notices, Notifications, People,
+    Profile, Team,
 };
 
 #[derive(Debug, Clone, PartialEq, Routable)]
@@ -29,6 +30,11 @@ pub enum Route {
         Leave {},
         #[route("/leave/new")]
         LeaveNew {},
+        #[route("/calendar")]
+        Calendar {},
+        /// 알림이 가리키는 일정(`calendar.invited` 등). 캘린더를 열고 그 일정을 띄운다.
+        #[route("/calendar/events/:id")]
+        CalendarEvent { id: String },
         #[route("/approval")]
         ApprovalList {},
         #[route("/approval/new")]

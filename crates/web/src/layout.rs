@@ -29,6 +29,7 @@ pub fn main_nav() -> Vec<NavItem> {
         item(Route::Home {}, "홈", IconName::Home),
         item(Route::Attendance {}, "근태", IconName::Clock),
         item(Route::Leave {}, "휴가", IconName::Calendar),
+        item(Route::Calendar {}, "캘린더", IconName::Schedule),
         item(Route::ApprovalList {}, "결재", IconName::Document),
         item(Route::Notices {}, "공지", IconName::Megaphone),
         item(Route::People {}, "구성원", IconName::People),

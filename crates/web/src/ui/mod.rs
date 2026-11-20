@@ -398,6 +398,9 @@ pub fn TextArea(
 pub fn Modal(
     #[props(into)] title: String,
     onclose: EventHandler<()>,
+    /// 대화 상자에 덧붙일 클래스(`modal-wide`: 넓게, `modal-full`: 모바일에서 화면 가득).
+    #[props(into, default)]
+    class: String,
     children: Element,
 ) -> Element {
     let id = use_hook(dialog::next_id);
@@ -428,7 +431,7 @@ pub fn Modal(
         div { class: "modal-backdrop", onclick: move |_| onclose.call(()),
             div {
                 id: "{id}",
-                class: "modal",
+                class: "modal {class}",
                 role: "dialog",
                 "aria-modal": "true",
                 "aria-label": "{title}",
@@ -806,24 +809,48 @@ pub fn MonthSwitcher(
 }
 
 /// 한 달 달력. 날짜 칸의 내용은 `day`가 그린다.
+///
+/// `outside`면 앞뒤 달의 날짜로 첫 주와 마지막 주를 채우고(그 칸에도 `day`를 부른다),
+/// 아니면 그 칸을 비워 둔다.
 #[component]
 pub fn MonthCalendar(
     month: crate::calendar::YearMonth,
     day: Callback<chrono::NaiveDate, Element>,
+    #[props(default)] outside: bool,
+    /// 격자의 접근성 이름(예: "2026년 11월 일정").
+    #[props(into, default)]
+    label: String,
+    #[props(into, default)] class: String,
 ) -> Element {
     const WEEKDAYS: [&str; 7] = ["일", "월", "화", "수", "목", "금", "토"];
+    let weeks: Vec<[Option<chrono::NaiveDate>; 7]> = if outside {
+        month
+            .full_weeks()
+            .into_iter()
+            .map(|week| week.map(Some))
+            .collect()
+    } else {
+        month.weeks()
+    };
     rsx! {
-        div { class: "calendar", role: "grid",
+        div {
+            class: "calendar {class}",
+            role: "grid",
+            "aria-label": if !label.is_empty() { "{label}" },
             div { class: "calendar-row", role: "row",
                 for name in WEEKDAYS {
                     span { class: "calendar-weekday", role: "columnheader", "{name}" }
                 }
             }
-            for week in month.weeks() {
+            for week in weeks {
                 div { class: "calendar-row", role: "row",
                     for cell in week {
                         if let Some(date) = cell {
-                            div { class: "calendar-cell", role: "gridcell", {day.call(date)} }
+                            div {
+                                class: if crate::calendar::YearMonth::of(date) == month { "calendar-cell" } else { "calendar-cell calendar-cell-outside" },
+                                role: "gridcell",
+                                {day.call(date)}
+                            }
                         } else {
                             div { class: "calendar-cell calendar-cell-empty", role: "gridcell" }
                         }

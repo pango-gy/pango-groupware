@@ -1,6 +1,7 @@
-//! 홈: 오늘 출퇴근, 내 휴가, 처리할 결재, 공지, (조직장·관리자) 팀 현황.
+//! 홈: 오늘 출퇴근, 오늘 일정, 내 휴가, 처리할 결재, 공지, (조직장·관리자) 팀 현황.
 //!
-//! `GET /home` 한 번으로 그린다. 출퇴근하면 홈 전체를 다시 읽는다.
+//! `GET /home` 한 번으로 그린다. 출퇴근하면 홈 전체를 다시 읽는다. 오늘 일정은 캘린더 조회를
+//! 따로 읽는다(실패해도 홈의 나머지는 보인다).
 
 use dioxus::prelude::*;
 use pango_api::home::{HomeNotice, HomeResponse, TeamToday};
@@ -9,6 +10,7 @@ use pango_api::leave::BalanceDto;
 use crate::api;
 use crate::format;
 use crate::pages::attendance::TodayBody;
+use crate::pages::calendar::TodayEvents;
 use crate::pages::leave::{BalanceHeadline, RequestRow};
 use crate::pages::notices::NoticeRow;
 use crate::route::Route;
@@ -37,6 +39,7 @@ pub fn Home() -> Element {
                     TodayBody { state: data.today.clone(), onchange: move |_| home.restart() }
                 }
                 div { class: "grid-2",
+                    TodayEvents { tz }
                     LeaveCard { balance: data.leave, upcoming: data.upcoming_leaves.clone() }
                     ApprovalCard { counts: data.approval }
                     NoticesCard {
