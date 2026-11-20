@@ -1588,33 +1588,27 @@ async fn admin_member_list_filters_and_includes_inactive_on_request() {
 #[tokio::test]
 async fn directory_search_cannot_probe_login_ids() {
     let app = TestApp::new().await;
-    let member = app.add_member("zq-secret-login", Role::Member, None).await;
-    let other = app.add_member("searcher", Role::Member, None).await;
+    // 최고 관리자: 아이디 `owner`, 이름 `대표`.
+    let searcher = app.add_member("searcher", Role::Member, None).await;
+    let search = |path: &'static str, token: String| {
+        let app = &app;
+        async move {
+            app.get(path)
+                .bearer(&token)
+                .send()
+                .await
+                .expect(StatusCode::OK)
+        }
+    };
 
-    // 일반 구성원: 아이디 조각으로 찾아도 나오지 않는다(이름으로만 검색).
-    let found = app
-        .get("/members?search=zq-secret")
-        .bearer(&other.token)
-        .send()
-        .await
-        .expect(StatusCode::OK);
-    assert_eq!(found.as_array().expect("array").len(), 0);
-    let by_name = app
-        .get("/members?search=zq-secret-login%20%EB%8B%98")
-        .bearer(&other.token)
-        .send()
-        .await
-        .expect(StatusCode::OK);
-    assert_eq!(by_name[0]["id"], member.id.to_string());
+    // 일반 구성원: 아이디 조각으로는 찾을 수 없고 이름으로만 찾는다.
+    let by_login = search("/members?search=owne", searcher.token.clone()).await;
+    assert_eq!(by_login.as_array().expect("array").len(), 0);
+    let by_name = search("/members?search=%EB%8C%80%ED%91%9C", searcher.token.clone()).await;
+    assert_eq!(by_name[0]["id"], app.owner_id.to_string());
     assert!(by_name[0].get("login_id").is_none());
 
     // 관리자 조회는 아이디로도 찾는다.
-    let owner = app.login_owner().await;
-    let admin = app
-        .get("/admin/members?search=zq-secret")
-        .bearer(&owner)
-        .send()
-        .await
-        .expect(StatusCode::OK);
+    let admin = search("/admin/members?search=owne", app.login_owner().await).await;
     assert_eq!(admin.as_array().expect("array").len(), 1);
 }
