@@ -130,7 +130,10 @@ mod tests {
         let id = NoticeId::new();
         let json = serde_json::to_string(&id).expect("serialize");
         assert_eq!(json, format!("\"{id}\""));
-        assert_eq!(serde_json::from_str::<NoticeId>(&json).expect("deserialize"), id);
+        assert_eq!(
+            serde_json::from_str::<NoticeId>(&json).expect("deserialize"),
+            id
+        );
     }
 
     #[test]

@@ -39,7 +39,10 @@ mod tests {
         assert!(MemberStatus::Active.can_sign_in());
         assert!(!MemberStatus::Suspended.can_sign_in());
         assert!(!MemberStatus::Retired.can_sign_in());
-        assert_eq!(MemberStatus::Retired.require_active(), Err(ConflictReason::MemberInactive.into()));
+        assert_eq!(
+            MemberStatus::Retired.require_active(),
+            Err(ConflictReason::MemberInactive.into())
+        );
     }
 
     #[test]
@@ -47,7 +50,10 @@ mod tests {
         for status in MemberStatus::ALL {
             assert_eq!(MemberStatus::parse(status.as_str()), Ok(*status));
             let json = serde_json::to_string(status).expect("serialize");
-            assert_eq!(serde_json::from_str::<MemberStatus>(&json).expect("deserialize"), *status);
+            assert_eq!(
+                serde_json::from_str::<MemberStatus>(&json).expect("deserialize"),
+                *status
+            );
         }
         for bad in ["", "Active", "ACTIVE", "active ", "deleted", "active\0"] {
             assert!(MemberStatus::parse(bad).is_err(), "accepted {bad:?}");

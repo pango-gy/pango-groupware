@@ -34,7 +34,10 @@ impl Role {
         Self::ALL
             .into_iter()
             .find(|role| role.as_str() == value)
-            .ok_or(DomainError::validation("role", ValidationReason::InvalidFormat))
+            .ok_or(DomainError::validation(
+                "role",
+                ValidationReason::InvalidFormat,
+            ))
     }
 
     pub const fn is_admin(self) -> bool {
@@ -112,7 +115,10 @@ impl Actor {
             Relation::Own
         } else if self.is_admin() {
             Relation::Administered
-        } else if subject.department_id.is_some_and(|d| self.manages_department(d)) {
+        } else if subject
+            .department_id
+            .is_some_and(|d| self.manages_department(d))
+        {
             Relation::Managed
         } else if subject.department_id.is_some() && subject.department_id == self.department_id {
             Relation::Colleague
@@ -247,11 +253,19 @@ mod tests {
     }
 
     fn subject(role: Role, dept: Option<DepartmentId>) -> Subject {
-        Subject { member_id: MemberId::new(), role, department_id: dept }
+        Subject {
+            member_id: MemberId::new(),
+            role,
+            department_id: dept,
+        }
     }
 
     fn self_subject(actor: &Actor) -> Subject {
-        Subject { member_id: actor.member_id, role: actor.role, department_id: actor.department_id }
+        Subject {
+            member_id: actor.member_id,
+            role: actor.role,
+            department_id: actor.department_id,
+        }
     }
 
     #[test]
@@ -274,21 +288,39 @@ mod tests {
         let w = world();
         let manager = actor(Role::Member, Some(w.dept_a), &[w.dept_a, w.dept_a_child]);
         assert_eq!(manager.relation_to(&self_subject(&manager)), Relation::Own);
-        assert_eq!(manager.relation_to(&subject(Role::Member, Some(w.dept_a_child))), Relation::Managed);
-        assert_eq!(manager.relation_to(&subject(Role::Member, Some(w.dept_b))), Relation::Unrelated);
-        assert_eq!(manager.relation_to(&subject(Role::Member, None)), Relation::Unrelated);
+        assert_eq!(
+            manager.relation_to(&subject(Role::Member, Some(w.dept_a_child))),
+            Relation::Managed
+        );
+        assert_eq!(
+            manager.relation_to(&subject(Role::Member, Some(w.dept_b))),
+            Relation::Unrelated
+        );
+        assert_eq!(
+            manager.relation_to(&subject(Role::Member, None)),
+            Relation::Unrelated
+        );
 
         let member = actor(Role::Member, Some(w.dept_a), &[]);
-        assert_eq!(member.relation_to(&subject(Role::Member, Some(w.dept_a))), Relation::Colleague);
+        assert_eq!(
+            member.relation_to(&subject(Role::Member, Some(w.dept_a))),
+            Relation::Colleague
+        );
 
         let admin = actor(Role::Admin, None, &[]);
-        assert_eq!(admin.relation_to(&subject(Role::Owner, Some(w.dept_b))), Relation::Administered);
+        assert_eq!(
+            admin.relation_to(&subject(Role::Owner, Some(w.dept_b))),
+            Relation::Administered
+        );
     }
 
     #[test]
     fn members_without_department_are_not_colleagues_of_each_other() {
         let a = actor(Role::Member, None, &[]);
-        assert_eq!(a.relation_to(&subject(Role::Member, None)), Relation::Unrelated);
+        assert_eq!(
+            a.relation_to(&subject(Role::Member, None)),
+            Relation::Unrelated
+        );
     }
 
     #[test]
@@ -300,11 +332,23 @@ mod tests {
         let colleague = subject(Role::Member, Some(w.dept_a));
         let outsider = subject(Role::Member, Some(w.dept_b));
 
-        assert_eq!(view_personal_records(&member, &self_subject(&member)), Ok(()));
-        assert_eq!(view_personal_records(&member, &colleague), Err(DomainError::NotFound));
-        assert_eq!(view_personal_records(&member, &outsider), Err(DomainError::NotFound));
+        assert_eq!(
+            view_personal_records(&member, &self_subject(&member)),
+            Ok(())
+        );
+        assert_eq!(
+            view_personal_records(&member, &colleague),
+            Err(DomainError::NotFound)
+        );
+        assert_eq!(
+            view_personal_records(&member, &outsider),
+            Err(DomainError::NotFound)
+        );
         assert_eq!(view_personal_records(&manager, &colleague), Ok(()));
-        assert_eq!(view_personal_records(&manager, &outsider), Err(DomainError::NotFound));
+        assert_eq!(
+            view_personal_records(&manager, &outsider),
+            Err(DomainError::NotFound)
+        );
         assert_eq!(view_personal_records(&admin, &outsider), Ok(()));
     }
 
@@ -312,7 +356,10 @@ mod tests {
     fn leave_schedule_is_visible_to_colleagues_but_not_outsiders() {
         let w = world();
         let member = actor(Role::Member, Some(w.dept_a), &[]);
-        assert_eq!(view_leave_schedule(&member, &subject(Role::Member, Some(w.dept_a))), Ok(()));
+        assert_eq!(
+            view_leave_schedule(&member, &subject(Role::Member, Some(w.dept_a))),
+            Ok(())
+        );
         assert_eq!(
             view_leave_schedule(&member, &subject(Role::Member, Some(w.dept_b))),
             Err(DomainError::NotFound)
@@ -327,9 +374,18 @@ mod tests {
         let admin = actor(Role::Admin, Some(w.dept_a), &[]);
         let colleague = subject(Role::Member, Some(w.dept_a));
 
-        assert_eq!(edit_personal_records(&member, &self_subject(&member)), Err(DomainError::Forbidden));
-        assert_eq!(edit_personal_records(&member, &colleague), Err(DomainError::NotFound));
-        assert_eq!(edit_personal_records(&manager, &colleague), Err(DomainError::Forbidden));
+        assert_eq!(
+            edit_personal_records(&member, &self_subject(&member)),
+            Err(DomainError::Forbidden)
+        );
+        assert_eq!(
+            edit_personal_records(&member, &colleague),
+            Err(DomainError::NotFound)
+        );
+        assert_eq!(
+            edit_personal_records(&manager, &colleague),
+            Err(DomainError::Forbidden)
+        );
         assert_eq!(edit_personal_records(&admin, &colleague), Ok(()));
         assert_eq!(edit_personal_records(&admin, &self_subject(&admin)), Ok(()));
     }
@@ -338,8 +394,14 @@ mod tests {
     fn admin_cannot_manage_admin_or_owner_accounts() {
         let admin = actor(Role::Admin, None, &[]);
         assert_eq!(manage_account(&admin, &subject(Role::Member, None)), Ok(()));
-        assert_eq!(manage_account(&admin, &subject(Role::Admin, None)), Err(DomainError::Forbidden));
-        assert_eq!(manage_account(&admin, &subject(Role::Owner, None)), Err(DomainError::Forbidden));
+        assert_eq!(
+            manage_account(&admin, &subject(Role::Admin, None)),
+            Err(DomainError::Forbidden)
+        );
+        assert_eq!(
+            manage_account(&admin, &subject(Role::Owner, None)),
+            Err(DomainError::Forbidden)
+        );
         assert_eq!(
             manage_account(&admin, &self_subject(&admin)),
             Err(DomainError::Forbidden),
@@ -355,7 +417,10 @@ mod tests {
             assert_eq!(manage_other_account(&owner, &subject(role, None)), Ok(()));
         }
         assert_eq!(manage_account(&owner, &self_subject(&owner)), Ok(()));
-        assert_eq!(manage_other_account(&owner, &self_subject(&owner)), Err(DomainError::Forbidden));
+        assert_eq!(
+            manage_other_account(&owner, &self_subject(&owner)),
+            Err(DomainError::Forbidden)
+        );
     }
 
     #[test]
@@ -363,10 +428,16 @@ mod tests {
         let w = world();
         let manager = actor(Role::Member, Some(w.dept_a), &[w.dept_a]);
         let target = subject(Role::Member, Some(w.dept_a));
-        assert_eq!(manage_account(&manager, &target), Err(DomainError::Forbidden));
+        assert_eq!(
+            manage_account(&manager, &target),
+            Err(DomainError::Forbidden)
+        );
         assert_eq!(require_admin(&manager), Err(DomainError::Forbidden));
         assert_eq!(require_manager(&manager), Ok(()));
-        assert_eq!(require_manager(&actor(Role::Member, None, &[])), Err(DomainError::Forbidden));
+        assert_eq!(
+            require_manager(&actor(Role::Member, None, &[])),
+            Err(DomainError::Forbidden)
+        );
         assert_eq!(require_manager(&actor(Role::Admin, None, &[])), Ok(()));
     }
 
@@ -377,7 +448,10 @@ mod tests {
         let target = subject(Role::Member, None);
         assert_eq!(change_role(&owner, &target), Ok(()));
         assert_eq!(change_role(&admin, &target), Err(DomainError::Forbidden));
-        assert_eq!(change_role(&owner, &self_subject(&owner)), Err(DomainError::Forbidden));
+        assert_eq!(
+            change_role(&owner, &self_subject(&owner)),
+            Err(DomainError::Forbidden)
+        );
     }
 
     #[test]
@@ -385,8 +459,14 @@ mod tests {
         let w = world();
         let manager = actor(Role::Member, Some(w.dept_a), &[w.dept_a, w.dept_a_child]);
         assert_eq!(view_department_team(&manager, w.dept_a_child), Ok(()));
-        assert_eq!(view_department_team(&manager, w.dept_b), Err(DomainError::NotFound));
-        assert_eq!(view_department_team(&actor(Role::Admin, None, &[]), w.dept_b), Ok(()));
+        assert_eq!(
+            view_department_team(&manager, w.dept_b),
+            Err(DomainError::NotFound)
+        );
+        assert_eq!(
+            view_department_team(&actor(Role::Admin, None, &[]), w.dept_b),
+            Ok(())
+        );
     }
 
     #[test]
@@ -395,19 +475,35 @@ mod tests {
         let caps = |a: &Actor| a.capabilities();
         assert_eq!(
             caps(&actor(Role::Member, None, &[])),
-            Capabilities { admin: false, manage_roles: false, team: false }
+            Capabilities {
+                admin: false,
+                manage_roles: false,
+                team: false
+            }
         );
         assert_eq!(
             caps(&actor(Role::Member, Some(w.dept_a), &[w.dept_a])),
-            Capabilities { admin: false, manage_roles: false, team: true }
+            Capabilities {
+                admin: false,
+                manage_roles: false,
+                team: true
+            }
         );
         assert_eq!(
             caps(&actor(Role::Admin, None, &[])),
-            Capabilities { admin: true, manage_roles: false, team: false }
+            Capabilities {
+                admin: true,
+                manage_roles: false,
+                team: false
+            }
         );
         assert_eq!(
             caps(&actor(Role::Owner, None, &[])),
-            Capabilities { admin: true, manage_roles: true, team: false }
+            Capabilities {
+                admin: true,
+                manage_roles: true,
+                team: false
+            }
         );
     }
 }

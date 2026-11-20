@@ -173,6 +173,17 @@ pub async fn revoke(
     Ok(result.rows_affected() == 1)
 }
 
+/// 세션이 (폐기 여부와 무관하게) 해당 구성원의 것인지.
+pub async fn belongs_to(conn: &mut Conn, member_id: MemberId, id: SessionId) -> DbResult<bool> {
+    let row: Option<(i64,)> =
+        sqlx::query_as("SELECT 1 FROM sessions WHERE id = ? AND member_id = ?")
+            .bind(id.to_string())
+            .bind(member_id.to_string())
+            .fetch_optional(conn)
+            .await?;
+    Ok(row.is_some())
+}
+
 /// 구성원의 모든 세션을 폐기한다. `except`가 있으면 그 세션은 남긴다. 폐기한 수를 돌려준다.
 pub async fn revoke_all(
     conn: &mut Conn,
@@ -254,7 +265,10 @@ pub async fn throttle_peek(
 }
 
 pub async fn throttle_clear(conn: &mut Conn, bucket: &str) -> DbResult<()> {
-    sqlx::query("DELETE FROM login_throttle WHERE bucket = ?").bind(bucket).execute(conn).await?;
+    sqlx::query("DELETE FROM login_throttle WHERE bucket = ?")
+        .bind(bucket)
+        .execute(conn)
+        .await?;
     Ok(())
 }
 

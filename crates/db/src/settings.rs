@@ -144,15 +144,19 @@ pub struct Holiday {
 }
 
 pub async fn list_holidays(conn: &mut Conn, range: DateRange) -> DbResult<Vec<Holiday>> {
-    let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT date, name FROM holidays WHERE date BETWEEN ? AND ? ORDER BY date",
-    )
-    .bind(codec::date_text(range.start()))
-    .bind(codec::date_text(range.end()))
-    .fetch_all(conn)
-    .await?;
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT date, name FROM holidays WHERE date BETWEEN ? AND ? ORDER BY date")
+            .bind(codec::date_text(range.start()))
+            .bind(codec::date_text(range.end()))
+            .fetch_all(conn)
+            .await?;
     rows.into_iter()
-        .map(|(date, name)| Ok(Holiday { date: codec::date("date", &date)?, name }))
+        .map(|(date, name)| {
+            Ok(Holiday {
+                date: codec::date("date", &date)?,
+                name,
+            })
+        })
         .collect()
 }
 

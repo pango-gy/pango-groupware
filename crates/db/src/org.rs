@@ -21,7 +21,10 @@ pub struct Department {
 
 impl Department {
     pub fn node(&self) -> DepartmentNode {
-        DepartmentNode { id: self.id, parent_id: self.parent_id }
+        DepartmentNode {
+            id: self.id,
+            parent_id: self.parent_id,
+        }
     }
 }
 
@@ -222,7 +225,11 @@ pub async fn insert_position(conn: &mut Conn, position: &Position, now: Timestam
     Ok(())
 }
 
-pub async fn update_position(conn: &mut Conn, position: &Position, now: Timestamp) -> DbResult<bool> {
+pub async fn update_position(
+    conn: &mut Conn,
+    position: &Position,
+    now: Timestamp,
+) -> DbResult<bool> {
     let result = sqlx::query(
         "UPDATE positions SET name = ?, level = ?, archived_at = ?, updated_at = ?,
             version = version + 1

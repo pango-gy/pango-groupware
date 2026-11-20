@@ -95,7 +95,10 @@ pub async fn list(
     .bind(codec::limit_plus_one(limit))
     .fetch_all(conn)
     .await?;
-    let items = rows.into_iter().map(Notification::try_from).collect::<DbResult<Vec<_>>>()?;
+    let items = rows
+        .into_iter()
+        .map(Notification::try_from)
+        .collect::<DbResult<Vec<_>>>()?;
     Ok(codec::split_page(items, limit))
 }
 
@@ -130,12 +133,11 @@ pub async fn mark_read(
 
 /// 읽지 않은 알림을 모두 읽음 처리하고 그 수를 돌려준다.
 pub async fn mark_all_read(conn: &mut Conn, member_id: MemberId, now: Timestamp) -> DbResult<u64> {
-    let result = sqlx::query(
-        "UPDATE notifications SET read_at = ? WHERE member_id = ? AND read_at IS NULL",
-    )
-    .bind(now.as_millis())
-    .bind(member_id.to_string())
-    .execute(conn)
-    .await?;
+    let result =
+        sqlx::query("UPDATE notifications SET read_at = ? WHERE member_id = ? AND read_at IS NULL")
+            .bind(now.as_millis())
+            .bind(member_id.to_string())
+            .execute(conn)
+            .await?;
     Ok(result.rows_affected())
 }

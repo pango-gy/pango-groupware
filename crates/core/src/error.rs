@@ -7,7 +7,10 @@ pub type DomainResult<T> = Result<T, DomainError>;
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DomainError {
     #[error("validation failed on `{field}`: {reason}")]
-    Validation { field: &'static str, reason: ValidationReason },
+    Validation {
+        field: &'static str,
+        reason: ValidationReason,
+    },
     #[error("authentication required")]
     Unauthenticated,
     #[error("forbidden")]
@@ -44,8 +47,12 @@ impl From<ConflictReason> for DomainError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValidationReason {
     Empty,
-    TooShort { min: usize },
-    TooLong { max: usize },
+    TooShort {
+        min: usize,
+    },
+    TooLong {
+        max: usize,
+    },
     InvalidFormat,
     InvalidCharacter,
     OutOfRange,
@@ -156,7 +163,12 @@ mod tests {
 
     #[test]
     fn conflict_codes_do_not_collide_with_top_level_codes() {
-        let reserved = ["validation_failed", "unauthenticated", "forbidden", "not_found"];
+        let reserved = [
+            "validation_failed",
+            "unauthenticated",
+            "forbidden",
+            "not_found",
+        ];
         for reason in ConflictReason::ALL {
             assert!(!reserved.contains(&reason.code()));
         }

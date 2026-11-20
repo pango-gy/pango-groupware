@@ -8,9 +8,9 @@ pub mod audit;
 pub mod codec;
 pub mod error;
 pub mod idempotency;
+pub mod members;
 pub mod notifications;
 pub mod org;
-pub mod members;
 pub mod pool;
 pub mod sessions;
 pub mod settings;
@@ -18,4 +18,4 @@ pub mod settings;
 pub mod testing;
 
 pub use error::{DbError, DbResult};
-pub use pool::{Conn, Db, DbOptions, WriteTx};
+pub use pool::{Conn, Db, DbOptions, ReadConn, WriteTx};

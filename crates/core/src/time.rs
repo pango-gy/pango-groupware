@@ -36,7 +36,10 @@ impl Timestamp {
     pub fn from_millis(millis: i64) -> DomainResult<Self> {
         DateTime::<Utc>::from_timestamp_millis(millis)
             .map(|_| Self(millis))
-            .ok_or(DomainError::validation("timestamp", ValidationReason::OutOfRange))
+            .ok_or(DomainError::validation(
+                "timestamp",
+                ValidationReason::OutOfRange,
+            ))
     }
 
     pub const fn as_millis(self) -> i64 {
@@ -48,17 +51,20 @@ impl Timestamp {
     }
 
     pub fn to_utc(self) -> DateTime<Utc> {
-        DateTime::<Utc>::from_timestamp_millis(self.0)
-            .unwrap_or(DateTime::<Utc>::UNIX_EPOCH)
+        DateTime::<Utc>::from_timestamp_millis(self.0).unwrap_or(DateTime::<Utc>::UNIX_EPOCH)
     }
 
     /// 범위를 벗어나면 `None`.
     pub fn checked_add(self, duration: Duration) -> Option<Self> {
-        self.0.checked_add(duration.num_milliseconds()).and_then(|ms| Self::from_millis(ms).ok())
+        self.0
+            .checked_add(duration.num_milliseconds())
+            .and_then(|ms| Self::from_millis(ms).ok())
     }
 
     pub fn checked_sub(self, duration: Duration) -> Option<Self> {
-        self.0.checked_sub(duration.num_milliseconds()).and_then(|ms| Self::from_millis(ms).ok())
+        self.0
+            .checked_sub(duration.num_milliseconds())
+            .and_then(|ms| Self::from_millis(ms).ok())
     }
 
     /// `self - earlier`. 음수일 수 있다.
@@ -69,7 +75,9 @@ impl Timestamp {
 
 impl fmt::Display for Timestamp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.to_utc().to_rfc3339_opts(chrono::SecondsFormat::Millis, true).fmt(f)
+        self.to_utc()
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+            .fmt(f)
     }
 }
 
@@ -108,7 +116,8 @@ impl ManualClock {
     }
 
     pub fn advance(&self, duration: Duration) {
-        self.0.fetch_add(duration.num_milliseconds(), Ordering::SeqCst);
+        self.0
+            .fetch_add(duration.num_milliseconds(), Ordering::SeqCst);
     }
 }
 
@@ -130,7 +139,10 @@ impl MinuteOfDay {
         if minutes < Self::MINUTES_PER_DAY {
             Ok(Self(minutes))
         } else {
-            Err(DomainError::validation("time_of_day", ValidationReason::OutOfRange))
+            Err(DomainError::validation(
+                "time_of_day",
+                ValidationReason::OutOfRange,
+            ))
         }
     }
 
@@ -138,7 +150,10 @@ impl MinuteOfDay {
         if hour < 24 && minute < 60 {
             Ok(Self(hour * 60 + minute))
         } else {
-            Err(DomainError::validation("time_of_day", ValidationReason::OutOfRange))
+            Err(DomainError::validation(
+                "time_of_day",
+                ValidationReason::OutOfRange,
+            ))
         }
     }
 
@@ -150,7 +165,11 @@ impl MinuteOfDay {
         if bytes.len() != 5 || bytes[2] != b':' {
             return Err(INVALID);
         }
-        let digit = |b: u8| b.is_ascii_digit().then(|| u16::from(b - b'0')).ok_or(INVALID);
+        let digit = |b: u8| {
+            b.is_ascii_digit()
+                .then(|| u16::from(b - b'0'))
+                .ok_or(INVALID)
+        };
         let hour = digit(bytes[0])? * 10 + digit(bytes[1])?;
         let minute = digit(bytes[3])? * 10 + digit(bytes[4])?;
         Self::from_hm(hour, minute)
@@ -199,7 +218,10 @@ impl WorkCalendarZone {
     /// 전환 시각은 정오 이전이어야 한다. 그보다 늦으면 "오전 출근"이 전날로 잡힌다.
     pub fn new(tz: Tz, day_cutoff: MinuteOfDay) -> DomainResult<Self> {
         if day_cutoff.minutes() > 12 * 60 {
-            return Err(DomainError::validation("day_cutoff", ValidationReason::OutOfRange));
+            return Err(DomainError::validation(
+                "day_cutoff",
+                ValidationReason::OutOfRange,
+            ));
         }
         Ok(Self { tz, day_cutoff })
     }
@@ -223,8 +245,8 @@ impl WorkCalendarZone {
 
     /// 이 시각이 속한 근무일.
     pub fn work_date(&self, at: Timestamp) -> NaiveDate {
-        let shifted = self.local(at).naive_local()
-            - Duration::minutes(i64::from(self.day_cutoff.minutes()));
+        let shifted =
+            self.local(at).naive_local() - Duration::minutes(i64::from(self.day_cutoff.minutes()));
         shifted.date()
     }
 
@@ -233,8 +255,8 @@ impl WorkCalendarZone {
     /// 서머타임으로 존재하지 않는 시각은 건너뛴 직후로, 두 번 존재하는 시각은
     /// 먼저 오는 쪽으로 해석한다.
     pub fn instant_at(&self, date: NaiveDate, time: MinuteOfDay) -> Timestamp {
-        let naive = date.and_time(chrono::NaiveTime::MIN)
-            + Duration::minutes(i64::from(time.minutes()));
+        let naive =
+            date.and_time(chrono::NaiveTime::MIN) + Duration::minutes(i64::from(time.minutes()));
         Timestamp::from_utc(self.resolve_local(naive))
     }
 
@@ -268,13 +290,18 @@ mod tests {
     use proptest::prelude::*;
 
     fn seoul(cutoff: &str) -> WorkCalendarZone {
-        WorkCalendarZone::new(chrono_tz::Asia::Seoul, MinuteOfDay::parse(cutoff).expect("cutoff"))
-            .expect("zone")
+        WorkCalendarZone::new(
+            chrono_tz::Asia::Seoul,
+            MinuteOfDay::parse(cutoff).expect("cutoff"),
+        )
+        .expect("zone")
     }
 
     fn ts(rfc3339: &str) -> Timestamp {
         Timestamp::from_utc(
-            DateTime::parse_from_rfc3339(rfc3339).expect("rfc3339").with_timezone(&Utc),
+            DateTime::parse_from_rfc3339(rfc3339)
+                .expect("rfc3339")
+                .with_timezone(&Utc),
         )
     }
 
@@ -284,10 +311,28 @@ mod tests {
 
     #[test]
     fn minute_of_day_parses_fixed_width_only() {
-        assert_eq!(MinuteOfDay::parse("09:00").map(MinuteOfDay::minutes), Ok(540));
+        assert_eq!(
+            MinuteOfDay::parse("09:00").map(MinuteOfDay::minutes),
+            Ok(540)
+        );
         assert_eq!(MinuteOfDay::parse("00:00").map(MinuteOfDay::minutes), Ok(0));
-        assert_eq!(MinuteOfDay::parse("23:59").map(MinuteOfDay::minutes), Ok(1439));
-        for bad in ["24:00", "23:60", "9:00", "09:0", "0900", "09:00:00", "", "ab:cd", "+9:00", "०९:००", " 9:00"] {
+        assert_eq!(
+            MinuteOfDay::parse("23:59").map(MinuteOfDay::minutes),
+            Ok(1439)
+        );
+        for bad in [
+            "24:00",
+            "23:60",
+            "9:00",
+            "09:0",
+            "0900",
+            "09:00:00",
+            "",
+            "ab:cd",
+            "+9:00",
+            "०९:००",
+            " 9:00",
+        ] {
             assert!(MinuteOfDay::parse(bad).is_err(), "accepted {bad:?}");
         }
     }
@@ -310,7 +355,12 @@ mod tests {
 
     #[test]
     fn timestamp_deserialization_validates_range() {
-        assert_eq!(serde_json::from_str::<Timestamp>("1000").map(Timestamp::as_millis).ok(), Some(1000));
+        assert_eq!(
+            serde_json::from_str::<Timestamp>("1000")
+                .map(Timestamp::as_millis)
+                .ok(),
+            Some(1000)
+        );
         assert!(serde_json::from_str::<Timestamp>("9223372036854775807").is_err());
         assert!(serde_json::from_str::<Timestamp>("\"1000\"").is_err());
         assert!(serde_json::from_str::<Timestamp>("1.5").is_err());
@@ -321,25 +371,44 @@ mod tests {
         let t = Timestamp::from_millis(0).expect("epoch");
         assert_eq!(t.checked_add(Duration::MAX), None);
         assert_eq!(t.checked_sub(Duration::MAX), None);
-        assert_eq!(t.checked_add(Duration::minutes(1)).map(Timestamp::as_millis), Some(60_000));
+        assert_eq!(
+            t.checked_add(Duration::minutes(1))
+                .map(Timestamp::as_millis),
+            Some(60_000)
+        );
     }
 
     #[test]
     fn work_date_before_cutoff_belongs_to_previous_day() {
         let zone = seoul("05:00");
         // 2026-03-02 04:59:59.999 KST
-        assert_eq!(zone.work_date(ts("2026-03-01T19:59:59.999Z")), date("2026-03-01"));
+        assert_eq!(
+            zone.work_date(ts("2026-03-01T19:59:59.999Z")),
+            date("2026-03-01")
+        );
         // 2026-03-02 05:00:00.000 KST
-        assert_eq!(zone.work_date(ts("2026-03-01T20:00:00Z")), date("2026-03-02"));
+        assert_eq!(
+            zone.work_date(ts("2026-03-01T20:00:00Z")),
+            date("2026-03-02")
+        );
         // 달력 날짜는 전환 시각과 무관
-        assert_eq!(zone.calendar_date(ts("2026-03-01T19:59:59.999Z")), date("2026-03-02"));
+        assert_eq!(
+            zone.calendar_date(ts("2026-03-01T19:59:59.999Z")),
+            date("2026-03-02")
+        );
     }
 
     #[test]
     fn zero_cutoff_matches_calendar_date() {
         let zone = seoul("00:00");
-        assert_eq!(zone.work_date(ts("2026-12-31T14:59:59Z")), date("2026-12-31"));
-        assert_eq!(zone.work_date(ts("2026-12-31T15:00:00Z")), date("2027-01-01"));
+        assert_eq!(
+            zone.work_date(ts("2026-12-31T14:59:59Z")),
+            date("2026-12-31")
+        );
+        assert_eq!(
+            zone.work_date(ts("2026-12-31T15:00:00Z")),
+            date("2027-01-01")
+        );
     }
 
     #[test]
@@ -355,17 +424,16 @@ mod tests {
         let zone = seoul("05:00");
         let start = zone.work_date_start(date("2028-02-29"));
         assert_eq!(zone.work_date(start), date("2028-02-29"));
-        let just_before = start.checked_sub(Duration::milliseconds(1)).expect("in range");
+        let just_before = start
+            .checked_sub(Duration::milliseconds(1))
+            .expect("in range");
         assert_eq!(zone.work_date(just_before), date("2028-02-28"));
     }
 
     #[test]
     fn dst_gap_resolves_to_first_valid_instant() {
-        let zone = WorkCalendarZone::new(
-            chrono_tz::America::New_York,
-            MinuteOfDay::MIDNIGHT,
-        )
-        .expect("zone");
+        let zone = WorkCalendarZone::new(chrono_tz::America::New_York, MinuteOfDay::MIDNIGHT)
+            .expect("zone");
         // 2026-03-08 02:30 은 존재하지 않는다 (02:00 → 03:00).
         let resolved = zone.instant_at(date("2026-03-08"), MinuteOfDay::parse("02:30").expect("t"));
         assert_eq!(resolved, ts("2026-03-08T07:00:00Z"));
@@ -373,11 +441,8 @@ mod tests {
 
     #[test]
     fn dst_overlap_resolves_to_earlier_instant() {
-        let zone = WorkCalendarZone::new(
-            chrono_tz::America::New_York,
-            MinuteOfDay::MIDNIGHT,
-        )
-        .expect("zone");
+        let zone = WorkCalendarZone::new(chrono_tz::America::New_York, MinuteOfDay::MIDNIGHT)
+            .expect("zone");
         // 2026-11-01 01:30 은 두 번 존재한다. 먼저 오는 EDT(-04:00)를 택한다.
         let resolved = zone.instant_at(date("2026-11-01"), MinuteOfDay::parse("01:30").expect("t"));
         assert_eq!(resolved, ts("2026-11-01T05:30:00Z"));

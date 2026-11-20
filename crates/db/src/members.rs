@@ -29,7 +29,11 @@ pub struct Member {
 
 impl Member {
     pub fn subject(&self) -> Subject {
-        Subject { member_id: self.id, role: self.role, department_id: self.department_id }
+        Subject {
+            member_id: self.id,
+            role: self.role,
+            department_id: self.department_id,
+        }
     }
 }
 
@@ -83,12 +87,14 @@ const MEMBER_COLUMNS: &str = "id, login_id, name, email, phone, department_id, p
      role, status, hired_on, retired_on, must_change_password, version";
 
 pub async fn find(conn: &mut Conn, id: MemberId) -> DbResult<Option<Member>> {
-    sqlx::query_as::<_, MemberRow>(&format!("SELECT {MEMBER_COLUMNS} FROM members WHERE id = ?"))
-        .bind(id.to_string())
-        .fetch_optional(conn)
-        .await?
-        .map(Member::try_from)
-        .transpose()
+    sqlx::query_as::<_, MemberRow>(&format!(
+        "SELECT {MEMBER_COLUMNS} FROM members WHERE id = ?"
+    ))
+    .bind(id.to_string())
+    .fetch_optional(conn)
+    .await?
+    .map(Member::try_from)
+    .transpose()
 }
 
 pub async fn find_many(conn: &mut Conn, ids: &[MemberId]) -> DbResult<Vec<Member>> {
@@ -101,7 +107,12 @@ pub async fn find_many(conn: &mut Conn, ids: &[MemberId]) -> DbResult<Vec<Member
     for id in ids {
         query = query.bind(id.to_string());
     }
-    query.fetch_all(conn).await?.into_iter().map(Member::try_from).collect()
+    query
+        .fetch_all(conn)
+        .await?
+        .into_iter()
+        .map(Member::try_from)
+        .collect()
 }
 
 #[derive(sqlx::FromRow)]
@@ -115,7 +126,10 @@ pub async fn find_credentials(conn: &mut Conn, login_id: &str) -> DbResult<Optio
     credentials_where(conn, "login_id = ?", login_id).await
 }
 
-pub async fn find_credentials_by_id(conn: &mut Conn, id: MemberId) -> DbResult<Option<Credentials>> {
+pub async fn find_credentials_by_id(
+    conn: &mut Conn,
+    id: MemberId,
+) -> DbResult<Option<Credentials>> {
     credentials_where(conn, "id = ?", &id.to_string()).await
 }
 
@@ -130,8 +144,13 @@ async fn credentials_where(
     .bind(value)
     .fetch_optional(conn)
     .await?;
-    row.map(|row| Ok(Credentials { member: row.member.try_into()?, password_hash: row.password_hash }))
-        .transpose()
+    row.map(|row| {
+        Ok(Credentials {
+            member: row.member.try_into()?,
+            password_hash: row.password_hash,
+        })
+    })
+    .transpose()
 }
 
 #[derive(Debug, Clone, Default)]
@@ -163,7 +182,10 @@ pub async fn list(conn: &mut Conn, filter: &MemberFilter) -> DbResult<Vec<Member
     let mut sql = format!("SELECT {MEMBER_COLUMNS} FROM members WHERE 1 = 1");
     let mut binds: Vec<String> = Vec::new();
     if !filter.statuses.is_empty() {
-        sql.push_str(&format!(" AND status IN ({})", vec!["?"; filter.statuses.len()].join(", ")));
+        sql.push_str(&format!(
+            " AND status IN ({})",
+            vec!["?"; filter.statuses.len()].join(", ")
+        ));
         binds.extend(filter.statuses.iter().map(|s| s.as_str().to_owned()));
     }
     if let Some(departments) = &filter.departments {
@@ -186,7 +208,12 @@ pub async fn list(conn: &mut Conn, filter: &MemberFilter) -> DbResult<Vec<Member
     for value in &binds {
         query = query.bind(value);
     }
-    query.fetch_all(conn).await?.into_iter().map(Member::try_from).collect()
+    query
+        .fetch_all(conn)
+        .await?
+        .into_iter()
+        .map(Member::try_from)
+        .collect()
 }
 
 pub async fn insert(
@@ -272,11 +299,10 @@ pub async fn set_password(
 
 /// 로그인할 수 있는 최고 관리자 수. 마지막 한 명을 없애지 않기 위해 쓴다.
 pub async fn count_active_owners(conn: &mut Conn) -> DbResult<i64> {
-    let (count,): (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM members WHERE role = 'owner' AND status = 'active'",
-    )
-    .fetch_one(conn)
-    .await?;
+    let (count,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM members WHERE role = 'owner' AND status = 'active'")
+            .fetch_one(conn)
+            .await?;
     Ok(count)
 }
 

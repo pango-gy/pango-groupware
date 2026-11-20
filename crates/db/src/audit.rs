@@ -43,15 +43,22 @@ impl TryFrom<AuditRow> for AuditEntry {
             action: row.action,
             target_type: row.target_type,
             target_id: row.target_id,
-            detail: row.detail.as_deref().map(|raw| codec::json("detail", raw)).transpose()?,
+            detail: row
+                .detail
+                .as_deref()
+                .map(|raw| codec::json("detail", raw))
+                .transpose()?,
             ip: row.ip,
         })
     }
 }
 
 pub async fn insert(conn: &mut Conn, entry: &AuditEntry) -> DbResult<()> {
-    let detail =
-        entry.detail.as_ref().map(|value| codec::json_text("detail", value)).transpose()?;
+    let detail = entry
+        .detail
+        .as_ref()
+        .map(|value| codec::json_text("detail", value))
+        .transpose()?;
     sqlx::query(
         "INSERT INTO audit_log (id, at, actor_id, action, target_type, target_id, detail, ip)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -108,6 +115,9 @@ pub async fn list(
     .bind(codec::limit_plus_one(limit))
     .fetch_all(conn)
     .await?;
-    let entries = rows.into_iter().map(AuditEntry::try_from).collect::<DbResult<Vec<_>>>()?;
+    let entries = rows
+        .into_iter()
+        .map(AuditEntry::try_from)
+        .collect::<DbResult<Vec<_>>>()?;
     Ok(codec::split_page(entries, limit))
 }

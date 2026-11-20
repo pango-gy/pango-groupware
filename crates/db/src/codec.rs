@@ -46,7 +46,10 @@ pub fn date(column: &'static str, raw: &str) -> DbResult<NaiveDate> {
     (raw.len() == 10)
         .then(|| raw.parse::<NaiveDate>().ok())
         .flatten()
-        .ok_or(DomainError::validation(column, ValidationReason::InvalidFormat))
+        .ok_or(DomainError::validation(
+            column,
+            ValidationReason::InvalidFormat,
+        ))
         .map_err(corrupt(column))
 }
 
@@ -87,7 +90,14 @@ mod tests {
     #[test]
     fn date_requires_fixed_width() {
         assert!(date("d", "2026-03-02").is_ok());
-        for bad in ["2026-3-2", "2026-03-02 ", "20260302", "", "2026-02-30", "2026-03-02T00:00:00"] {
+        for bad in [
+            "2026-3-2",
+            "2026-03-02 ",
+            "20260302",
+            "",
+            "2026-02-30",
+            "2026-03-02T00:00:00",
+        ] {
             assert!(date("d", bad).is_err(), "accepted {bad:?}");
         }
     }

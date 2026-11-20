@@ -29,7 +29,10 @@ pub struct Page<T> {
 
 impl<T> Page<T> {
     pub fn complete(items: Vec<T>) -> Self {
-        Self { items, next_cursor: None }
+        Self {
+            items,
+            next_cursor: None,
+        }
     }
 }
 
@@ -48,7 +51,9 @@ impl PageQuery {
 
     /// 범위를 벗어난 값은 잘라서 쓴다(0 → 1, 너무 큰 값 → 최대).
     pub fn limit(&self) -> u32 {
-        self.limit.unwrap_or(Self::DEFAULT_LIMIT).clamp(1, Self::MAX_LIMIT)
+        self.limit
+            .unwrap_or(Self::DEFAULT_LIMIT)
+            .clamp(1, Self::MAX_LIMIT)
     }
 }
 
@@ -70,7 +75,10 @@ mod tests {
 
     #[test]
     fn limit_is_clamped() {
-        let q = |limit| PageQuery { limit, cursor: None };
+        let q = |limit| PageQuery {
+            limit,
+            cursor: None,
+        };
         assert_eq!(q(None).limit(), 50);
         assert_eq!(q(Some(0)).limit(), 1);
         assert_eq!(q(Some(200)).limit(), 200);

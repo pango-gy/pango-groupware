@@ -20,13 +20,18 @@ impl WorkWeek {
     /// 근무 요일이 하루도 없는 값은 받지 않는다.
     pub fn from_bits(bits: u8) -> DomainResult<Self> {
         if bits == 0 || bits & !Self::MASK != 0 {
-            return Err(DomainError::validation("workdays", ValidationReason::OutOfRange));
+            return Err(DomainError::validation(
+                "workdays",
+                ValidationReason::OutOfRange,
+            ));
         }
         Ok(Self(bits))
     }
 
     pub fn from_weekdays(days: impl IntoIterator<Item = Weekday>) -> DomainResult<Self> {
-        let bits = days.into_iter().fold(0u8, |acc, day| acc | 1 << day.num_days_from_monday());
+        let bits = days
+            .into_iter()
+            .fold(0u8, |acc, day| acc | 1 << day.num_days_from_monday());
         Self::from_bits(bits)
     }
 
@@ -49,16 +54,25 @@ pub struct DateRange {
 impl DateRange {
     pub fn new(start: NaiveDate, end: NaiveDate) -> DomainResult<Self> {
         if end < start {
-            return Err(DomainError::validation("date_range", ValidationReason::Inconsistent));
+            return Err(DomainError::validation(
+                "date_range",
+                ValidationReason::Inconsistent,
+            ));
         }
         if (end - start).num_days() >= MAX_RANGE_DAYS {
-            return Err(DomainError::validation("date_range", ValidationReason::OutOfRange));
+            return Err(DomainError::validation(
+                "date_range",
+                ValidationReason::OutOfRange,
+            ));
         }
         Ok(Self { start, end })
     }
 
     pub fn single(date: NaiveDate) -> Self {
-        Self { start: date, end: date }
+        Self {
+            start: date,
+            end: date,
+        }
     }
 
     /// `YYYY-MM` 한 달 전체.
@@ -105,7 +119,10 @@ pub struct WorkCalendar {
 
 impl WorkCalendar {
     pub fn new(work_week: WorkWeek, holidays: impl IntoIterator<Item = NaiveDate>) -> Self {
-        Self { work_week, holidays: holidays.into_iter().collect() }
+        Self {
+            work_week,
+            holidays: holidays.into_iter().collect(),
+        }
     }
 
     pub fn is_holiday(&self, date: NaiveDate) -> bool {
@@ -143,11 +160,20 @@ mod tests {
         assert!(WorkWeek::MON_TO_FRI.contains(Weekday::Mon));
         assert!(WorkWeek::MON_TO_FRI.contains(Weekday::Fri));
         assert!(!WorkWeek::MON_TO_FRI.contains(Weekday::Sat));
-        assert!(WorkWeek::from_bits(0).is_err(), "근무 요일이 없으면 안 된다");
+        assert!(
+            WorkWeek::from_bits(0).is_err(),
+            "근무 요일이 없으면 안 된다"
+        );
         assert!(WorkWeek::from_bits(0b1000_0000).is_err());
         assert!(WorkWeek::from_bits(0b111_1111).is_ok());
         assert_eq!(
-            WorkWeek::from_weekdays([Weekday::Mon, Weekday::Tue, Weekday::Wed, Weekday::Thu, Weekday::Fri]),
+            WorkWeek::from_weekdays([
+                Weekday::Mon,
+                Weekday::Tue,
+                Weekday::Wed,
+                Weekday::Thu,
+                Weekday::Fri
+            ]),
             Ok(WorkWeek::MON_TO_FRI)
         );
         assert!(WorkWeek::from_weekdays([]).is_err());
@@ -157,16 +183,28 @@ mod tests {
     fn date_range_validation() {
         assert!(DateRange::new(d("2026-03-02"), d("2026-03-01")).is_err());
         assert!(DateRange::new(d("2026-03-01"), d("2026-03-01")).is_ok());
-        assert!(DateRange::new(d("2026-01-01"), d("2027-01-01")).is_ok(), "366일");
-        assert!(DateRange::new(d("2026-01-01"), d("2027-01-02")).is_err(), "367일");
+        assert!(
+            DateRange::new(d("2026-01-01"), d("2027-01-01")).is_ok(),
+            "366일"
+        );
+        assert!(
+            DateRange::new(d("2026-01-01"), d("2027-01-02")).is_err(),
+            "367일"
+        );
     }
 
     #[test]
     fn month_range_handles_year_end_and_leap_february() {
         let dec = DateRange::month(2026, 12).expect("december");
         assert_eq!((dec.start(), dec.end()), (d("2026-12-01"), d("2026-12-31")));
-        assert_eq!(DateRange::month(2028, 2).expect("leap").end(), d("2028-02-29"));
-        assert_eq!(DateRange::month(2026, 2).expect("common").end(), d("2026-02-28"));
+        assert_eq!(
+            DateRange::month(2028, 2).expect("leap").end(),
+            d("2028-02-29")
+        );
+        assert_eq!(
+            DateRange::month(2026, 2).expect("common").end(),
+            d("2026-02-28")
+        );
         assert!(DateRange::month(2026, 0).is_err());
         assert!(DateRange::month(2026, 13).is_err());
         assert!(DateRange::month(i32::MAX, 12).is_err());
@@ -191,9 +229,17 @@ mod tests {
         assert_eq!(cal.count_working_days(week), 4);
         assert_eq!(
             cal.working_days_in(week),
-            vec![d("2026-03-02"), d("2026-03-03"), d("2026-03-05"), d("2026-03-06")]
+            vec![
+                d("2026-03-02"),
+                d("2026-03-03"),
+                d("2026-03-05"),
+                d("2026-03-06")
+            ]
         );
-        assert_eq!(cal.count_working_days(DateRange::single(d("2026-03-07"))), 0);
+        assert_eq!(
+            cal.count_working_days(DateRange::single(d("2026-03-07"))),
+            0
+        );
         assert!(cal.is_holiday(d("2026-03-07")) && !cal.is_working_day(d("2026-03-07")));
     }
 

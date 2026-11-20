@@ -38,7 +38,9 @@ impl TextRule {
         let err = |reason| DomainError::validation(self.field, reason);
         // 정규화로 길이가 줄 수 있으므로 넉넉한 사전 상한(문자당 최대 4바이트 × 여유 3배).
         if raw.len() > self.max_chars.saturating_mul(12).max(64) {
-            return Err(err(ValidationReason::TooLong { max: self.max_chars }));
+            return Err(err(ValidationReason::TooLong {
+                max: self.max_chars,
+            }));
         }
         let unified = raw.replace("\r\n", "\n").replace('\r', "\n");
         let trimmed = unified.trim();
@@ -54,10 +56,14 @@ impl TextRule {
             return Err(err(ValidationReason::Empty));
         }
         if chars < self.min_chars {
-            return Err(err(ValidationReason::TooShort { min: self.min_chars }));
+            return Err(err(ValidationReason::TooShort {
+                min: self.min_chars,
+            }));
         }
         if chars > self.max_chars {
-            return Err(err(ValidationReason::TooLong { max: self.max_chars }));
+            return Err(err(ValidationReason::TooLong {
+                max: self.max_chars,
+            }));
         }
         Ok(normalized)
     }
@@ -101,11 +107,21 @@ macro_rules! text_type {
 }
 
 const fn line(field: &'static str, min_chars: usize, max_chars: usize) -> TextRule {
-    TextRule { field, min_chars, max_chars, multiline: false }
+    TextRule {
+        field,
+        min_chars,
+        max_chars,
+        multiline: false,
+    }
 }
 
 const fn block(field: &'static str, min_chars: usize, max_chars: usize) -> TextRule {
-    TextRule { field, min_chars, max_chars, multiline: true }
+    TextRule {
+        field,
+        min_chars,
+        max_chars,
+        multiline: true,
+    }
 }
 
 text_type!(
@@ -154,7 +170,8 @@ impl LoginId {
             return Err(err(ValidationReason::TooShort { min: Self::MIN_LEN }));
         }
         let lowered = raw.to_ascii_lowercase();
-        let valid_char = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b);
+        let valid_char =
+            |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b);
         if !lowered.bytes().all(valid_char) {
             return Err(err(ValidationReason::InvalidCharacter));
         }
@@ -199,13 +216,17 @@ impl Email {
             && !local.starts_with('.')
             && !local.ends_with('.')
             && !local.contains("..")
-            && local.bytes().all(|b| b.is_ascii_alphanumeric() || b"._%+-".contains(&b));
+            && local
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._%+-".contains(&b));
         let label_ok = |label: &str| {
             !label.is_empty()
                 && label.len() <= 63
                 && !label.starts_with('-')
                 && !label.ends_with('-')
-                && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
         };
         let domain_ok = domain.contains('.') && domain.split('.').all(label_ok);
         if !(local_ok && domain_ok) {
@@ -244,15 +265,27 @@ mod tests {
 
     #[test]
     fn trims_and_keeps_inner_spaces() {
-        assert_eq!(PersonName::parse("  홍 길동\t").expect("valid").as_str(), "홍 길동");
+        assert_eq!(
+            PersonName::parse("  홍 길동\t").expect("valid").as_str(),
+            "홍 길동"
+        );
     }
 
     #[test]
     fn empty_and_whitespace_only_are_empty() {
         for raw in ["", "   ", "\n\t ", "\u{3000}"] {
-            assert_eq!(reason(Title::parse(raw)), ValidationReason::Empty, "{raw:?}");
+            assert_eq!(
+                reason(Title::parse(raw)),
+                ValidationReason::Empty,
+                "{raw:?}"
+            );
         }
-        assert_eq!(Comment::parse("   ").expect("comment may be empty").as_str(), "");
+        assert_eq!(
+            Comment::parse("   ")
+                .expect("comment may be empty")
+                .as_str(),
+            ""
+        );
     }
 
     #[test]
@@ -260,7 +293,10 @@ mod tests {
         let exactly_max = "가".repeat(50);
         assert!(PersonName::parse(&exactly_max).is_ok());
         let over = "가".repeat(51);
-        assert_eq!(reason(PersonName::parse(&over)), ValidationReason::TooLong { max: 50 });
+        assert_eq!(
+            reason(PersonName::parse(&over)),
+            ValidationReason::TooLong { max: 50 }
+        );
     }
 
     #[test]
@@ -274,20 +310,37 @@ mod tests {
     #[test]
     fn decomposed_input_at_limit_is_accepted_after_normalization() {
         let nfd = "\u{1112}\u{1169}\u{11BC}".repeat(50);
-        assert_eq!(PersonName::parse(&nfd).expect("valid").as_str().chars().count(), 50);
+        assert_eq!(
+            PersonName::parse(&nfd)
+                .expect("valid")
+                .as_str()
+                .chars()
+                .count(),
+            50
+        );
     }
 
     #[test]
     fn control_characters_are_rejected() {
         for raw in ["a\0b", "a\u{7}b", "a\u{1b}[31mb", "a\u{7f}b", "a\u{85}b"] {
-            assert_eq!(reason(Title::parse(raw)), ValidationReason::InvalidCharacter, "{raw:?}");
+            assert_eq!(
+                reason(Title::parse(raw)),
+                ValidationReason::InvalidCharacter,
+                "{raw:?}"
+            );
         }
     }
 
     #[test]
     fn single_line_rejects_newline_but_multiline_accepts() {
-        assert_eq!(reason(Title::parse("a\nb")), ValidationReason::InvalidCharacter);
-        assert_eq!(Body::parse("a\r\nb\rc\td").expect("valid").as_str(), "a\nb\nc\td");
+        assert_eq!(
+            reason(Title::parse("a\nb")),
+            ValidationReason::InvalidCharacter
+        );
+        assert_eq!(
+            Body::parse("a\r\nb\rc\td").expect("valid").as_str(),
+            "a\nb\nc\td"
+        );
     }
 
     #[test]
@@ -299,14 +352,23 @@ mod tests {
             "a\u{2066}b\u{2069}",
             "a\u{E0041}b",
         ] {
-            assert_eq!(reason(Title::parse(raw)), ValidationReason::InvalidCharacter, "{raw:?}");
+            assert_eq!(
+                reason(Title::parse(raw)),
+                ValidationReason::InvalidCharacter,
+                "{raw:?}"
+            );
         }
     }
 
     #[test]
     fn markup_and_sql_fragments_are_plain_text() {
         // 저장은 그대로 하고, 출력 단계에서 이스케이프한다.
-        for raw in ["<script>alert(1)</script>", "'; DROP TABLE members;--", "{{7*7}}", "${jndi:x}"] {
+        for raw in [
+            "<script>alert(1)</script>",
+            "'; DROP TABLE members;--",
+            "{{7*7}}",
+            "${jndi:x}",
+        ] {
             assert_eq!(Title::parse(raw).expect("valid").as_str(), raw);
         }
     }
@@ -314,44 +376,101 @@ mod tests {
     #[test]
     fn huge_input_is_rejected_before_normalization() {
         let huge = "a".repeat(5_000_000);
-        assert_eq!(reason(PersonName::parse(&huge)), ValidationReason::TooLong { max: 50 });
+        assert_eq!(
+            reason(PersonName::parse(&huge)),
+            ValidationReason::TooLong { max: 50 }
+        );
     }
 
     #[test]
     fn emoji_sequences_count_per_scalar() {
         // 가족 이모지는 ZWJ(U+200D)를 포함하므로 위장 문자로 거부된다. 단일 이모지는 허용.
         assert!(Title::parse("회식 🎉").is_ok());
-        assert_eq!(reason(Title::parse("👨\u{200D}👩")), ValidationReason::InvalidCharacter);
+        assert_eq!(
+            reason(Title::parse("👨\u{200D}👩")),
+            ValidationReason::InvalidCharacter
+        );
     }
 
     #[test]
     fn login_id_rules() {
-        assert_eq!(LoginId::parse("Hong.GD-1").expect("valid").as_str(), "hong.gd-1");
+        assert_eq!(
+            LoginId::parse("Hong.GD-1").expect("valid").as_str(),
+            "hong.gd-1"
+        );
         assert_eq!(reason(LoginId::parse("")), ValidationReason::Empty);
-        assert_eq!(reason(LoginId::parse("ab")), ValidationReason::TooShort { min: 3 });
-        assert_eq!(reason(LoginId::parse(&"a".repeat(33))), ValidationReason::TooLong { max: 32 });
+        assert_eq!(
+            reason(LoginId::parse("ab")),
+            ValidationReason::TooShort { min: 3 }
+        );
+        assert_eq!(
+            reason(LoginId::parse(&"a".repeat(33))),
+            ValidationReason::TooLong { max: 32 }
+        );
         assert!(LoginId::parse(&"a".repeat(32)).is_ok());
-        for bad in ["홍길동", "a b c", "a@b.c", "abc\n", "abc\0", "ａｂｃ", "a/b", "a%00"] {
-            assert_eq!(reason(LoginId::parse(bad)), ValidationReason::InvalidCharacter, "{bad:?}");
+        for bad in [
+            "홍길동",
+            "a b c",
+            "a@b.c",
+            "abc\n",
+            "abc\0",
+            "ａｂｃ",
+            "a/b",
+            "a%00",
+        ] {
+            assert_eq!(
+                reason(LoginId::parse(bad)),
+                ValidationReason::InvalidCharacter,
+                "{bad:?}"
+            );
         }
         for bad in [".abc", "-abc", "_abc"] {
-            assert_eq!(reason(LoginId::parse(bad)), ValidationReason::InvalidFormat, "{bad:?}");
+            assert_eq!(
+                reason(LoginId::parse(bad)),
+                ValidationReason::InvalidFormat,
+                "{bad:?}"
+            );
         }
     }
 
     #[test]
     fn email_rules() {
-        assert_eq!(Email::parse(" Hong@Example.CO.kr ").expect("valid").as_str(), "hong@example.co.kr");
+        assert_eq!(
+            Email::parse(" Hong@Example.CO.kr ")
+                .expect("valid")
+                .as_str(),
+            "hong@example.co.kr"
+        );
         assert!(Email::parse("a.b+tag@sub.example.com").is_ok());
         for bad in [
-            "plain", "@example.com", "a@", "a@b", "a@.com", "a@b..com", "a@-b.com", "a@b-.com",
-            ".a@b.com", "a.@b.com", "a..b@b.com", "a b@b.com", "a@b.com\n.evil", "a@b.com,c@d.com",
-            "a<script>@b.com", "\"a\"@b.com",
+            "plain",
+            "@example.com",
+            "a@",
+            "a@b",
+            "a@.com",
+            "a@b..com",
+            "a@-b.com",
+            "a@b-.com",
+            ".a@b.com",
+            "a.@b.com",
+            "a..b@b.com",
+            "a b@b.com",
+            "a@b.com\n.evil",
+            "a@b.com,c@d.com",
+            "a<script>@b.com",
+            "\"a\"@b.com",
         ] {
-            assert_eq!(reason(Email::parse(bad)), ValidationReason::InvalidFormat, "{bad:?}");
+            assert_eq!(
+                reason(Email::parse(bad)),
+                ValidationReason::InvalidFormat,
+                "{bad:?}"
+            );
         }
         let long_local = format!("{}@b.com", "a".repeat(65));
-        assert_eq!(reason(Email::parse(&long_local)), ValidationReason::InvalidFormat);
+        assert_eq!(
+            reason(Email::parse(&long_local)),
+            ValidationReason::InvalidFormat
+        );
         let too_long = format!("a@{}.com", "b".repeat(63).repeat(5));
         assert!(Email::parse(&too_long).is_err());
     }
@@ -360,7 +479,9 @@ mod tests {
     fn optional_treats_blank_as_none() {
         assert_eq!(optional(None, Email::parse), Ok(None));
         assert_eq!(optional(Some("  "), Email::parse), Ok(None));
-        assert!(optional(Some("a@b.com"), Email::parse).expect("valid").is_some());
+        assert!(optional(Some("a@b.com"), Email::parse)
+            .expect("valid")
+            .is_some());
         assert!(optional(Some("nope"), Email::parse).is_err());
     }
 

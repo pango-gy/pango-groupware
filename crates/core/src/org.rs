@@ -96,7 +96,9 @@ impl DepartmentTree {
         if !self.contains(id) {
             return Err(DomainError::NotFound);
         }
-        let Some(parent) = new_parent else { return Ok(()) };
+        let Some(parent) = new_parent else {
+            return Ok(());
+        };
         if !self.contains(parent) {
             return Err(DomainError::NotFound);
         }
@@ -106,7 +108,13 @@ impl DepartmentTree {
         }
         let subtree_height = subtree
             .iter()
-            .map(|&d| self.ancestors_inclusive(d).iter().take_while(|&&a| a != id).count() + 1)
+            .map(|&d| {
+                self.ancestors_inclusive(d)
+                    .iter()
+                    .take_while(|&&a| a != id)
+                    .count()
+                    + 1
+            })
             .max()
             .unwrap_or(1);
         if self.ancestors_inclusive(parent).len() + subtree_height > MAX_DEPTH {
@@ -132,7 +140,10 @@ impl DepartmentTree {
         &self,
         headed: impl IntoIterator<Item = DepartmentId>,
     ) -> BTreeSet<DepartmentId> {
-        headed.into_iter().flat_map(|id| self.descendants_inclusive(id)).collect()
+        headed
+            .into_iter()
+            .flat_map(|id| self.descendants_inclusive(id))
+            .collect()
     }
 }
 
@@ -165,7 +176,10 @@ mod tests {
 
     fn chain(len: usize) -> Vec<DepartmentNode> {
         let d = ids(len);
-        d.iter().enumerate().map(|(i, &id)| node(id, i.checked_sub(1).map(|p| d[p]))).collect()
+        d.iter()
+            .enumerate()
+            .map(|(i, &id)| node(id, i.checked_sub(1).map(|p| d[p])))
+            .collect()
     }
 
     #[test]
@@ -178,7 +192,10 @@ mod tests {
     #[test]
     fn descendants_and_ancestors() {
         let (tree, d) = sample();
-        assert_eq!(tree.descendants_inclusive(d[0]), BTreeSet::from([d[0], d[1], d[2], d[3]]));
+        assert_eq!(
+            tree.descendants_inclusive(d[0]),
+            BTreeSet::from([d[0], d[1], d[2], d[3]])
+        );
         assert_eq!(tree.descendants_inclusive(d[3]), BTreeSet::from([d[3]]));
         assert_eq!(tree.ancestors_inclusive(d[3]), vec![d[3], d[1], d[0]]);
         assert_eq!(tree.ancestors_inclusive(d[4]), vec![d[4]]);
@@ -188,7 +205,10 @@ mod tests {
     fn construction_rejects_cycles() {
         let d = ids(3);
         let self_loop = DepartmentTree::new([node(d[0], Some(d[0]))]);
-        assert_eq!(self_loop.unwrap_err(), ConflictReason::DepartmentCycle.into());
+        assert_eq!(
+            self_loop.unwrap_err(),
+            ConflictReason::DepartmentCycle.into()
+        );
         let ring = DepartmentTree::new([
             node(d[0], Some(d[2])),
             node(d[1], Some(d[0])),
@@ -215,18 +235,34 @@ mod tests {
     #[test]
     fn move_into_own_subtree_is_a_cycle() {
         let (tree, d) = sample();
-        assert_eq!(tree.check_move(d[0], Some(d[3])), Err(ConflictReason::DepartmentCycle.into()));
-        assert_eq!(tree.check_move(d[1], Some(d[1])), Err(ConflictReason::DepartmentCycle.into()));
+        assert_eq!(
+            tree.check_move(d[0], Some(d[3])),
+            Err(ConflictReason::DepartmentCycle.into())
+        );
+        assert_eq!(
+            tree.check_move(d[1], Some(d[1])),
+            Err(ConflictReason::DepartmentCycle.into())
+        );
         assert_eq!(tree.check_move(d[3], Some(d[2])), Ok(()));
         assert_eq!(tree.check_move(d[1], None), Ok(()));
-        assert_eq!(tree.check_move(d[1], Some(d[1 - 1])), Ok(()), "같은 부모로의 이동은 허용");
+        assert_eq!(
+            tree.check_move(d[1], Some(d[1 - 1])),
+            Ok(()),
+            "같은 부모로의 이동은 허용"
+        );
     }
 
     #[test]
     fn move_with_unknown_ids_is_not_found() {
         let (tree, d) = sample();
-        assert_eq!(tree.check_move(DepartmentId::new(), Some(d[0])), Err(DomainError::NotFound));
-        assert_eq!(tree.check_move(d[0], Some(DepartmentId::new())), Err(DomainError::NotFound));
+        assert_eq!(
+            tree.check_move(DepartmentId::new(), Some(d[0])),
+            Err(DomainError::NotFound)
+        );
+        assert_eq!(
+            tree.check_move(d[0], Some(DepartmentId::new())),
+            Err(DomainError::NotFound)
+        );
     }
 
     #[test]
@@ -238,7 +274,10 @@ mod tests {
         all.extend([node(a, None), node(b, Some(a))]);
         let tree = DepartmentTree::new(all).expect("valid");
         // 높이 2인 서브트리를 깊이 MAX-1 아래에 붙이면 MAX+1 이 된다.
-        assert_eq!(tree.check_move(a, Some(deepest)), Err(ConflictReason::DepartmentTooDeep.into()));
+        assert_eq!(
+            tree.check_move(a, Some(deepest)),
+            Err(ConflictReason::DepartmentTooDeep.into())
+        );
         // 높이 1인 잎은 붙일 수 있다.
         assert_eq!(tree.check_move(b, Some(deepest)), Ok(()));
     }
@@ -250,14 +289,23 @@ mod tests {
         let tree = DepartmentTree::new(nodes).expect("valid");
         assert_eq!(tree.check_insert(None), Ok(()));
         assert_eq!(tree.check_insert(Some(shallow)), Ok(()));
-        assert_eq!(tree.check_insert(Some(deepest)), Err(ConflictReason::DepartmentTooDeep.into()));
-        assert_eq!(tree.check_insert(Some(DepartmentId::new())), Err(DomainError::NotFound));
+        assert_eq!(
+            tree.check_insert(Some(deepest)),
+            Err(ConflictReason::DepartmentTooDeep.into())
+        );
+        assert_eq!(
+            tree.check_insert(Some(DepartmentId::new())),
+            Err(DomainError::NotFound)
+        );
     }
 
     #[test]
     fn managed_by_unions_subtrees_and_ignores_unknown() {
         let (tree, d) = sample();
-        assert_eq!(tree.managed_by([d[1], d[4]]), BTreeSet::from([d[1], d[3], d[4]]));
+        assert_eq!(
+            tree.managed_by([d[1], d[4]]),
+            BTreeSet::from([d[1], d[3], d[4]])
+        );
         assert!(tree.managed_by([DepartmentId::new()]).is_empty());
         assert!(tree.managed_by([]).is_empty());
     }

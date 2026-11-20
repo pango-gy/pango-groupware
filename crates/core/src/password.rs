@@ -49,7 +49,10 @@ impl PlainPassword {
             return Err(DomainError::validation(FIELD, ValidationReason::Empty));
         }
         if raw.len() > MAX_CHARS * 4 {
-            return Err(DomainError::validation(FIELD, ValidationReason::TooLong { max: MAX_CHARS }));
+            return Err(DomainError::validation(
+                FIELD,
+                ValidationReason::TooLong { max: MAX_CHARS },
+            ));
         }
         Ok(Self(raw.to_owned()))
     }
@@ -91,9 +94,18 @@ mod tests {
     #[test]
     fn rejects_out_of_range_lengths() {
         assert_eq!(reason(""), ValidationReason::Empty);
-        assert_eq!(reason("abcdefgh9"), ValidationReason::TooShort { min: MIN_CHARS });
-        assert_eq!(reason(&format!("{}c", "ab".repeat(64))), ValidationReason::TooLong { max: MAX_CHARS });
-        assert_eq!(reason(&"x".repeat(10_000_000)), ValidationReason::TooLong { max: MAX_CHARS });
+        assert_eq!(
+            reason("abcdefgh9"),
+            ValidationReason::TooShort { min: MIN_CHARS }
+        );
+        assert_eq!(
+            reason(&format!("{}c", "ab".repeat(64))),
+            ValidationReason::TooLong { max: MAX_CHARS }
+        );
+        assert_eq!(
+            reason(&"x".repeat(10_000_000)),
+            ValidationReason::TooLong { max: MAX_CHARS }
+        );
     }
 
     #[test]

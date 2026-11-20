@@ -11,6 +11,7 @@ use crate::error::DbResult;
 
 pub type Conn = sqlx::SqliteConnection;
 pub type WriteTx = sqlx::Transaction<'static, sqlx::Sqlite>;
+pub type ReadConn = sqlx::pool::PoolConnection<sqlx::Sqlite>;
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
@@ -23,7 +24,10 @@ pub struct DbOptions {
 
 impl Default for DbOptions {
     fn default() -> Self {
-        Self { read_connections: 4, write_wait: Duration::from_secs(30) }
+        Self {
+            read_connections: 4,
+            write_wait: Duration::from_secs(30),
+        }
     }
 }
 
@@ -63,6 +67,11 @@ impl Db {
     /// 읽기 전용 조회에 쓰는 풀.
     pub fn reader(&self) -> &SqlitePool {
         &self.reader
+    }
+
+    /// 읽기 전용 연결 하나를 빌린다.
+    pub async fn read(&self) -> DbResult<ReadConn> {
+        Ok(self.reader.acquire().await?)
     }
 
     /// 쓰기 트랜잭션을 시작한다. 커밋하지 않고 버리면 롤백된다.

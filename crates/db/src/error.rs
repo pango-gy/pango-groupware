@@ -10,9 +10,15 @@ pub enum DbError {
     Migrate(#[from] sqlx::migrate::MigrateError),
     /// 저장된 값이 도메인 규칙에 맞지 않는다. 버그이거나 DB가 외부에서 수정된 것이다.
     #[error("corrupt data in `{column}`: {source}")]
-    Corrupt { column: &'static str, source: DomainError },
+    Corrupt {
+        column: &'static str,
+        source: DomainError,
+    },
     #[error("corrupt json in `{column}`: {source}")]
-    CorruptJson { column: &'static str, source: serde_json::Error },
+    CorruptJson {
+        column: &'static str,
+        source: serde_json::Error,
+    },
 }
 
 impl DbError {

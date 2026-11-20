@@ -1,0 +1,44 @@
+[package]
+name = "pango-server"
+description = "pango-groupware 서버 (서비스 + HTTP + 실행 파일)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "pango-groupware"
+path = "src/main.rs"
+
+[dependencies]
+pango-core.workspace = true
+pango-api.workspace = true
+pango-db.workspace = true
+axum.workspace = true
+tokio.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+http.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+argon2 = { workspace = true, features = ["std"] }
+sha2.workspace = true
+subtle.workspace = true
+getrandom.workspace = true
+clap.workspace = true
+tempfile = { workspace = true, optional = true }
+
+[features]
+# 통합 테스트용 도우미(TestApp).
+testing = ["pango-db/testing", "dep:tempfile"]
+
+[dev-dependencies]
+pango-server = { path = ".", features = ["testing"] }
+
+[lints]
+workspace = true
