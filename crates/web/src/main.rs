@@ -4,6 +4,7 @@ mod api;
 mod calendar;
 mod format;
 mod layout;
+mod org_tree;
 mod pages;
 mod route;
 mod session;

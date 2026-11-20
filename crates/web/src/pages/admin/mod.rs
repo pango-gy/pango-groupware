@@ -4,6 +4,12 @@ use dioxus::prelude::*;
 
 use crate::pages::placeholder::ComingSoon;
 
+pub(crate) mod members;
+mod org;
+
+pub use members::AdminMembers;
+pub use org::AdminOrg;
+
 macro_rules! placeholders {
     ($($name:ident => $title:literal),+ $(,)?) => {$(
         #[component]
@@ -15,8 +21,6 @@ macro_rules! placeholders {
 
 placeholders! {
     AdminHome => "관리 홈",
-    AdminMembers => "구성원 관리",
-    AdminOrg => "조직·직책",
     AdminAttendance => "근태 관리",
     AdminLeave => "휴가 관리",
     AdminApprovalForms => "결재 양식",
