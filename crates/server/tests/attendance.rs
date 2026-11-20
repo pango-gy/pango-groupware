@@ -1041,7 +1041,7 @@ async fn admin_create_and_duplicates() {
         .json(&body)
         .send()
         .await
-        .expect(StatusCode::OK);
+        .expect(StatusCode::CREATED);
     assert_eq!(created["member_id"], org.bob.id.to_string());
     assert_eq!(created["work_date"], "2026-03-03");
     assert_eq!(created["work_type"], "field");
@@ -1149,8 +1149,8 @@ async fn admin_create_honours_idempotency_key() {
             .json(&body)
             .send()
     };
-    let first = send().await.expect(StatusCode::OK);
-    let second = send().await.expect(StatusCode::OK);
+    let first = send().await.expect(StatusCode::CREATED);
+    let second = send().await.expect(StatusCode::CREATED);
     assert_eq!(first, second);
     assert_eq!(
         app.attendance_events(&org.bob.token, &id_of(&first))
@@ -1710,7 +1710,7 @@ async fn record_before_tracking_starts_is_still_evaluated_and_shown() {
         ))
         .send()
         .await
-        .expect(StatusCode::OK);
+        .expect(StatusCode::CREATED);
 
     let records = month(&app, &late.token, "2026-03").await;
     let entry = day(&records, "2026-03-05");
@@ -1760,7 +1760,7 @@ async fn days_after_retirement_are_not_absent_in_admin_views() {
             ))
             .send()
             .await
-            .expect(StatusCode::OK);
+            .expect(StatusCode::CREATED);
     }
 
     let query = format!("month=2026-03&member_id={}", alice.id);
@@ -1983,7 +1983,7 @@ async fn admin_cannot_create_or_edit_their_own_record_but_the_owner_can() {
         .json(&body)
         .send()
         .await
-        .expect(StatusCode::OK);
+        .expect(StatusCode::CREATED);
     app.patch(&format!("/admin/attendance/{}", id_of(&own)))
         .bearer(&org.owner)
         .json(&edit)
@@ -1997,7 +1997,7 @@ async fn admin_cannot_create_or_edit_their_own_record_but_the_owner_can() {
         .json(&for_bob)
         .send()
         .await
-        .expect(StatusCode::OK);
+        .expect(StatusCode::CREATED);
 
     // 최고 관리자는 본인 기록도 만들고 고칠 수 있고, 감사 로그에 남는다.
     let owner_body = create_body(app.owner_id, "2026-03-03", "2026-03-03T09:00:00", None);
@@ -2007,7 +2007,7 @@ async fn admin_cannot_create_or_edit_their_own_record_but_the_owner_can() {
         .json(&owner_body)
         .send()
         .await
-        .expect(StatusCode::OK);
+        .expect(StatusCode::CREATED);
     let owner_edit = json!({
         "version": created["version"],
         "clock_in_at": millis("2026-03-03T09:00:00"),

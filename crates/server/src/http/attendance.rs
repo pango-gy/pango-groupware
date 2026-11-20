@@ -142,10 +142,10 @@ async fn admin_create(
     State(state): State<AppState>,
     Auth(ctx): Auth,
     request: IdempotentJson<AdminCreateRecordRequest>,
-) -> ServiceResult<Json<AttendanceRecordDto>> {
-    attendance::admin_create(&state, &ctx, &request.body, request.idempotency.as_ref())
-        .await
-        .map(Json)
+) -> ServiceResult<(StatusCode, Json<AttendanceRecordDto>)> {
+    let created =
+        attendance::admin_create(&state, &ctx, &request.body, request.idempotency.as_ref()).await?;
+    Ok((StatusCode::CREATED, Json(created)))
 }
 
 async fn admin_edit(

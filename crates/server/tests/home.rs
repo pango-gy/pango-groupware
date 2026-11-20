@@ -800,14 +800,14 @@ async fn dashboard_lists_missing_clock_outs_of_the_last_7_days() {
             &s.admin.token,
             path,
             &open_record(member, date),
-            StatusCode::OK,
+            StatusCode::CREATED,
         )
         .await;
     }
     // 퇴근까지 찍힌 기록은 누락이 아니다.
     let mut closed = open_record(s.pat.id, "2026-02-27");
     closed["clock_out_at"] = json!(millis("2026-02-27T18:00:00"));
-    post(&s.app, &s.admin.token, path, &closed, StatusCode::OK).await;
+    post(&s.app, &s.admin.token, path, &closed, StatusCode::CREATED).await;
 
     let board = dashboard(&s.app, &s.admin.token).await;
     // 오늘 출근해 아직 근무 중인 kim·lee·carol의 오늘 기록은 누락이 아니다.

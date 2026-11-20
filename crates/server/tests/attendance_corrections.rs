@@ -707,7 +707,7 @@ async fn approval_fails_when_a_record_appeared_for_a_day_that_had_none() {
         }))
         .send()
         .await
-        .expect(StatusCode::OK);
+        .expect(StatusCode::CREATED);
 
     decide(&w.app, &w.lead.token, &doc, "approve")
         .await
