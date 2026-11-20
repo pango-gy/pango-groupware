@@ -8,11 +8,13 @@ use pango_api::org::{
     MemberQuery, MemberSummary, UpdateMemberRequest,
 };
 use pango_core::authz::{self, Role};
+use pango_core::calendar::check_date;
 use pango_core::error::{ConflictReason, ValidationReason};
 use pango_core::id::{DepartmentId, MemberId, PositionId};
-use pango_core::member::MemberStatus;
+use pango_core::member::{validate_hired_on, validate_retired_on, MemberStatus};
 use pango_core::password::PlainPassword;
 use pango_core::text::{optional, Email, LoginId, PersonName, Phone, SearchTerm};
+use pango_core::time::Timestamp;
 use pango_core::DomainError;
 use pango_db::members::{self, Member, MemberFilter};
 use pango_db::{org, sessions, Conn, DbError};
@@ -231,8 +233,26 @@ impl Profile {
             phone: optional(phone, Phone::parse)?.map(|p| p.as_str().to_owned()),
             department_id,
             position_id,
-            hired_on,
+            // 저장 표기로 쓸 수 없는 날짜는 다른 확인보다 먼저 거른다. 입사일로 받을 수 있는
+            // 기간은 회사 시간대의 오늘이 필요하므로 트랜잭션 안에서 확인한다.
+            hired_on: check_date("hired_on", hired_on)?,
         })
+    }
+
+    /// 새로 정하는 입사일이 받을 수 있는 기간 안인지. 이미 저장된 값을 그대로 두는 수정은
+    /// 확인하지 않는다(예전 값 때문에 이름조차 고칠 수 없게 되지 않도록).
+    async fn check_hired_on(
+        &self,
+        conn: &mut Conn,
+        current: Option<&Member>,
+        now: Timestamp,
+    ) -> ServiceResult<()> {
+        if current.is_some_and(|member| member.hired_on == self.hired_on) {
+            return Ok(());
+        }
+        let today = Company::load(conn).await?.today(now);
+        validate_hired_on(self.hired_on, today)?;
+        Ok(())
     }
 
     /// 새로 지정하는 부서·직책은 있어야 하고 보관되지 않아야 한다. 이미 갖고 있던 값은
@@ -302,6 +322,7 @@ pub async fn create_member(
     let member = state
         .write(async |conn: &mut Conn| {
             authz::require_admin(&current_actor(conn, ctx).await?)?;
+            profile.check_hired_on(conn, None, now).await?;
             profile.check_references(conn, None).await?;
             let member = Member {
                 id: MemberId::new(),
@@ -373,6 +394,7 @@ pub async fn update_member(
             authz::manage_account(&actor, &current.subject())?;
             // 낡은 화면에서 보낸 요청이 다른 검증 오류로 보이지 않도록 먼저 비교한다.
             require_updated(current.version == request.version)?;
+            profile.check_hired_on(conn, Some(&current), now).await?;
             profile.check_references(conn, Some(&current)).await?;
             if current
                 .retired_on
@@ -435,6 +457,9 @@ pub async fn change_status(
     if request.retired_on.is_some() && !retiring {
         return Err(DomainError::validation("retired_on", ValidationReason::Inconsistent).into());
     }
+    if let Some(date) = request.retired_on {
+        check_date("retired_on", date)?;
+    }
     let now = state.now();
     state
         .write(async |conn: &mut Conn| {
@@ -453,10 +478,8 @@ pub async fn change_status(
                 (true, Some(date)) => Some(date),
                 (true, None) => Some(Company::load(conn).await?.today(now)),
             };
-            if retired_on.is_some_and(|date| date < current.hired_on) {
-                return Err(
-                    DomainError::validation("retired_on", ValidationReason::Inconsistent).into(),
-                );
+            if let Some(date) = retired_on {
+                validate_retired_on(date, current.hired_on)?;
             }
             let active_owners = members::count_active_owners(conn).await?;
             authz::keep_an_owner(

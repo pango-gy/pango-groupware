@@ -20,7 +20,7 @@ use pango_api::leave::{
 use pango_api::Page;
 use pango_core::approval::DocumentKind;
 use pango_core::authz;
-use pango_core::calendar::{parse_month, DateRange};
+use pango_core::calendar::{check_date, parse_month, DateRange};
 use pango_core::error::{ConflictReason, ValidationReason};
 use pango_core::id::{DocumentId, LeaveLedgerEntryId, LeaveRequestId, LeaveTypeId, MemberId};
 use pango_core::leave::{
@@ -57,14 +57,10 @@ fn out_of_range(field: &'static str) -> ServiceError {
     DomainError::validation(field, ValidationReason::OutOfRange).into()
 }
 
-/// 날짜가 네 자리 연도로 표기되는 범위인지 확인한다. JSON으로는 `+10000-01-01` 같은
-/// 값도 들어올 수 있는데, 그대로 저장하면 날짜 열을 다시 읽지 못한다.
+/// 값으로 받은 날짜가 저장 표기로 쓸 수 있는 범위인지 확인한다. 날짜를 받는 모든 입력이
+/// 같은 규칙([`check_date`])을 쓴다.
 fn plain_date(field: &'static str, date: NaiveDate) -> ServiceResult<NaiveDate> {
-    if YEARS.contains(&date.year()) {
-        Ok(date)
-    } else {
-        Err(out_of_range(field))
-    }
+    Ok(check_date(field, date)?)
 }
 
 // ───────────── 초기 데이터 ─────────────

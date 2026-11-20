@@ -1890,7 +1890,7 @@ async fn malformed_requests_are_rejected_without_side_effects() {
         ("end_date", json!("2026-03-09"), "date_range"),
         ("end_date", json!("2027-04-14"), "date_range"),
         ("end_date", json!("+10000-01-01"), "end_date"),
-        ("start_date", json!("1999-12-31"), "start_date"),
+        ("start_date", json!("1899-12-31"), "start_date"),
         ("reason", json!(""), "reason"),
         ("reason", json!(" \n "), "reason"),
         ("reason", json!(long_reason), "reason"),

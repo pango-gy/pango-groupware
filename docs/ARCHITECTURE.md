@@ -48,7 +48,8 @@ UUID v7을 타입별 newtype(`MemberId`, `DocumentId` …)으로 감쌉니다. D
 
 ### 시간
 - 시각은 `Timestamp`(UTC, 밀리초 정수)로 저장·전송합니다.
-- 날짜는 `YYYY-MM-DD` 문자열(`NaiveDate`)입니다.
+- 날짜는 `YYYY-MM-DD` 문자열(`NaiveDate`)입니다. 연도는 **1900~9999년**만 받습니다. 문자열로 받은 날짜는 `calendar::parse_date`, JSON에서 값으로 읽힌 날짜는 `calendar::check_date`를 거친 뒤에만 저장합니다(둘은 같은 범위). 범위 밖의 날짜(`0202-03-02`, `+10000-01-01`)는 저장 표기가 깨져 그 행을 다시 읽지 못하게 만들기 때문입니다.
+- 입사일은 1950-01-01부터 회사 시간대 기준 오늘의 1년 뒤까지만 새로 정할 수 있고, 퇴사일은 입사일보다 이를 수 없습니다(`member::validate_hired_on`·`validate_retired_on`, 400 `validation_failed` + `field`). `members`의 두 날짜 열은 DB 트리거(`0003_member_date_checks.sql`)로도 표기와 1900년 하한을 강제합니다.
 - **근무일(work date)** 은 회사 시간대 기준 날짜에 `day_cutoff`(기본 05:00)를 적용한 값입니다. 새벽 01:00 퇴근은 전날 근무일에 속합니다.
 - 현재 시각은 `Clock` 트레이트로 주입합니다. 코드에서 `Utc::now()`를 직접 부르지 않습니다.
 

@@ -161,6 +161,19 @@ pub fn parse_date(field: &'static str, raw: &str) -> DomainResult<NaiveDate> {
     NaiveDate::from_ymd_opt(year, month, day).ok_or_else(invalid)
 }
 
+/// 이미 날짜 값으로 읽힌 입력(JSON의 `NaiveDate`)이 [`parse_date`]와 같은 연도 범위인지 확인한다.
+///
+/// chrono는 `0202-03-02`나 `+10000-01-01`도 날짜로 읽는다. 그런 값을 저장하면 `YYYY-MM-DD`
+/// 고정 폭이 깨져 다시 읽을 때 [`parse_date`]가 거부하므로(행 전체를 읽지 못한다), 날짜를
+/// 값으로 받는 모든 입력은 저장 전에 이 함수를 거친다. 범위 밖이면 `OutOfRange`.
+pub fn check_date(field: &'static str, date: NaiveDate) -> DomainResult<NaiveDate> {
+    if (MIN_INPUT_YEAR..=MAX_INPUT_YEAR).contains(&date.year()) {
+        Ok(date)
+    } else {
+        Err(DomainError::validation(field, ValidationReason::OutOfRange))
+    }
+}
+
 /// 근무 요일 + 공휴일.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkCalendar {
@@ -395,6 +408,36 @@ mod tests {
                 )),
                 "accepted {bad:?}"
             );
+        }
+    }
+
+    #[test]
+    fn check_date_accepts_exactly_what_parse_date_can_read_back() {
+        let ymd = |y, m, day| NaiveDate::from_ymd_opt(y, m, day).expect("date");
+        for ok in [ymd(1900, 1, 1), ymd(2028, 2, 29), ymd(9999, 12, 31)] {
+            assert_eq!(check_date("hired_on", ok), Ok(ok));
+            // 저장 표기로 쓴 뒤 다시 읽을 수 있어야 한다.
+            let text = ok.format("%Y-%m-%d").to_string();
+            assert_eq!(parse_date("hired_on", &text), Ok(ok));
+        }
+        for bad in [
+            ymd(202, 3, 2),
+            ymd(1899, 12, 31),
+            ymd(10000, 1, 1),
+            ymd(-1, 1, 1),
+            NaiveDate::MIN,
+            NaiveDate::MAX,
+        ] {
+            assert_eq!(
+                check_date("hired_on", bad),
+                Err(DomainError::validation(
+                    "hired_on",
+                    ValidationReason::OutOfRange
+                )),
+                "accepted {bad}"
+            );
+            let text = bad.format("%Y-%m-%d").to_string();
+            assert!(parse_date("hired_on", &text).is_err(), "read back {text}");
         }
     }
 

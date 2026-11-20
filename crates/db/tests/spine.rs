@@ -942,3 +942,90 @@ async fn active_member_counts_are_grouped_per_department() {
         "정지·퇴사·무소속은 세지 않고 빈 부서는 없다"
     );
 }
+
+// ── 구성원 날짜 트리거(0003) ─────────────────────────────────────────────
+
+/// 저장 표기로 다시 읽을 수 없는 날짜는 어떤 경로로 들어와도 DB가 거부한다.
+#[tokio::test]
+async fn member_date_triggers_reject_unreadable_dates() {
+    let db = TestDb::new().await;
+    let good = insert_member(&db, "good").await;
+    let ymd = |y, m, d| NaiveDate::from_ymd_opt(y, m, d).expect("date");
+
+    for bad in [ymd(202, 3, 2), ymd(10000, 1, 1), ymd(1899, 12, 31)] {
+        // 넣기: 입사일.
+        let mut tx = db.begin_write().await.expect("begin");
+        let mut new = member("bad-hire");
+        new.hired_on = bad;
+        let error = members::insert(&mut tx, &new, "hash", ts(1))
+            .await
+            .expect_err("insert must fail");
+        assert!(error.to_string().contains("hired_on/retired_on"), "{error}");
+        drop(tx);
+        // 넣기: 퇴사일.
+        let mut tx = db.begin_write().await.expect("begin");
+        let mut new = member("bad-retire");
+        new.retired_on = Some(bad);
+        assert!(members::insert(&mut tx, &new, "hash", ts(1)).await.is_err());
+        drop(tx);
+        // 고치기: 입사일, 퇴사일.
+        for field in ["hired_on", "retired_on"] {
+            let mut tx = db.begin_write().await.expect("begin");
+            let mut changed = good.clone();
+            if field == "hired_on" {
+                changed.hired_on = bad;
+            } else {
+                changed.retired_on = Some(bad);
+            }
+            assert!(
+                members::update(&mut tx, &changed, ts(2)).await.is_err(),
+                "{field} {bad}"
+            );
+            drop(tx);
+        }
+    }
+    // 표기는 맞지만 달력에 없는 날짜·다른 표기도 거부한다(코드를 거치지 않은 직접 쓰기).
+    for raw in [
+        "2026-02-30",
+        "2026-3-2",
+        "2026-03-02T00:00:00",
+        "",
+        "20260302",
+    ] {
+        let mut tx = db.begin_write().await.expect("begin");
+        let result = sqlx::query("UPDATE members SET hired_on = ? WHERE id = ?")
+            .bind(raw)
+            .bind(good.id.to_string())
+            .execute(&mut *tx)
+            .await;
+        assert!(result.is_err(), "accepted {raw:?}");
+    }
+
+    // 거부된 뒤에도 행은 그대로 읽힌다.
+    let mut conn = db.read().await.expect("read");
+    assert_eq!(
+        members::find(&mut conn, good.id).await.expect("find"),
+        Some(good.clone())
+    );
+    assert_eq!(
+        members::list(&mut conn, &MemberFilter::default())
+            .await
+            .expect("list")
+            .len(),
+        1
+    );
+    drop(conn);
+
+    // 경계값과 날짜가 아닌 열의 수정은 그대로 된다.
+    let mut tx = db.begin_write().await.expect("begin");
+    let mut edge = good.clone();
+    edge.hired_on = ymd(1900, 1, 1);
+    edge.retired_on = Some(ymd(9999, 12, 31));
+    assert!(members::update(&mut tx, &edge, ts(3))
+        .await
+        .expect("update"));
+    members::set_password(&mut tx, good.id, "hash2", false, ts(4))
+        .await
+        .expect("password");
+    tx.commit().await.expect("commit");
+}

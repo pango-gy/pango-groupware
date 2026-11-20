@@ -1612,3 +1612,160 @@ async fn directory_search_cannot_probe_login_ids() {
     let admin = search("/admin/members?search=owne", app.login_owner().await).await;
     assert_eq!(admin.as_array().expect("array").len(), 1);
 }
+
+// ── 날짜 범위 ─────────────────────────────────────────────────────────────
+
+fn field_error(response: TestResponse, field: &str) {
+    assert_eq!(
+        (
+            response.status,
+            response.error_code(),
+            response.body["error"]["field"].as_str()
+        ),
+        (StatusCode::BAD_REQUEST, "validation_failed", Some(field)),
+        "body: {}",
+        response.body
+    );
+}
+
+async fn listings_work(w: &World) {
+    for (path, token) in [
+        ("/members", &w.member.token),
+        ("/admin/members?include_inactive=true", &w.owner),
+        ("/team/members", &w.manager.token),
+        ("/admin/leave/balances", &w.owner),
+        ("/admin/dashboard", &w.owner),
+    ] {
+        w.app
+            .get(path)
+            .bearer(token)
+            .send()
+            .await
+            .expect(StatusCode::OK);
+    }
+}
+
+/// chrono는 `0202-03-02`와 `+10000-01-01`도 날짜로 읽는다. 저장되면 그 행을 다시 읽지 못해
+/// 구성원 목록 전체가 500이 되므로 경계에서 거부해야 한다.
+#[tokio::test]
+async fn hire_dates_that_cannot_be_read_back_are_rejected_and_listings_keep_working() {
+    let w = world().await;
+    let before = snapshot(&w.app).await;
+    // 오늘은 2026-03-02. 1950-01-01 이전과 1년 뒤(2027-03-02) 이후는 받지 않는다.
+    for bad in [
+        "0202-03-02",
+        "+10000-01-01",
+        "-0001-01-01",
+        "1899-12-31",
+        "1949-12-31",
+        "2027-03-03",
+        "9999-12-31",
+    ] {
+        let mut body = new_member("far");
+        body["hired_on"] = json!(bad);
+        let created = w
+            .app
+            .post("/admin/members")
+            .bearer(&w.owner)
+            .json(&body)
+            .send()
+            .await;
+        field_error(created, "hired_on");
+        let mut body = profile(1, "member 님");
+        body["hired_on"] = json!(bad);
+        field_error(
+            update(&w.app, &w.owner, w.member.id, &body).await,
+            "hired_on",
+        );
+    }
+    assert_eq!(snapshot(&w.app).await, before);
+    listings_work(&w).await;
+
+    // 경계값은 받는다.
+    for (login_id, ok) in [("oldest", "1950-01-01"), ("newest", "2027-03-02")] {
+        let mut body = new_member(login_id);
+        body["hired_on"] = json!(ok);
+        assert_eq!(
+            create(&w.app, &w.owner, &body).await["member"]["hired_on"],
+            ok
+        );
+    }
+    let mut body = profile(1, "member 님");
+    body["hired_on"] = json!("1950-01-01");
+    update(&w.app, &w.owner, w.member.id, &body)
+        .await
+        .expect(StatusCode::OK);
+    listings_work(&w).await;
+}
+
+#[tokio::test]
+async fn retirement_dates_that_cannot_be_read_back_are_rejected() {
+    let w = world().await;
+    let before = snapshot(&w.app).await;
+    for bad in ["+10000-01-01", "+262142-12-31"] {
+        field_error(
+            change_status(
+                &w.app,
+                &w.owner,
+                w.admin.id,
+                json!({ "version": 1, "status": "retired", "retired_on": bad }),
+            )
+            .await,
+            "retired_on",
+        );
+    }
+    // 입사일(2024-03-02)보다 이른 날은 표기 범위 밖이든 안이든 거부한다.
+    for bad in ["0202-03-02", "2024-03-01"] {
+        field_error(
+            change_status(
+                &w.app,
+                &w.owner,
+                w.admin.id,
+                json!({ "version": 1, "status": "retired", "retired_on": bad }),
+            )
+            .await,
+            "retired_on",
+        );
+    }
+    assert_eq!(snapshot(&w.app).await, before);
+    listings_work(&w).await;
+    change_status(
+        &w.app,
+        &w.owner,
+        w.admin.id,
+        json!({ "version": 1, "status": "retired", "retired_on": "9999-12-31" }),
+    )
+    .await
+    .expect(StatusCode::OK);
+    listings_work(&w).await;
+}
+
+/// 예전에 저장된(지금 기준으로는 창 밖인) 입사일은, 그 값을 그대로 둔 채 다른 항목을 고칠 수 있다.
+#[tokio::test]
+async fn legacy_hire_date_outside_the_window_can_stay_while_other_fields_change() {
+    let w = world().await;
+    let mut tx = w.app.state.db.begin_write().await.expect("begin");
+    let mut member = members::find(&mut tx, w.member.id)
+        .await
+        .expect("find")
+        .expect("m");
+    member.hired_on = "1940-05-01".parse().expect("date");
+    assert!(members::update(&mut tx, &member, w.app.state.now())
+        .await
+        .expect("update"));
+    tx.commit().await.expect("commit");
+
+    let mut body = profile(2, "새 이름");
+    body["hired_on"] = json!("1940-05-01");
+    let updated = update(&w.app, &w.owner, w.member.id, &body)
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(updated["name"], "새 이름");
+    // 다른 창 밖 날짜로 바꾸는 것은 안 된다.
+    let mut body = profile(3, "새 이름");
+    body["hired_on"] = json!("1940-05-02");
+    field_error(
+        update(&w.app, &w.owner, w.member.id, &body).await,
+        "hired_on",
+    );
+}
