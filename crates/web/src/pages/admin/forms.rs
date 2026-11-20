@@ -13,7 +13,7 @@ use crate::session::use_session;
 use crate::text;
 use crate::ui::{
     now, report_error, report_success, resource_view, use_more_pages, Badge, Button, ButtonKind,
-    Card, CharCount, Checkbox, EmptyState, FormError, IconName, LoadMore, Modal, PageHeader,
+    Card, CharCount, Checkbox, EmptyState, FormError, IconName, LoadMore, Meta, Modal, PageHeader,
     SelectField, TextArea, TextField, Tone,
 };
 
@@ -147,8 +147,8 @@ pub(crate) mod logic {
     /// 양식 저장 실패 중 이 화면에서 더 구체적으로 알려 줄 수 있는 것.
     pub fn form_conflict_message(code: &str) -> Option<&'static str> {
         match code {
-            "in_use" => Some("시스템 양식은 사용 중지할 수 없습니다."),
-            "already_exists" => Some("같은 코드의 양식이 이미 있습니다. 다른 코드를 써 주세요."),
+            "in_use" => Some("시스템 양식은 사용 중지할 수 없어요."),
+            "already_exists" => Some("같은 코드의 양식이 이미 있어요. 다른 코드를 써 주세요."),
             _ => None,
         }
     }
@@ -203,7 +203,7 @@ pub fn AdminApprovalForms() -> Element {
     rsx! {
         PageHeader {
             title: "결재 양식",
-            subtitle: "기안할 때 고르는 양식과 본문 틀을 관리합니다.",
+            description: "기안할 때 고르는 양식과 본문 틀을 관리해요.",
             actions: rsx! {
                 Button { onclick: move |_| editor.set(Some(Editor::New)), "새 양식" }
             },
@@ -211,23 +211,19 @@ pub fn AdminApprovalForms() -> Element {
         Card {
             {resource_view(forms, move |list: Vec<FormDto>| rsx! {
                 if list.is_empty() {
-                    EmptyState { title: "양식이 없습니다.", icon: IconName::Document }
+                    EmptyState { title: "양식이 없어요.", icon: IconName::Document }
                 } else {
                     ul { class: "list",
                         for form in list {
                             li { key: "{form.id}", class: "list-row",
                                 div { class: "list-row-main",
                                     strong { "{form.name}" }
-                                    small {
-                                        "{form.code}"
-                                        if !form.description.is_empty() {
-                                            " · {form.description}"
-                                        }
-                                    }
+                                    Meta { items: vec![form.code.to_string(), form.description.clone()] }
                                 }
                                 div { class: "list-row-side list-row-side-inline",
                                     if logic::is_system(&form) {
-                                        Badge { tone: Tone::Info, "시스템 · {text::document_kind_label(form.kind)}" }
+                                        Badge { tone: Tone::Info, "시스템" }
+                                        Badge { tone: Tone::Neutral, {text::document_kind_label(form.kind)} }
                                     }
                                     if form.active {
                                         Badge { tone: Tone::Success, "사용 중" }
@@ -235,7 +231,7 @@ pub fn AdminApprovalForms() -> Element {
                                         Badge { tone: Tone::Neutral, "사용 안 함" }
                                     }
                                     Button {
-                                        kind: ButtonKind::Secondary,
+                                        kind: ButtonKind::Grey,
                                         small: true,
                                         onclick: {
                                             let form = form.clone();
@@ -251,7 +247,7 @@ pub fn AdminApprovalForms() -> Element {
             })}
         }
         Card { title: "전체 문서",
-            div { class: "filters filters-narrow",
+            div { class: "toolbar",
                 SelectField {
                     label: "상태",
                     value: status(),
@@ -260,7 +256,7 @@ pub fn AdminApprovalForms() -> Element {
                 }
             }
             p { class: "field-hint",
-                "차례인 결재자가 퇴사·정지해 멈춘 진행 중 문서는 문서를 열어 관리자 대리 반려로 끝낼 수 있습니다. 본인이 기안한 문서는 대리 반려할 수 없습니다."
+                "차례인 결재자가 퇴사·정지해 멈춘 진행 중 문서는 문서를 열어 관리자 대리 반려로 끝낼 수 있어요. 본인이 기안한 문서는 대리 반려할 수 없어요."
             }
             {resource_view(docs, move |page: Page<DocumentSummary>| {
                 let next = more.cursor(&page);
@@ -269,7 +265,7 @@ pub fn AdminApprovalForms() -> Element {
                 let items: Vec<DocumentSummary> = more.all(page.items, |item| item.id);
                 rsx! {
                     if items.is_empty() {
-                        EmptyState { title: "조건에 맞는 문서가 없습니다.", icon: IconName::Inbox }
+                        EmptyState { title: "조건에 맞는 문서가 없어요.", icon: IconName::Inbox }
                     } else {
                         div { class: "list",
                             for doc in items {
@@ -370,9 +366,9 @@ fn FormEditor(
             Ok(_) => {
                 key.set(api::new_idempotency_key());
                 report_success(if creating {
-                    "양식을 만들었습니다."
+                    "양식을 만들었어요."
                 } else {
-                    "양식을 저장했습니다."
+                    "양식을 저장했어요."
                 });
                 onsaved.call(());
             }
@@ -398,7 +394,7 @@ fn FormEditor(
                         value: code(),
                         required: true,
                         maxlength: Code::MAX_LEN as i64,
-                        hint: "영문 소문자로 시작하고 소문자·숫자·_만 씁니다. 만든 뒤에는 바꿀 수 없습니다.",
+                        hint: "영문 소문자로 시작하고 소문자·숫자·_만 써요. 만든 뒤에는 바꿀 수 없어요.",
                         error: problems.code.clone(),
                         oninput: move |value| code.set(value),
                     }
@@ -447,7 +443,7 @@ fn FormEditor(
                     label: "정렬 순서",
                     kind: "number",
                     value: sort_order(),
-                    hint: "작은 수가 앞에 옵니다.",
+                    hint: "작은 수가 앞에 와요.",
                     error: problems.sort_order.clone(),
                     oninput: move |value| sort_order.set(value),
                 }
@@ -456,12 +452,12 @@ fn FormEditor(
                         label: "사용 중",
                         checked: active(),
                         disabled: system,
-                        hint: if system { "시스템 양식은 연결된 기능이 쓰므로 끌 수 없습니다." } else { "끄면 새 문서에서 고를 수 없습니다. 이미 쓴 문서는 그대로입니다." },
+                        hint: if system { "시스템 양식은 연결된 기능이 쓰므로 끌 수 없어요." } else { "끄면 새 문서에서 고를 수 없어요. 이미 쓴 문서는 그대로예요." },
                         onchange: move |value| active.set(value),
                     }
                 }
                 div { class: "modal-actions",
-                    Button { kind: ButtonKind::Secondary, disabled: busy(), onclick: move |_| onclose.call(()), "취소" }
+                    Button { kind: ButtonKind::Grey, disabled: busy(), onclick: move |_| onclose.call(()), "취소" }
                     Button { busy: busy(), onclick: save, "저장" }
                 }
             }

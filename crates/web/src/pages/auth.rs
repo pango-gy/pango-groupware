@@ -7,7 +7,7 @@ use pango_api::Empty;
 use crate::api;
 use crate::route::Route;
 use crate::session::{self, use_session, SessionState};
-use crate::ui::{Button, ButtonKind, ErrorState, FormError, Spinner, TextField};
+use crate::ui::{Button, ButtonKind, ErrorState, FormError, Skeleton, TextField};
 
 #[component]
 pub fn Login() -> Element {
@@ -58,16 +58,13 @@ pub fn Login() -> Element {
             };
         }
         SessionState::Loading | SessionState::SignedIn(_) => {
-            return rsx! { div { class: "boot", Spinner {} } };
+            return rsx! { div { class: "boot", Skeleton {} } };
         }
     }
     rsx! {
         main { class: "auth",
             form { class: "auth-card", onsubmit: submit,
-                div { class: "brand brand-lg",
-                    span { class: "brand-mark", "P" }
-                    span { class: "brand-name", "pango" }
-                }
+                p { class: "auth-brand", "pango" }
                 h1 { class: "auth-title", "로그인" }
                 FormError { message: error() }
                 TextField {
@@ -87,8 +84,8 @@ pub fn Login() -> Element {
                     maxlength: 128,
                     oninput: move |value| password.set(value),
                 }
-                Button { submit: true, block: true, busy: busy(), "로그인" }
-                p { class: "auth-hint", "계정은 관리자가 발급합니다. 비밀번호를 잊었다면 관리자에게 초기화를 요청하세요." }
+                Button { submit: true, block: true, large: true, busy: busy(), "로그인" }
+                p { class: "auth-hint", "계정은 관리자가 발급해요. 비밀번호를 잊었다면 관리자에게 초기화를 요청해 주세요." }
             }
         }
     }
@@ -120,7 +117,7 @@ pub fn ChangePassword() -> Element {
             return;
         }
         if new_password() != confirm() {
-            error.set("새 비밀번호가 서로 다릅니다.".into());
+            error.set("새 비밀번호가 서로 달라요.".into());
             return;
         }
         busy.set(true);
@@ -149,7 +146,7 @@ pub fn ChangePassword() -> Element {
             };
         }
         SessionState::Loading | SessionState::SignedOut => {
-            return rsx! { div { class: "boot", Spinner {} } };
+            return rsx! { div { class: "boot", Skeleton {} } };
         }
     }
     rsx! {
@@ -157,7 +154,7 @@ pub fn ChangePassword() -> Element {
             form { class: "auth-card", onsubmit: submit,
                 h1 { class: "auth-title", "비밀번호 변경" }
                 if forced {
-                    p { class: "auth-hint", "임시 비밀번호로 로그인했습니다. 계속하려면 새 비밀번호를 정해 주세요." }
+                    p { class: "auth-hint", "임시 비밀번호로 로그인했어요. 계속하려면 새 비밀번호를 정해 주세요." }
                 }
                 FormError { message: error() }
                 TextField {
@@ -174,7 +171,7 @@ pub fn ChangePassword() -> Element {
                     kind: "password",
                     value: new_password(),
                     autocomplete: "new-password",
-                    hint: "10자 이상. 아이디가 들어가면 안 됩니다.",
+                    hint: "10자 이상이어야 하고, 아이디가 들어가면 안 돼요.",
                     required: true,
                     maxlength: 128,
                     oninput: move |value| new_password.set(value),
@@ -184,16 +181,16 @@ pub fn ChangePassword() -> Element {
                     kind: "password",
                     value: confirm(),
                     autocomplete: "new-password",
-                    error: if mismatch { "새 비밀번호와 다릅니다." } else { "" },
+                    error: if mismatch { "새 비밀번호와 달라요." } else { "" },
                     required: true,
                     maxlength: 128,
                     oninput: move |value| confirm.set(value),
                 }
-                Button { submit: true, block: true, busy: busy(), "변경" }
+                Button { submit: true, block: true, large: true, busy: busy(), "변경" }
                 if forced {
                     // 임시 비밀번호를 받은 사람이 아니면(공용 PC 등) 여기서 빠져나갈 수 있어야 한다.
                     Button {
-                        kind: ButtonKind::Ghost,
+                        kind: ButtonKind::Grey,
                         block: true,
                         disabled: busy(),
                         onclick: move |_| session::logout(session, nav),

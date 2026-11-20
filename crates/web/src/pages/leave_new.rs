@@ -11,7 +11,7 @@ use crate::session::use_session;
 use crate::text;
 use crate::ui::{
     report_success, today, use_line_draft, ApprovalLineEditor, ApproverEntry, Button, ButtonKind,
-    Card, DateField, ErrorState, FormError, PageHeader, SelectField, Spinner, TextArea,
+    Card, DateField, ErrorState, FormError, PageHeader, SelectField, Skeleton, TextArea,
 };
 
 use logic::Slot;
@@ -90,7 +90,7 @@ pub fn LeaveNew() -> Element {
         server_error.set(None);
         match api::post_once::<_, LeaveRequestDto>("/leave/requests", &request, &key()).await {
             Ok(_) => {
-                report_success("휴가를 신청했습니다. 결재가 끝나면 알려 드립니다.");
+                report_success("휴가를 신청했어요. 결재가 끝나면 알려 드려요.");
                 nav.push(Route::Leave {});
                 // 화면을 떠나므로 버튼을 다시 풀지 않는다(이동 전 두 번째 제출 방지).
                 return;
@@ -141,17 +141,17 @@ pub fn LeaveNew() -> Element {
     };
 
     rsx! {
-        PageHeader { title: "휴가 신청" }
+        PageHeader { title: "휴가 신청", description: "신청하면 결재선에 따라 결재가 진행돼요." }
         if types_state == logic::Load::Loading {
-            Spinner {}
+            Skeleton {}
         } else if let logic::Load::Failed(message) = types_state {
             ErrorState { message, onretry: move |_| types.restart() }
         } else if type_list.is_empty() {
             Card {
-                FormError { message: "신청할 수 있는 휴가 종류가 없습니다. 관리자에게 문의해 주세요." }
+                FormError { message: "신청할 수 있는 휴가 종류가 없어요. 관리자에게 문의해 주세요." }
             }
         } else {
-            form { class: "form leave-form", onsubmit: submit,
+            form { class: "page-form", onsubmit: submit,
                 Card {
                     div { class: "form",
                         FormError { message: error_for(Slot::Form) }
@@ -206,7 +206,7 @@ pub fn LeaveNew() -> Element {
                                 min: start(),
                                 required: true,
                                 disabled: partial,
-                                hint: if partial { "반차·반반차는 하루만 신청할 수 있습니다." } else { "" },
+                                hint: if partial { "반차·반반차는 하루만 신청할 수 있어요." } else { "" },
                                 error: dates_error,
                                 oninput: move |value: String| {
                                     end.set(value);
@@ -239,7 +239,7 @@ pub fn LeaveNew() -> Element {
                 }
                 Card { title: "결재선",
                     if !line.ready() {
-                        Spinner {}
+                        Skeleton {}
                     } else {
                         ApprovalLineEditor {
                             steps: line.steps(),
@@ -254,7 +254,7 @@ pub fn LeaveNew() -> Element {
                     }
                 }
                 div { class: "form-actions",
-                    Link { class: "btn btn-ghost", to: Route::Leave {}, "취소" }
+                    Link { class: "btn btn-grey", to: Route::Leave {}, "취소" }
                     Button {
                         kind: ButtonKind::Primary,
                         submit: true,
@@ -289,22 +289,22 @@ fn LeaveSummary(preview: Result<logic::Preview, logic::Problem>) -> Element {
     match preview {
         Ok(preview) => {
             let class = if preview.short_of_balance() {
-                "leave-summary leave-summary-warn"
+                "callout callout-stack callout-warning"
             } else {
-                "leave-summary"
+                "callout callout-stack callout-info"
             };
             rsx! {
                 div { class, role: "status",
                     strong { {logic::summary_text(&preview)} }
                     if preview.short_of_balance() {
-                        span { "지금 잔여보다 많습니다. 휴가 시작일 기준 잔여로 서버가 다시 확인합니다." }
+                        span { "지금 잔여보다 많아요. 휴가 시작일 기준 잔여로 서버가 다시 확인해요." }
                     }
-                    small { class: "field-hint", "근무일이 아닌 날을 뺀 미리보기입니다. 공휴일은 신청할 때 서버가 반영합니다." }
+                    small { "근무일이 아닌 날을 뺀 미리보기예요. 공휴일은 신청할 때 서버가 반영해요." }
                 }
             }
         }
         Err(problem) => rsx! {
-            div { class: "leave-summary leave-summary-muted", role: "status",
+            div { class: "callout", role: "status",
                 span { {problem.message()} }
             }
         },
@@ -367,13 +367,13 @@ pub(crate) mod logic {
                 Self::NoType => "휴가 종류를 골라 주세요.",
                 Self::InvalidStart => "시작일을 골라 주세요.",
                 Self::InvalidEnd => "종료일을 골라 주세요.",
-                Self::EndBeforeStart => "종료일이 시작일보다 빠릅니다.",
-                Self::TooLong => "한 번에 1년 넘게 신청할 수 없습니다.",
-                Self::PartialAcrossDays => "반차·반반차는 하루만 신청할 수 있습니다.",
-                Self::PartialNotAllowed => "이 휴가 종류는 종일로만 쓸 수 있습니다.",
-                Self::NoWorkingDays => "선택한 기간에 근무일이 없습니다.",
+                Self::EndBeforeStart => "종료일이 시작일보다 빨라요.",
+                Self::TooLong => "한 번에 1년 넘게 신청할 수 없어요.",
+                Self::PartialAcrossDays => "반차·반반차는 하루만 신청할 수 있어요.",
+                Self::PartialNotAllowed => "이 휴가 종류는 종일로만 쓸 수 있어요.",
+                Self::NoWorkingDays => "선택한 기간에 근무일이 없어요.",
                 Self::BlankReason => "사유를 입력해 주세요.",
-                Self::ReasonTooLong => "사유는 1,000자까지 쓸 수 있습니다.",
+                Self::ReasonTooLong => "사유는 1,000자까지 쓸 수 있어요.",
                 Self::Line(message) => message,
             }
         }

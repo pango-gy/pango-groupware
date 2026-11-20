@@ -69,9 +69,9 @@ pub fn Notifications() -> Element {
         }
         marking_all.set(true);
         match api::post::<_, ReadAllResult>("/notifications/read-all", &Empty {}).await {
-            Ok(result) if result.updated == 0 => report_success("읽지 않은 알림이 없습니다."),
+            Ok(result) if result.updated == 0 => report_success("읽지 않은 알림이 없어요."),
             Ok(result) => {
-                report_success(format!("알림 {}개를 읽음 처리했습니다.", result.updated));
+                report_success(format!("알림 {}개를 읽음 처리했어요.", result.updated));
                 first.restart();
             }
             Err(error) => report_error(&error),
@@ -96,8 +96,7 @@ pub fn Notifications() -> Element {
             title: "알림",
             actions: rsx! {
                 Button {
-                    kind: ButtonKind::Secondary,
-                    small: true,
+                    kind: ButtonKind::Weak,
                     busy: marking_all(),
                     onclick: mark_all,
                     "모두 읽음"
@@ -116,7 +115,7 @@ pub fn Notifications() -> Element {
             rsx! {
                 if items.is_empty() {
                     EmptyState {
-                        title: if unread_only() { "읽지 않은 알림이 없습니다." } else { "받은 알림이 없습니다." },
+                        title: if unread_only() { "읽지 않은 알림이 없어요." } else { "받은 알림이 없어요." },
                         icon: IconName::Bell,
                     }
                 } else {
@@ -181,7 +180,7 @@ fn NotificationRow(
         }
     };
     rsx! {
-        li { class: "list-row notification-item",
+        li { class: "list-row",
             if has_link || unread {
                 button {
                     class,

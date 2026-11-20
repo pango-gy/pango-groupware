@@ -7,11 +7,10 @@ use dioxus::prelude::*;
 use pango_api::org::{DepartmentDto, MemberSummary};
 
 use crate::api;
-use crate::format;
 use crate::org_tree::{self, DepartmentRow};
 use crate::ui::{
-    loaded_or_empty, resource_view, Avatar, Card, EmptyState, IconName, PageHeader, SelectField,
-    TextField,
+    loaded_or_empty, resource_view, Avatar, Card, EmptyState, IconName, Meta, PageHeader,
+    SelectField, TextField,
 };
 
 #[component]
@@ -31,24 +30,26 @@ pub fn People() -> Element {
     let rows = org_tree::department_tree(&department_list);
 
     rsx! {
-        PageHeader { title: "구성원" }
+        PageHeader { title: "구성원", description: "함께 일하는 사람들의 소속과 연락처예요." }
         div { class: "people-layout",
             DepartmentFilter {
                 rows,
                 selected: department(),
                 onselect: move |value| department.set(value),
             }
-            div { class: "people-main",
-                div { class: "filters people-filters",
-                    TextField {
-                        label: "검색",
-                        kind: "search",
-                        value: search(),
-                        placeholder: "이름으로 찾기",
-                        maxlength: 50,
-                        oninput: move |value| search.set(value),
+            Card {
+                div { class: "toolbar",
+                    div { class: "toolbar-wide",
+                        TextField {
+                            label: "검색",
+                            kind: "search",
+                            value: search(),
+                            placeholder: "이름으로 찾기",
+                            maxlength: 50,
+                            oninput: move |value| search.set(value),
+                        }
                     }
-                    div { class: "only-mobile",
+                    div { class: "only-mobile toolbar-wide",
                         SelectField {
                             label: "부서",
                             value: department(),
@@ -59,17 +60,20 @@ pub fn People() -> Element {
                 }
                 {resource_view(members, |list: Vec<MemberSummary>| rsx! {
                     if list.is_empty() {
-                        EmptyState { title: "조건에 맞는 구성원이 없습니다.", icon: IconName::People }
+                        EmptyState { title: "조건에 맞는 구성원이 없어요.", icon: IconName::People }
                     } else {
-                        Card {
+                        div {
                             ul { class: "list",
                                 for member in list {
                                     li { key: "{member.id}", class: "list-row",
-                                        Avatar { name: member.name.clone() }
+                                        Avatar { name: member.name.clone(), seed: member.id.to_string() }
                                         div { class: "list-row-main",
                                             strong { "{member.name}" }
-                                            small {
-                                                {format::org_line(member.department_name.as_deref(), member.position_name.as_deref())}
+                                            Meta {
+                                                items: vec![
+                                                    member.department_name.clone().unwrap_or_default(),
+                                                    member.position_name.clone().unwrap_or_default(),
+                                                ],
                                             }
                                         }
                                         div { class: "list-row-side people-contact",
@@ -125,7 +129,7 @@ fn DepartmentFilter(
                     }
                 }
             }
-            p { class: "dept-nav-hint", "선택한 부서에 직접 속한 구성원만 보입니다." }
+            p { class: "dept-nav-hint", "선택한 부서에 직접 속한 구성원만 보여요." }
         }
     }
 }

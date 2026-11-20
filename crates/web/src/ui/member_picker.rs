@@ -4,9 +4,8 @@ use dioxus::prelude::*;
 use pango_api::org::MemberSummary;
 use pango_core::id::MemberId;
 
-use super::{Avatar, Icon, IconName};
+use super::{Avatar, Icon, IconName, Meta};
 use crate::api;
-use crate::format;
 
 /// 이름으로 찾아 한 명을 고른다. 고르면 `onpick`이 불리고 검색어가 비워진다.
 ///
@@ -55,7 +54,7 @@ pub fn MemberPicker(
             if searching {
                 div { class: "picker-results",
                     if candidates.is_empty() {
-                        p { class: "picker-empty", role: "status", "찾는 구성원이 없습니다." }
+                        p { class: "picker-empty", role: "status", "찾는 구성원이 없어요." }
                     } else {
                         // 목록 상자에는 선택지만 둔다(빈 안내는 밖에).
                         div { role: "listbox", "aria-label": "{label} 검색 결과",
@@ -73,10 +72,15 @@ pub fn MemberPicker(
                                             onpick.call(member.clone());
                                         }
                                     },
-                                    Avatar { name: member.name.clone() }
+                                    Avatar { name: member.name.clone(), seed: member.id.to_string() }
                                     span { class: "picker-option-text",
                                         strong { "{member.name}" }
-                                        small { {format::org_line(member.department_name.as_deref(), member.position_name.as_deref())} }
+                                        Meta {
+                                            items: vec![
+                                                member.department_name.clone().unwrap_or_default(),
+                                                member.position_name.clone().unwrap_or_default(),
+                                            ],
+                                        }
                                     }
                                     Icon { name: IconName::Plus }
                                 }

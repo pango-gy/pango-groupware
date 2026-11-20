@@ -10,8 +10,8 @@ use crate::org_tree;
 use crate::text;
 use crate::ui::{
     loaded_or_empty, report_error, report_form_error, report_success, resource_view, Button,
-    ButtonKind, Card, ConfirmModal, EmptyState, FormError, Icon, IconName, MemberPicker, Modal,
-    PageHeader, PickedMember, SelectField, Tabs, TextField,
+    ButtonKind, Card, ConfirmModal, EmptyState, FormError, Icon, IconName, MemberPicker, Meta,
+    Modal, PageHeader, PickedMember, SelectField, Tabs, TextField,
 };
 
 use self::logic::{DepartmentForm, PositionForm};
@@ -268,7 +268,7 @@ pub fn AdminOrg() -> Element {
         busy.set(false);
         archiving.set(None);
         match result {
-            Ok(_) => report_success(format!("{}을(를) 삭제했습니다.", target.name())),
+            Ok(_) => report_success(format!("{}을(를) 삭제했어요.", target.name())),
             Err(failure) => report_error(&failure),
         }
         match target {
@@ -283,7 +283,7 @@ pub fn AdminOrg() -> Element {
     rsx! {
         PageHeader {
             title: "조직·직책",
-            subtitle: "부서 구조와 조직장, 직책을 관리합니다.",
+            description: "부서 구조와 조직장, 직책을 관리해요.",
             actions: rsx! {
                 if on_departments {
                     Button { onclick: move |_| editing.set(Some(Editing::Department(None))),
@@ -311,10 +311,10 @@ pub fn AdminOrg() -> Element {
                 let rows = org_tree::department_tree(&list);
                 rsx! {
                     if rows.is_empty() {
-                        EmptyState { title: "아직 부서가 없습니다.", hint: "부서를 추가해 조직을 구성하세요.", icon: IconName::Building }
+                        EmptyState { title: "아직 부서가 없어요.", hint: "부서를 추가해 조직을 구성해 주세요.", icon: IconName::Building }
                     } else {
                         Card {
-                            ul { class: "list org-tree", "aria-label": "부서 목록",
+                            ul { class: "list", "aria-label": "부서 목록",
                                 for row in rows {
                                     li {
                                         key: "{row.department.id}",
@@ -327,14 +327,16 @@ pub fn AdminOrg() -> Element {
                                                 }
                                                 "{row.department.name}"
                                             }
-                                            small {
-                                                {row.department.head_name.clone().map(|name| format!("조직장 {name}")).unwrap_or_else(|| "조직장 없음".into())}
-                                                " · 구성원 {row.department.member_count}명"
+                                            Meta {
+                                                items: vec![
+                                                    row.department.head_name.clone().map(|name| format!("조직장 {name}")).unwrap_or_else(|| "조직장 없음".into()),
+                                                    format!("구성원 {}명", row.department.member_count),
+                                                ],
                                             }
                                         }
                                         div { class: "row-actions",
                                             button {
-                                                class: "btn btn-ghost btn-sm",
+                                                class: "btn btn-grey btn-sm",
                                                 r#type: "button",
                                                 "aria-label": "{row.department.name} 수정",
                                                 onclick: {
@@ -344,7 +346,7 @@ pub fn AdminOrg() -> Element {
                                                 "수정"
                                             }
                                             button {
-                                                class: "btn btn-ghost btn-sm",
+                                                class: "btn btn-danger btn-sm",
                                                 r#type: "button",
                                                 "aria-label": "{row.department.name} 삭제",
                                                 onclick: {
@@ -366,7 +368,7 @@ pub fn AdminOrg() -> Element {
                 let sorted = org_tree::sorted_positions(&list);
                 rsx! {
                     if sorted.is_empty() {
-                        EmptyState { title: "아직 직책이 없습니다.", hint: "팀장·매니저처럼 구성원에게 붙일 직책을 추가하세요.", icon: IconName::List }
+                        EmptyState { title: "아직 직책이 없어요.", hint: "팀장·매니저처럼 구성원에게 붙일 직책을 추가해 주세요.", icon: IconName::List }
                     } else {
                         Card {
                             ul { class: "list", "aria-label": "직책 목록",
@@ -378,7 +380,7 @@ pub fn AdminOrg() -> Element {
                                         }
                                         div { class: "row-actions",
                                             button {
-                                                class: "btn btn-ghost btn-sm",
+                                                class: "btn btn-grey btn-sm",
                                                 r#type: "button",
                                                 "aria-label": "{position.name} 수정",
                                                 onclick: {
@@ -388,7 +390,7 @@ pub fn AdminOrg() -> Element {
                                                 "수정"
                                             }
                                             button {
-                                                class: "btn btn-ghost btn-sm",
+                                                class: "btn btn-danger btn-sm",
                                                 r#type: "button",
                                                 "aria-label": "{position.name} 삭제",
                                                 onclick: {
@@ -440,10 +442,10 @@ pub fn AdminOrg() -> Element {
                 oncancel: move |_| archiving.set(None),
                 {match target {
                     ArchiveTarget::Department(_) => rsx! {
-                        p { "구성원이나 하위 부서가 남아 있으면 삭제할 수 없습니다. 먼저 구성원의 부서를 옮기고 하위 부서를 정리해 주세요." }
+                        p { "구성원이나 하위 부서가 남아 있으면 삭제할 수 없어요. 먼저 구성원의 부서를 옮기고 하위 부서를 정리해 주세요." }
                     },
                     ArchiveTarget::Position(_) => rsx! {
-                        p { "이 직책을 쓰는 구성원이 있으면 삭제할 수 없습니다. 먼저 구성원의 직책을 바꿔 주세요." }
+                        p { "이 직책을 쓰는 구성원이 있으면 삭제할 수 없어요. 먼저 구성원의 직책을 바꿔 주세요." }
                     },
                 }}
             }
@@ -512,7 +514,7 @@ fn DepartmentModal(
         busy.set(false);
         match result {
             Ok(saved) => {
-                report_success(format!("{}을(를) 저장했습니다.", saved.name));
+                report_success(format!("{}을(를) 저장했어요.", saved.name));
                 onsaved.call(());
             }
             Err(failure) => handle_save_failure(&failure, error, onsaved),
@@ -553,7 +555,7 @@ fn DepartmentModal(
                             },
                         }
                     } else {
-                        span { class: "field-hint", "지정하지 않음. 조직장은 이 부서와 하위 부서의 팀 현황을 봅니다." }
+                        span { class: "field-hint", "지정하지 않음. 조직장은 이 부서와 하위 부서의 팀 현황을 봐요." }
                     }
                 }
                 MemberPicker {
@@ -569,12 +571,12 @@ fn DepartmentModal(
                     label: "정렬 순서",
                     kind: "number",
                     value: current.sort_order.clone(),
-                    hint: "작은 숫자가 위에 보입니다. 같으면 이름 순입니다.",
+                    hint: "작은 숫자가 위에 보여요. 같으면 이름 순이에요.",
                     maxlength: 8,
                     oninput: move |value| form.write().sort_order = value,
                 }
                 div { class: "modal-actions",
-                    Button { kind: ButtonKind::Secondary, onclick: move |_| onclose.call(()), "취소" }
+                    Button { kind: ButtonKind::Grey, onclick: move |_| onclose.call(()), "취소" }
                     Button { submit: true, busy: busy(), "저장" }
                 }
             }
@@ -633,7 +635,7 @@ fn PositionModal(
         busy.set(false);
         match result {
             Ok(saved) => {
-                report_success(format!("{}을(를) 저장했습니다.", saved.name));
+                report_success(format!("{}을(를) 저장했어요.", saved.name));
                 onsaved.call(());
             }
             Err(failure) => handle_save_failure(&failure, error, onsaved),
@@ -656,12 +658,12 @@ fn PositionModal(
                     label: "등급",
                     kind: "number",
                     value: current.level.clone(),
-                    hint: "0~1000. 숫자가 클수록 높은 직책으로 목록 위에 보입니다.",
+                    hint: "0~1000. 숫자가 클수록 높은 직책으로 목록 위에 보여요.",
                     maxlength: 4,
                     oninput: move |value| form.write().level = value,
                 }
                 div { class: "modal-actions",
-                    Button { kind: ButtonKind::Secondary, onclick: move |_| onclose.call(()), "취소" }
+                    Button { kind: ButtonKind::Grey, onclick: move |_| onclose.call(()), "취소" }
                     Button { submit: true, busy: busy(), "저장" }
                 }
             }

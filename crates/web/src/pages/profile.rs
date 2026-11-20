@@ -10,7 +10,7 @@ use crate::route::Route;
 use crate::session::{self, use_session};
 use crate::text;
 use crate::ui::{
-    report_error, report_success, resource_view, Avatar, Badge, Button, ButtonKind, Card,
+    report_error, report_success, resource_view, Avatar, Badge, Button, ButtonKind, Card, Meta,
     PageHeader, Tone,
 };
 
@@ -35,7 +35,7 @@ pub fn Profile() -> Element {
         revoking.set(Some(id.clone()));
         match api::delete::<Empty>(&format!("/me/sessions/{id}")).await {
             Ok(_) => {
-                report_success("기기에서 로그아웃했습니다.");
+                report_success("기기에서 로그아웃했어요.");
                 sessions.restart();
             }
             Err(error) => report_error(&error),
@@ -47,13 +47,18 @@ pub fn Profile() -> Element {
         PageHeader { title: "내 정보" }
         Card {
             div { class: "profile",
-                Avatar { name: me.name.clone(), large: true }
-                div {
-                    h2 { class: "profile-name", "{me.name}" }
-                    p { class: "profile-meta",
-                        {format::org_line(me.department_name.as_deref(), me.position_name.as_deref())}
+                Avatar { name: me.name.clone(), seed: me.id.to_string(), large: true }
+                div { class: "profile-text",
+                    h2 { class: "profile-name",
+                        "{me.name}"
+                        Badge { tone: Tone::Info, {text::role_label(me.role)} }
                     }
-                    Badge { tone: Tone::Info, {text::role_label(me.role)} }
+                    Meta {
+                        items: vec![
+                            me.department_name.clone().unwrap_or_default(),
+                            me.position_name.clone().unwrap_or_default(),
+                        ],
+                    }
                 }
             }
             dl { class: "detail-list",
@@ -64,9 +69,9 @@ pub fn Profile() -> Element {
                 dt { "전화번호" }
                 dd { {me.phone.clone().unwrap_or_else(|| "-".into())} }
             }
-            div { class: "card-actions",
-                Link { class: "btn btn-secondary", to: Route::ChangePassword {}, "비밀번호 변경" }
-                Button { kind: ButtonKind::Ghost, onclick: logout, "로그아웃" }
+            div { class: "panel-actions",
+                Link { class: "btn btn-grey", to: Route::ChangePassword {}, "비밀번호 변경" }
+                Button { kind: ButtonKind::Grey, onclick: logout, "로그아웃" }
             }
         }
         Card { title: "로그인된 기기",
@@ -78,11 +83,11 @@ pub fn Profile() -> Element {
                                 strong {
                                     {item.user_agent.clone().unwrap_or_else(|| "알 수 없는 기기".into())}
                                 }
-                                small {
-                                    "마지막 사용 {format::datetime(item.last_seen_at, tz)}"
-                                    if let Some(ip) = &item.ip {
-                                        " · {ip}"
-                                    }
+                                Meta {
+                                    items: vec![
+                                        format!("마지막 사용 {}", format::datetime(item.last_seen_at, tz)),
+                                        item.ip.clone().unwrap_or_default(),
+                                    ],
                                 }
                             }
                             div { class: "list-row-side",
@@ -90,7 +95,7 @@ pub fn Profile() -> Element {
                                     Badge { tone: Tone::Success, "현재 기기" }
                                 } else {
                                     Button {
-                                        kind: ButtonKind::Secondary,
+                                        kind: ButtonKind::Grey,
                                         small: true,
                                         busy: revoking().as_deref() == Some(item.id.to_string().as_str()),
                                         disabled: revoking().is_some(),

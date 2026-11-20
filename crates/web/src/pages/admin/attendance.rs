@@ -22,7 +22,7 @@ use crate::text;
 use crate::ui::{
     loaded_or_empty, now, report_error, report_success, resource_view, use_initial_tab,
     use_more_pages, Badge, Button, ButtonKind, Card, EmptyState, FormError, Icon, IconName,
-    LoadMore, MemberPicker, Modal, PageHeader, PickedMember, SelectField, Tabs, TextArea,
+    LoadMore, MemberPicker, Meta, Modal, PageHeader, PickedMember, SelectField, Tabs, TextArea,
     TextField,
 };
 
@@ -91,12 +91,12 @@ pub fn AdminAttendance() -> Element {
     rsx! {
         PageHeader {
             title: "근태 관리",
-            subtitle: "기록을 고치면 사유와 함께 이력이 남습니다.",
+            description: "기록을 고치면 사유와 함께 이력이 남아요.",
             actions: rsx! {
                 if let Some(href) = export_href {
-                    a { class: "btn btn-secondary", href: "{href}", "CSV 내보내기" }
+                    a { class: "btn btn-weak", href: "{href}", "CSV 내보내기" }
                 } else {
-                    Button { kind: ButtonKind::Secondary, disabled: true, "CSV 내보내기" }
+                    Button { kind: ButtonKind::Weak, disabled: true, "CSV 내보내기" }
                 }
                 Button { onclick: move |_| editor.set(Some(Editor::Create)),
                     Icon { name: IconName::Plus }
@@ -109,7 +109,7 @@ pub fn AdminAttendance() -> Element {
             CorrectionRequests {}
         } else {
             Card {
-                div { class: "att-admin-filters",
+                div { class: "toolbar",
                     TextField {
                         label: "시작일",
                         kind: "date",
@@ -135,8 +135,7 @@ pub fn AdminAttendance() -> Element {
                     }
                 }
                 FormError { message: filter_error }
-                p { class: "field-hint", "CSV에는 기간만 적용되고 부서·구성원 조건은 적용되지 않습니다." }
-            }
+                p { class: "field-hint panel-note", "CSV에는 기간만 적용되고 부서·구성원 조건은 적용되지 않아요." }
             {resource_view(list, move |loaded: Option<(String, Page<AdminAttendanceItem>)>| {
                 let Some((base, page)) = loaded else {
                     return rsx! {};
@@ -148,12 +147,12 @@ pub fn AdminAttendance() -> Element {
                     .map(|item| logic::admin_row(item, tz))
                     .collect();
                 if rows.is_empty() {
-                    return rsx! { EmptyState { title: "조건에 맞는 기록이 없습니다.", icon: IconName::Clock } };
+                    return rsx! { EmptyState { title: "조건에 맞는 기록이 없어요.", icon: IconName::Clock } };
                 }
                 rsx! {
-                    Card {
-                        div { class: "table-wrap att-desktop",
-                            table { class: "table att-table",
+                    Fragment {
+                        div { class: "table-wrap only-desktop",
+                            table { class: "table table-nowrap",
                                 thead {
                                     tr {
                                         th { "날짜" }
@@ -172,7 +171,7 @@ pub fn AdminAttendance() -> Element {
                                             td { "{row.date_label}" }
                                             td {
                                                 strong { "{row.item.member_name}" }
-                                                span { class: "att-note", "{row.member_meta}" }
+                                                span { class: "cell-sub", Meta { items: row.member_meta.clone() } }
                                             }
                                             td { "{row.cells.work_type}" }
                                             td { "{row.cells.clock_in}" }
@@ -181,12 +180,14 @@ pub fn AdminAttendance() -> Element {
                                             td {
                                                 Badge { tone: row.cells.tone, "{row.cells.status}" }
                                             }
-                                            td { class: "att-row-actions",
-                                                RowActions {
-                                                    editable: me.is_none_or(|(id, role)| can_edit_personal_records(id, role, row.item.record.member_id)),
-                                                    row: row.clone(),
-                                                    editor,
-                                                    history,
+                                            td {
+                                                div { class: "row-actions",
+                                                    RowActions {
+                                                        editable: me.is_none_or(|(id, role)| can_edit_personal_records(id, role, row.item.record.member_id)),
+                                                        row: row.clone(),
+                                                        editor,
+                                                        history,
+                                                    }
                                                 }
                                             }
                                         }
@@ -194,17 +195,23 @@ pub fn AdminAttendance() -> Element {
                                 }
                             }
                         }
-                        ul { class: "list att-mobile",
+                        ul { class: "list only-mobile",
                             for row in rows {
-                                li { key: "{row.item.record.id}", class: "list-row att-admin-item",
+                                li { key: "{row.item.record.id}", class: "list-row list-row-top",
                                     div { class: "list-row-main",
-                                        strong { "{row.item.member_name} · {row.date_label}" }
-                                        small { "{row.cells.clock_in} – {row.cells.clock_out} · {row.cells.work_type}" }
-                                        small { "{row.member_meta}" }
+                                        strong { "{row.item.member_name}" }
+                                        Meta {
+                                            items: vec![
+                                                row.date_label.clone(),
+                                                format!("{} – {}", row.cells.clock_in, row.cells.clock_out),
+                                                row.cells.work_type.clone(),
+                                            ],
+                                        }
+                                        Meta { items: row.member_meta.clone() }
                                     }
                                     div { class: "list-row-side",
                                         Badge { tone: row.cells.tone, "{row.cells.status}" }
-                                        div { class: "att-row-actions",
+                                        div { class: "row-actions",
                                             RowActions {
                                                 editable: me.is_none_or(|(id, role)| can_edit_personal_records(id, role, row.item.record.member_id)),
                                                 row: row.clone(),
@@ -229,6 +236,7 @@ pub fn AdminAttendance() -> Element {
                     }
                 }
             })}
+            }
         }
         if let Some(open) = editor() {
             RecordEditor {
@@ -258,13 +266,13 @@ fn CorrectionRequests() -> Element {
     let at = now();
     rsx! {
         Card {
-            p { class: "field-hint", "결재 중인 정정 요청입니다. 결재 문서에서 내용을 보고 처리합니다. 승인되면 기록에 반영됩니다." }
+            p { class: "field-hint panel-note", "결재 중인 정정 요청이에요. 결재 문서에서 내용을 보고 처리해요. 승인되면 기록에 반영돼요." }
             {resource_view(first, move |page: Page<DocumentSummary>| {
                 let next = more.cursor(&page);
                 let items = more.all(page.items, |doc| doc.id);
                 if items.is_empty() {
                     return rsx! {
-                        EmptyState { title: "결재 중인 정정 요청이 없습니다.", icon: IconName::Clock }
+                        EmptyState { title: "결재 중인 정정 요청이 없어요.", icon: IconName::Clock }
                     };
                 }
                 rsx! {
@@ -301,7 +309,7 @@ fn RowActions(
     rsx! {
         if editable {
             Button {
-                kind: ButtonKind::Secondary,
+                kind: ButtonKind::Grey,
                 small: true,
                 onclick: move |_| editor.set(Some(Editor::Edit(item.clone()))),
                 "수정"
@@ -311,7 +319,7 @@ fn RowActions(
             small { class: "field-hint", {text::OWN_RECORD_HINT} }
         }
         Button {
-            kind: ButtonKind::Ghost,
+            kind: ButtonKind::Grey,
             small: true,
             onclick: move |_| history.set(Some(target.clone())),
             "이력"
@@ -425,9 +433,9 @@ fn RecordEditor(editor: Editor, onclose: EventHandler<()>, onsaved: EventHandler
             match outcome {
                 Ok(()) => {
                     report_success(if creating {
-                        "기록을 추가했습니다."
+                        "기록을 추가했어요."
                     } else {
-                        "기록을 수정했습니다."
+                        "기록을 수정했어요."
                     });
                     onsaved.call(());
                 }
@@ -473,14 +481,14 @@ fn RecordEditor(editor: Editor, onclose: EventHandler<()>, onsaved: EventHandler
                         }
                     }
                     if own_record {
-                        p { class: "notice", role: "note", {text::OWN_RECORD_HINT} }
+                        p { class: "callout callout-info", role: "note", {text::OWN_RECORD_HINT} }
                     }
                     TextField {
                         label: "근무일",
                         kind: "date",
                         value: current.work_date.clone(),
                         required: true,
-                        hint: "출근 시각이 이 근무일에 속해야 합니다.",
+                        hint: "출근 시각이 이 근무일에 속해야 해요.",
                         oninput: move |value| form.write().work_date = value,
                     }
                 }
@@ -497,7 +505,7 @@ fn RecordEditor(editor: Editor, onclose: EventHandler<()>, onsaved: EventHandler
                         label: "퇴근 시각",
                         kind: "datetime-local",
                         value: current.clock_out.clone(),
-                        hint: "비워 두면 퇴근 전으로 남습니다.",
+                        hint: "비워 두면 퇴근 전으로 남아요.",
                         oninput: move |value| form.write().clock_out = value,
                     }
                 }
@@ -528,8 +536,8 @@ fn RecordEditor(editor: Editor, onclose: EventHandler<()>, onsaved: EventHandler
                     placeholder: "예: 지문 인식기 고장으로 출근 누락",
                     oninput: move |value| form.write().reason = value,
                 }
-                div { class: "card-actions",
-                    Button { kind: ButtonKind::Ghost, onclick: move |_| onclose.call(()), "취소" }
+                div { class: "modal-actions",
+                    Button { kind: ButtonKind::Grey, onclick: move |_| onclose.call(()), "취소" }
                     Button { submit: true, busy: busy(), disabled: own_record, "저장" }
                 }
             }
@@ -582,8 +590,8 @@ mod logic {
             match self {
                 Self::InvalidFrom => "시작일을 확인해 주세요.",
                 Self::InvalidTo => "종료일을 확인해 주세요.",
-                Self::Reversed => "종료일이 시작일보다 빠릅니다.",
-                Self::TooLong => "기간은 최대 366일까지 조회할 수 있습니다.",
+                Self::Reversed => "종료일이 시작일보다 빨라요.",
+                Self::TooLong => "기간은 최대 366일까지 조회할 수 있어요.",
                 Self::InvalidDepartment => "부서를 다시 선택해 주세요.",
             }
         }
@@ -661,8 +669,8 @@ mod logic {
         /// 이력 창 제목 등에 쓰는 `홍길동 · 3월 2일 (월)`.
         pub title: String,
         pub date_label: String,
-        /// `hong · 개발팀`
-        pub member_meta: String,
+        /// 아이디, (있으면) 부서.
+        pub member_meta: Vec<String>,
         pub cells: RecordCells,
     }
 
@@ -671,8 +679,7 @@ mod logic {
         let date_label = format::date_md(record.work_date);
         let member_meta = std::iter::once(item.login_id.clone())
             .chain(item.department_name.clone())
-            .collect::<Vec<_>>()
-            .join(" · ");
+            .collect::<Vec<_>>();
         AdminRow {
             item: item.clone(),
             title: format!("{} · {date_label}", item.member_name),
@@ -1071,7 +1078,7 @@ mod logic {
             };
             let row = admin_row(&item, seoul());
             assert_eq!(row.title, "홍길동 · 3월 2일 (월)");
-            assert_eq!(row.member_meta, "hong · 개발팀");
+            assert_eq!(row.member_meta, vec!["hong", "개발팀"]);
             assert_eq!(row.cells.clock_in, "09:20");
             assert_eq!(row.cells.status, "지각");
             assert_eq!(row.date_label, format::date_md(date("2026-03-02")));
@@ -1079,7 +1086,7 @@ mod logic {
                 department_name: None,
                 ..item
             };
-            assert_eq!(admin_row(&no_department, seoul()).member_meta, "hong");
+            assert_eq!(admin_row(&no_department, seoul()).member_meta, vec!["hong"]);
         }
     }
 }
