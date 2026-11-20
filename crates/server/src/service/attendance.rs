@@ -18,7 +18,7 @@ use pango_api::attendance::{
 };
 use pango_api::home::MissingClockOut;
 use pango_api::Page;
-use pango_core::approval::DocumentKind;
+use pango_core::approval::{ApprovalLine, DocumentKind};
 use pango_core::attendance::{
     decide_clock_in, decide_clock_out, decide_correction_close, evaluate_day,
     validate_correction_date, validate_edit, AttendanceEventKind, ClockInDecision,
@@ -700,6 +700,50 @@ async fn audit_correction(
     .await
 }
 
+/// 정정 요청의 결재 문서(시스템 양식). 페이로드에는 요청 값과 요청 당시의 기록을 함께 싣는다.
+fn correction_document(
+    id: AttendanceCorrectionId,
+    work_date: NaiveDate,
+    request: &CreateCorrectionRequest,
+    reason: &Reason,
+    current: Option<&AttendanceRecord>,
+    line: ApprovalLine,
+) -> ServiceResult<SystemDocument> {
+    Ok(SystemDocument {
+        kind: DocumentKind::AttendanceCorrection,
+        form_code: approval::ATTENDANCE_CORRECTION_FORM_CODE,
+        title: Title::parse(&format!("근태 정정 요청 ({work_date})"))?,
+        body: Body::parse(reason.as_str())?,
+        payload: serde_json::json!({
+            "request_id": id,
+            "work_date": work_date,
+            "clock_in_at": request.clock_in_at,
+            "clock_out_at": request.clock_out_at,
+            "work_type": request.work_type,
+            "reason": reason.as_str(),
+            "current": current.map(record_dto),
+        }),
+        line,
+    })
+}
+
+/// 정정 요청을 저장한다. 같은 근무일의 대기 요청은 호출 전에 확인하지만, 동시 요청의 마지막
+/// 방어선은 유일 인덱스다(위반하면 `AlreadyExists`).
+async fn insert_correction_tx(
+    conn: &mut Conn,
+    correction: &AttendanceCorrection,
+) -> ServiceResult<()> {
+    corrections::insert(conn, correction)
+        .await
+        .map_err(|error| {
+            if corrections::is_duplicate_pending(&error) {
+                DomainError::Conflict(ConflictReason::AlreadyExists).into()
+            } else {
+                ServiceError::from(error)
+            }
+        })
+}
+
 /// 정정 요청. 한 트랜잭션에서 값 검증 → 중복 확인 → 결재 문서 상신 → 요청 저장까지 한다.
 /// 어느 단계든 실패하면 아무것도 남지 않는다.
 ///
@@ -732,12 +776,11 @@ pub async fn create_correction(
                 now,
                 &company.zone,
             )?;
-            let already_exists = || DomainError::Conflict(ConflictReason::AlreadyExists);
             if corrections::find_pending(conn, member.id, work_date)
                 .await?
                 .is_some()
             {
-                return Err(already_exists().into());
+                return Err(DomainError::Conflict(ConflictReason::AlreadyExists).into());
             }
             let current = attendance::find_by_member_date(conn, member.id, work_date).await?;
 
@@ -749,22 +792,8 @@ pub async fn create_correction(
                 &request.references,
             )
             .await?;
-            let document = SystemDocument {
-                kind: DocumentKind::AttendanceCorrection,
-                form_code: approval::ATTENDANCE_CORRECTION_FORM_CODE,
-                title: Title::parse(&format!("근태 정정 요청 ({work_date})"))?,
-                body: Body::parse(reason.as_str())?,
-                payload: serde_json::json!({
-                    "request_id": id,
-                    "work_date": work_date,
-                    "clock_in_at": request.clock_in_at,
-                    "clock_out_at": request.clock_out_at,
-                    "work_type": request.work_type,
-                    "reason": reason.as_str(),
-                    "current": current.as_ref().map(record_dto),
-                }),
-                line,
-            };
+            let document =
+                correction_document(id, work_date, request, &reason, current.as_ref(), line)?;
             let document_id = approval::create_submitted_tx(conn, member, document, now).await?;
 
             let correction = AttendanceCorrection {
@@ -782,16 +811,7 @@ pub async fn create_correction(
                 decided_at: None,
                 version: 1,
             };
-            // 위에서 이미 확인했지만 마지막 방어선은 유일 인덱스다.
-            corrections::insert(conn, &correction)
-                .await
-                .map_err(|error| {
-                    if corrections::is_duplicate_pending(&error) {
-                        already_exists().into()
-                    } else {
-                        ServiceError::from(error)
-                    }
-                })?;
+            insert_correction_tx(conn, &correction).await?;
             audit_correction(conn, now, ctx, "attendance.correction_request", &correction).await?;
             correction_dto(conn, id).await
         })
@@ -905,35 +925,7 @@ async fn apply_correction_tx(
     if current.as_ref().map(|record| record.version) != correction.base_record_version {
         return Err(DomainError::Conflict(ConflictReason::VersionConflict).into());
     }
-    let after = match &current {
-        None => {
-            let record = AttendanceRecord {
-                id: AttendanceRecordId::new(),
-                member_id: correction.member_id,
-                work_date: correction.work_date,
-                clock_in_at: correction.clock_in_at,
-                clock_out_at: correction.clock_out_at,
-                work_type: correction.work_type,
-                note: None,
-                version: 1,
-            };
-            attendance::insert(conn, &record, now).await?;
-            record
-        }
-        Some(record) => {
-            let edited = AttendanceRecord {
-                clock_in_at: correction.clock_in_at,
-                clock_out_at: correction.clock_out_at,
-                work_type: correction.work_type,
-                ..record.clone()
-            };
-            require_updated(attendance::update(conn, &edited, now).await?)?;
-            AttendanceRecord {
-                version: record.version + 1,
-                ..edited
-            }
-        }
-    };
+    let after = write_corrected_record_tx(conn, correction, current.as_ref(), now).await?;
     append_event(
         conn,
         now,
@@ -963,6 +955,54 @@ async fn apply_correction_tx(
         },
     )
     .await?;
+    notify_corrected_tx(conn, correction, now).await
+}
+
+/// 정정 값을 기록에 쓴다: 기록이 없던 날이면 새로 만들고, 있으면 그 기록을 고친다.
+/// 쓴 뒤의 기록(이력의 "이후" 값)을 돌려준다.
+async fn write_corrected_record_tx(
+    conn: &mut Conn,
+    correction: &AttendanceCorrection,
+    current: Option<&AttendanceRecord>,
+    now: Timestamp,
+) -> ServiceResult<AttendanceRecord> {
+    match current {
+        None => {
+            let record = AttendanceRecord {
+                id: AttendanceRecordId::new(),
+                member_id: correction.member_id,
+                work_date: correction.work_date,
+                clock_in_at: correction.clock_in_at,
+                clock_out_at: correction.clock_out_at,
+                work_type: correction.work_type,
+                note: None,
+                version: 1,
+            };
+            attendance::insert(conn, &record, now).await?;
+            Ok(record)
+        }
+        Some(record) => {
+            let edited = AttendanceRecord {
+                clock_in_at: correction.clock_in_at,
+                clock_out_at: correction.clock_out_at,
+                work_type: correction.work_type,
+                ..record.clone()
+            };
+            require_updated(attendance::update(conn, &edited, now).await?)?;
+            Ok(AttendanceRecord {
+                version: record.version + 1,
+                ..edited
+            })
+        }
+    }
+}
+
+/// 정정이 반영됐음을 요청자에게 알린다.
+async fn notify_corrected_tx(
+    conn: &mut Conn,
+    correction: &AttendanceCorrection,
+    now: Timestamp,
+) -> ServiceResult<()> {
     let dedupe_key = format!("attendance.corrected:{}", correction.id);
     notify(
         conn,

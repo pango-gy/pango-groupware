@@ -18,7 +18,7 @@ use pango_api::leave::{
     LedgerEntryDto, LedgerKind, MemberBalance, UpdateLeaveTypeRequest,
 };
 use pango_api::Page;
-use pango_core::approval::DocumentKind;
+use pango_core::approval::{ApprovalLine, DocumentKind};
 use pango_core::authz;
 use pango_core::calendar::{check_date, parse_month, DateRange};
 use pango_core::error::{ConflictReason, ValidationReason};
@@ -611,6 +611,83 @@ pub async fn upcoming_tx(
 
 // ───────────── 신청 ─────────────
 
+/// 같은 구성원의 대기·승인 신청과 기간이 겹치면(같은 날 서로 다른 시간대의 반차·반반차는
+/// 제외, `rules::requests_overlap`) `LeaveOverlap`.
+async fn reject_overlap_tx(
+    conn: &mut Conn,
+    member_id: MemberId,
+    range: DateRange,
+    unit: LeaveUnit,
+) -> ServiceResult<()> {
+    let active = RequestFilter {
+        member_id: Some(member_id),
+        overlapping: Some(range),
+        statuses: SCHEDULED.to_vec(),
+        before: None,
+    };
+    let (existing, _) = leave::list_requests(conn, &active, None).await?;
+    let overlaps = existing
+        .iter()
+        .any(|other| rules::requests_overlap((other.range, other.unit), (range, unit)));
+    if overlaps {
+        return Err(DomainError::Conflict(ConflictReason::LeaveOverlap).into());
+    }
+    Ok(())
+}
+
+/// 휴가 신청의 결재 문서(시스템 양식). 본문은 사유, 페이로드는 신청 내용이다.
+fn leave_document(
+    id: LeaveRequestId,
+    leave_type: &LeaveType,
+    span: &LeaveSpan,
+    reason: &Reason,
+    line: ApprovalLine,
+) -> ServiceResult<SystemDocument> {
+    let range = span.range();
+    Ok(SystemDocument {
+        kind: DocumentKind::Leave,
+        form_code: approval::LEAVE_FORM_CODE,
+        title: Title::parse(&format!("휴가 신청 ({})", span_label(span)))?,
+        body: Body::parse(reason.as_str())?,
+        payload: serde_json::json!({
+            "request_id": id,
+            "leave_type_id": leave_type.id,
+            "leave_type_name": leave_type.name,
+            "start_date": range.start(),
+            "end_date": range.end(),
+            "unit": span.unit(),
+            "amount_q": span.amount(),
+            "reason": reason.as_str(),
+        }),
+        line,
+    })
+}
+
+/// 신청의 잔여 예약: 원장에 신청 수량만큼의 사용 한 줄(기준일은 첫 근무일).
+async fn reserve_tx(
+    conn: &mut Conn,
+    request: &LeaveRequest,
+    first_day: NaiveDate,
+    now: Timestamp,
+) -> ServiceResult<()> {
+    let reservation = LedgerRecord {
+        id: LeaveLedgerEntryId::new(),
+        member_id: request.member_id,
+        entry: LedgerEntry {
+            kind: LedgerEntryKind::Use {
+                effective_on: first_day,
+                request: request.id,
+            },
+            amount: request.amount,
+        },
+        grant_key: None,
+        memo: None,
+        actor_id: Some(request.member_id),
+        created_at: now,
+    };
+    Ok(leave::insert_ledger(conn, &reservation).await?)
+}
+
 fn span_label(span: &LeaveSpan) -> String {
     format!(
         "{} ~ {}, {}일",
@@ -656,20 +733,7 @@ pub async fn create_request(
 
             let calendar = company.calendar(conn, range).await?;
             let span = LeaveSpan::new(range, request.unit, &calendar)?;
-
-            let active = RequestFilter {
-                member_id: Some(member.id),
-                overlapping: Some(range),
-                statuses: SCHEDULED.to_vec(),
-                before: None,
-            };
-            let (existing, _) = leave::list_requests(conn, &active, None).await?;
-            let overlaps = existing.iter().any(|other| {
-                rules::requests_overlap((other.range, other.unit), (range, request.unit))
-            });
-            if overlaps {
-                return Err(DomainError::Conflict(ConflictReason::LeaveOverlap).into());
-            }
+            reject_overlap_tx(conn, member.id, range, request.unit).await?;
 
             // 총량이 첫 근무일 잔여 안에 들고, 쉬는 날 하루하루가 그날 유효한 부여로 덮여야
             // 한다. 예약은 아래에서 첫 근무일 한 줄로 기록한다(`rules::check_reservable` 참고).
@@ -686,23 +750,7 @@ pub async fn create_request(
                 &request.references,
             )
             .await?;
-            let document = SystemDocument {
-                kind: DocumentKind::Leave,
-                form_code: approval::LEAVE_FORM_CODE,
-                title: Title::parse(&format!("휴가 신청 ({})", span_label(&span)))?,
-                body: Body::parse(reason.as_str())?,
-                payload: serde_json::json!({
-                    "request_id": id,
-                    "leave_type_id": leave_type.id,
-                    "leave_type_name": leave_type.name,
-                    "start_date": range.start(),
-                    "end_date": range.end(),
-                    "unit": request.unit,
-                    "amount_q": span.amount(),
-                    "reason": reason.as_str(),
-                }),
-                line,
-            };
+            let document = leave_document(id, &leave_type, &span, &reason, line)?;
             let document_id = approval::create_submitted_tx(conn, member, document, now).await?;
 
             let stored = LeaveRequest {
@@ -720,24 +768,9 @@ pub async fn create_request(
                 version: 1,
             };
             leave::insert_request(conn, &stored).await?;
-            // 예약. 원장이 신청을 참조하므로 신청을 넣은 뒤에 기록한다(같은 트랜잭션).
+            // 원장이 신청을 참조하므로 신청을 넣은 뒤에 기록한다(같은 트랜잭션).
             if leave_type.deducts_balance {
-                let reservation = LedgerRecord {
-                    id: LeaveLedgerEntryId::new(),
-                    member_id: member.id,
-                    entry: LedgerEntry {
-                        kind: LedgerEntryKind::Use {
-                            effective_on: span.first_day(),
-                            request: id,
-                        },
-                        amount: span.amount(),
-                    },
-                    grant_key: None,
-                    memo: None,
-                    actor_id: Some(member.id),
-                    created_at: now,
-                };
-                leave::insert_ledger(conn, &reservation).await?;
+                reserve_tx(conn, &stored, span.first_day(), now).await?;
             }
             audit_request(conn, now, ctx, "leave.request", &stored).await?;
             request_dto(conn, id).await
