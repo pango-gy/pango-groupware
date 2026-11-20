@@ -2,6 +2,8 @@
 
 pub mod auth;
 pub mod extract;
+pub mod members;
+pub mod org;
 
 use axum::extract::DefaultBodyLimit;
 use axum::response::{IntoResponse, Response};
@@ -22,6 +24,8 @@ fn api_routes() -> Router<AppState> {
     Router::new()
         .route("/health", get(health))
         .merge(auth::routes())
+        .merge(org::routes())
+        .merge(members::routes())
         .fallback(not_found)
 }
 

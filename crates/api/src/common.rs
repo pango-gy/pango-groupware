@@ -69,6 +69,12 @@ pub struct Versioned<T> {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Empty {}
 
+/// 본문이 없는 변경 요청(`DELETE`)의 낙관적 잠금 버전: `?version=`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VersionQuery {
+    pub version: i64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

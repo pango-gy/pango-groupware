@@ -250,3 +250,42 @@ impl Company {
         ))
     }
 }
+
+/// 쓰기 트랜잭션 안에서 행위자의 권한 정보를 다시 읽는다.
+///
+/// 인증(트랜잭션 밖)과 커밋 사이에 행위자의 역할이 바뀌거나 계정이 정지됐을 수 있다.
+/// 권한을 주고받는 관리 동작은 이 값으로 판정해, 방금 강등된 관리자의 요청이 이전 권한으로
+/// 처리되지 않게 한다. 쓰기는 직렬화되므로 커밋 시점까지 이 값이 유지된다.
+pub async fn current_actor(conn: &mut Conn, ctx: &AuthContext) -> ServiceResult<Actor> {
+    let member = pango_db::members::find(conn, ctx.member_id())
+        .await?
+        .filter(|member| member.status.can_sign_in())
+        .ok_or(ServiceError::Domain(DomainError::Unauthenticated))?;
+    build_actor(conn, &member).await
+}
+
+/// 수정 요청의 변경 내역. 감사 로그 `detail`에 `{"changed": {"필드": {"from": …, "to": …}}}`로
+/// 남기고, 비어 있으면 수정할 것이 없다는 뜻이다(버전을 올리지 않는다).
+#[derive(Debug, Default)]
+pub struct Changes(serde_json::Map<String, serde_json::Value>);
+
+impl Changes {
+    /// 값이 다를 때만 기록한다. 비밀 값(비밀번호 등)은 넣지 않는다.
+    pub fn field<T: Serialize + PartialEq>(&mut self, name: &str, from: &T, to: &T) -> &mut Self {
+        if from != to {
+            self.0.insert(
+                name.to_owned(),
+                serde_json::json!({ "from": from, "to": to }),
+            );
+        }
+        self
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn into_detail(self) -> serde_json::Value {
+        serde_json::json!({ "changed": self.0 })
+    }
+}

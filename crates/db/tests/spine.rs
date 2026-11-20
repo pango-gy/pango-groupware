@@ -861,3 +861,50 @@ async fn idempotency_key_stores_first_response_only() {
         None
     );
 }
+
+#[tokio::test]
+async fn active_member_counts_are_grouped_per_department() {
+    let test = TestDb::new().await;
+    let mut tx = test.begin_write().await.expect("begin");
+    let department = |name: &str| Department {
+        id: DepartmentId::new(),
+        parent_id: None,
+        name: name.into(),
+        head_member_id: None,
+        sort_order: 0,
+        archived_at: None,
+        version: 1,
+    };
+    let (a, b, empty) = (department("A"), department("B"), department("빈 부서"));
+    for d in [&a, &b, &empty] {
+        org::insert_department(&mut tx, d, ts(1))
+            .await
+            .expect("dept");
+    }
+    let rows = [
+        ("a1", Some(a.id), MemberStatus::Active),
+        ("a2", Some(a.id), MemberStatus::Active),
+        ("a3", Some(a.id), MemberStatus::Suspended),
+        ("a4", Some(a.id), MemberStatus::Retired),
+        ("b1", Some(b.id), MemberStatus::Active),
+        ("none", None, MemberStatus::Active),
+    ];
+    for (login, department_id, status) in rows {
+        let mut m = member(login);
+        m.department_id = department_id;
+        m.status = status;
+        members::insert(&mut tx, &m, "hash", ts(1))
+            .await
+            .expect("insert");
+    }
+    let mut counts = members::count_active_by_department(&mut tx)
+        .await
+        .expect("counts");
+    counts.sort();
+    let mut expected = vec![(a.id, 2), (b.id, 1)];
+    expected.sort();
+    assert_eq!(
+        counts, expected,
+        "정지·퇴사·무소속은 세지 않고 빈 부서는 없다"
+    );
+}

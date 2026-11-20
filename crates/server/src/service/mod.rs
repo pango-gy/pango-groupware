@@ -7,6 +7,8 @@
 //! - 다른 유스케이스와 한 트랜잭션으로 묶여야 하는 로직은 `*_tx(conn, …)` 함수로 둔다.
 
 pub mod auth;
+pub mod members;
+pub mod org;
 pub mod setup;
 pub mod support;
 
