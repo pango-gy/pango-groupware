@@ -8,7 +8,6 @@ use pango_api::{Page, PageQuery, Versioned};
 use pango_core::authz::{self, Actor, Audience, AudienceScope};
 use pango_core::error::ConflictReason;
 use pango_core::id::{DepartmentId, MemberId, NoticeId};
-use pango_core::member::MemberStatus;
 use pango_core::text::{Body, Title};
 use pango_core::DomainError;
 use pango_db::members::{self, Member, MemberFilter};
@@ -16,8 +15,8 @@ use pango_db::notices::{self, Notice, NoticeCursor, NoticeFilter, NoticeListItem
 use pango_db::{notifications, org, Conn};
 
 use super::support::{
-    audit, department_tree, found, members_by_id, next_page, notify, require_current_admin,
-    require_updated, Audit, AuthContext, Idempotency, Notify,
+    audit, department_subtree, department_tree, found, members_by_id, next_page, notify,
+    require_current_admin, require_updated, Audit, AuthContext, Idempotency, Notify,
 };
 use crate::error::{ServiceError, ServiceResult};
 use crate::state::AppState;
@@ -137,20 +136,9 @@ async fn check_department(conn: &mut Conn, audience: &Audience) -> ServiceResult
 
 /// 지금 대상 범위에 속한 재직 구성원(이름순). 부서 대상이면 하위 부서까지.
 async fn audience_members(conn: &mut Conn, audience: &Audience) -> ServiceResult<Vec<Member>> {
-    let departments = match audience.department_id() {
-        Some(id) => Some(
-            department_tree(conn)
-                .await?
-                .descendants_inclusive(id)
-                .into_iter()
-                .collect(),
-        ),
-        None => None,
-    };
     let filter = MemberFilter {
-        statuses: vec![MemberStatus::Active],
-        departments,
-        ..MemberFilter::default()
+        departments: department_subtree(conn, audience.department_id()).await?,
+        ..MemberFilter::active()
     };
     Ok(members::list(conn, &filter).await?)
 }

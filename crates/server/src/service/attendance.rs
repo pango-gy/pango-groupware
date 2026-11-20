@@ -32,7 +32,6 @@ use pango_core::id::{
     AttendanceCorrectionId, AttendanceEventId, AttendanceRecordId, DocumentId, MemberId,
 };
 use pango_core::leave::LeaveUnit;
-use pango_core::member::MemberStatus;
 use pango_core::text::{self, Body, Comment, Reason, TextRule, Title};
 use pango_core::time::Timestamp;
 use pango_core::DomainError;
@@ -41,12 +40,12 @@ use pango_db::attendance::{
 };
 use pango_db::attendance_corrections::{self as corrections, AttendanceCorrection};
 use pango_db::members::{self, Member, MemberFilter};
-use pango_db::{org, settings, Conn};
+use pango_db::{settings, Conn};
 
 use super::approval::{self, LinkedOutcome, SystemDocument};
 use super::support::{
-    audit, audit_as, current_member, department_tree, found, member_names, members_by_id,
-    next_page, notify, personal_records_member, push_csv_row, require_current_admin,
+    audit, audit_as, current_member, department_names, department_subtree, found, member_names,
+    members_by_id, next_page, notify, personal_records_member, push_csv_row, require_current_admin,
     require_updated, Audit, AuthContext, Company, Idempotency, Notify,
 };
 use crate::error::{ServiceError, ServiceResult};
@@ -513,11 +512,7 @@ pub async fn team(
         .map(|r| (r.member_id, r))
         .collect();
     let leaves = leaves_for(&mut conn, ids.clone(), range).await?;
-    let departments: HashMap<_, _> = org::list_departments(&mut conn)
-        .await?
-        .into_iter()
-        .map(|d| (d.id, d.name))
-        .collect();
+    let departments = department_names(&mut conn).await?;
     let evaluator = Evaluator::new(&mut conn, company, range, now).await?;
     let members = visible
         .into_iter()
@@ -546,11 +541,7 @@ pub async fn visible_active_members_tx(
     conn: &mut Conn,
     actor: &Actor,
 ) -> ServiceResult<Vec<Member>> {
-    let filter = MemberFilter {
-        statuses: vec![MemberStatus::Active],
-        ..MemberFilter::default()
-    };
-    Ok(members::list(conn, &filter)
+    Ok(members::list(conn, &MemberFilter::active())
         .await?
         .into_iter()
         .filter(|m| authz::view_personal_records(actor, &m.subject()).is_ok())
@@ -1009,20 +1000,10 @@ async fn admin_filter(
     range: DateRange,
     query: &AdminAttendanceQuery,
 ) -> ServiceResult<RecordFilter> {
-    let departments = match query.department_id {
-        Some(id) => Some(
-            department_tree(conn)
-                .await?
-                .descendants_inclusive(id)
-                .into_iter()
-                .collect(),
-        ),
-        None => None,
-    };
     Ok(RecordFilter {
         range,
         member_id: query.member_id,
-        departments,
+        departments: department_subtree(conn, query.department_id).await?,
     })
 }
 

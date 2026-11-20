@@ -8,7 +8,7 @@ use pango_core::attendance::{BreakTier, WorkPolicy};
 use pango_core::authz::Actor;
 use pango_core::calendar::{DateRange, WorkCalendar};
 use pango_core::error::ConflictReason;
-use pango_core::id::{AuditLogId, MemberId, NotificationId, SessionId};
+use pango_core::id::{AuditLogId, DepartmentId, MemberId, NotificationId, SessionId};
 use pango_core::org::DepartmentTree;
 use pango_core::time::{parse_timezone, Timestamp, WorkCalendarZone};
 use pango_core::DomainError;
@@ -16,6 +16,7 @@ use pango_db::audit::AuditEntry;
 use pango_db::idempotency::{self, StoredResponse};
 use pango_db::members::{self, Member};
 use pango_db::notifications::Notification;
+use pango_db::org::Department;
 use pango_db::sessions::SessionVia;
 use pango_db::settings::CompanySettings;
 use pango_db::{audit, notifications, org, settings, Conn, ReadConn, ReadSnapshot};
@@ -282,9 +283,31 @@ pub async fn build_actor(conn: &mut Conn, member: &Member) -> ServiceResult<Acto
 }
 
 pub async fn department_tree(conn: &mut Conn) -> ServiceResult<DepartmentTree> {
-    let departments = org::list_departments(conn).await?;
+    department_tree_of(&org::list_departments(conn).await?)
+}
+
+/// 이미 읽은 부서 목록으로 트리를 만든다. 부서의 다른 값(조직장 등)도 함께 쓸 때 다시 읽지 않는다.
+pub fn department_tree_of(departments: &[Department]) -> ServiceResult<DepartmentTree> {
     // 저장된 트리가 깨져 있으면(순환 등) 요청을 처리할 수 없다.
     DepartmentTree::new(departments.iter().map(|d| d.node())).map_err(ServiceError::internal)
+}
+
+/// 부서 조건을 그 부서와 하위 부서 전체로 넓힌다. 조건이 없으면 `None`(모든 부서).
+pub async fn department_subtree(
+    conn: &mut Conn,
+    department_id: Option<DepartmentId>,
+) -> ServiceResult<Option<Vec<DepartmentId>>> {
+    let Some(id) = department_id else {
+        return Ok(None);
+    };
+    let tree = department_tree(conn).await?;
+    Ok(Some(tree.descendants_inclusive(id).into_iter().collect()))
+}
+
+/// 부서 ID → 이름. 보관되지 않은 부서만 담는다.
+pub async fn department_names(conn: &mut Conn) -> ServiceResult<BTreeMap<DepartmentId, String>> {
+    let departments = org::list_departments(conn).await?;
+    Ok(departments.into_iter().map(|d| (d.id, d.name)).collect())
 }
 
 /// 회사 설정과 거기서 만든 도메인 값.

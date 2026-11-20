@@ -23,7 +23,6 @@ use pango_core::approval::{
 use pango_core::authz;
 use pango_core::error::{ConflictReason, ValidationReason};
 use pango_core::id::{ApprovalEventId, DocumentId, FormId, MemberId};
-use pango_core::org::DepartmentTree;
 use pango_core::text::{self, Body, Code, Comment, LabelName, Reason, Title};
 use pango_core::time::Timestamp;
 use pango_core::DomainError;
@@ -34,8 +33,8 @@ use pango_db::members::{self, Member};
 use pango_db::{org, Conn};
 
 use super::support::{
-    audit, found, member_names, next_page, notify, require_active_members, require_current_admin,
-    require_updated, Audit, AuthContext, Company, Idempotency, Notify,
+    audit, department_tree_of, found, member_names, next_page, notify, require_active_members,
+    require_current_admin, require_updated, Audit, AuthContext, Company, Idempotency, Notify,
 };
 use super::{attendance, leave};
 use crate::error::{ServiceError, ServiceResult};
@@ -499,8 +498,7 @@ pub async fn suggested_approvers_tx(
         return Ok(Vec::new());
     };
     let departments = org::list_departments(conn).await?;
-    let tree = DepartmentTree::new(departments.iter().map(|d| d.node()))
-        .map_err(ServiceError::internal)?;
+    let tree = department_tree_of(&departments)?;
     let mut heads: Vec<MemberId> = Vec::new();
     for ancestor in tree.ancestors_inclusive(department_id) {
         let head = departments

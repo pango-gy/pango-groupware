@@ -27,17 +27,16 @@ use pango_core::leave::{
     self as rules, Balance, CancelDecision, LeaveAmount, LeaveRequestStatus, LeaveSpan, LeaveUnit,
     LedgerEntry, LedgerEntryKind, ResolutionDecision,
 };
-use pango_core::member::MemberStatus;
 use pango_core::text::{Body, Code, LabelName, Reason, Title};
 use pango_core::time::Timestamp;
 use pango_core::DomainError;
 use pango_db::leave::{self, LeaveRequest, LeaveType, LedgerRecord, RequestFilter};
 use pango_db::members::{self, Member, MemberFilter};
-use pango_db::{org, Conn};
+use pango_db::Conn;
 
 use super::approval::{self, LinkedOutcome, SystemDocument};
 use super::support::{
-    audit, current_member, found, member_names, members_by_id, next_page, notify,
+    audit, current_member, department_names, found, member_names, members_by_id, next_page, notify,
     personal_records_member, require_current_admin, require_updated, Audit, AuthContext, Company,
     Idempotency, Notify,
 };
@@ -1027,16 +1026,8 @@ pub async fn admin_balances(
         let mut snapshot = state.read_snapshot().await?;
         let conn: &mut Conn = &mut snapshot;
         let today = Company::load(conn).await?.today(now);
-        let departments: BTreeMap<_, _> = org::list_departments(conn)
-            .await?
-            .into_iter()
-            .map(|department| (department.id, department.name))
-            .collect();
-        let filter = MemberFilter {
-            statuses: vec![MemberStatus::Active],
-            ..MemberFilter::default()
-        };
-        let people = members::list(conn, &filter).await?;
+        let departments = department_names(conn).await?;
+        let people = members::list(conn, &MemberFilter::active()).await?;
         let ids: Vec<MemberId> = people.iter().map(|member| member.id).collect();
         let mut ledgers: BTreeMap<MemberId, Vec<LedgerRecord>> = BTreeMap::new();
         for record in leave::list_ledger_for_members(conn, &ids).await? {
@@ -1165,11 +1156,7 @@ async fn run_accrual_tx(
     today: NaiveDate,
     now: Timestamp,
 ) -> ServiceResult<AccrualRunResult> {
-    let filter = MemberFilter {
-        statuses: vec![MemberStatus::Active],
-        ..MemberFilter::default()
-    };
-    let people = members::list(conn, &filter).await?;
+    let people = members::list(conn, &MemberFilter::active()).await?;
     let mut grants_inserted = 0u32;
     for member in &people {
         let inserted = ensure_accrued_tx(conn, member, today, now).await?;

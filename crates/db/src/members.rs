@@ -180,6 +180,16 @@ pub struct MemberFilter {
     pub search_login_id: bool,
 }
 
+impl MemberFilter {
+    /// 재직 구성원 전체. 다른 조건은 `..MemberFilter::active()`로 덧붙인다.
+    pub fn active() -> Self {
+        Self {
+            statuses: vec![MemberStatus::Active],
+            ..Self::default()
+        }
+    }
+}
+
 /// `LIKE` 패턴의 특수문자를 이스케이프한다. 검색어의 `%`, `_`가 와일드카드로 쓰이지 않게 한다.
 fn like_contains(term: &str) -> String {
     let mut pattern = String::with_capacity(term.len() + 2);

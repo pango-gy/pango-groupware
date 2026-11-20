@@ -20,7 +20,8 @@ use pango_db::members::{self, Member, MemberFilter};
 use pango_db::{org, sessions, Conn, DbError};
 
 use super::support::{
-    audit, current_actor, found, require_updated, Audit, AuthContext, Changes, Company,
+    audit, current_actor, department_names, found, require_updated, Audit, AuthContext, Changes,
+    Company,
 };
 use crate::error::{ServiceError, ServiceResult};
 use crate::security::generate_temporary_password;
@@ -36,11 +37,7 @@ struct Names {
 
 impl Names {
     async fn load(conn: &mut Conn, members: &[Member]) -> ServiceResult<Self> {
-        let mut departments: BTreeMap<_, _> = org::list_departments(conn)
-            .await?
-            .into_iter()
-            .map(|d| (d.id, d.name))
-            .collect();
+        let mut departments = department_names(conn).await?;
         let mut positions: BTreeMap<_, _> = org::list_positions(conn)
             .await?
             .into_iter()
@@ -173,9 +170,8 @@ pub async fn team_members(
 ) -> ServiceResult<Vec<MemberSummary>> {
     let scope = authz::team_scope(&ctx.actor)?;
     let filter = MemberFilter {
-        statuses: vec![MemberStatus::Active],
         departments: scope.map(|departments| departments.iter().copied().collect()),
-        ..MemberFilter::default()
+        ..MemberFilter::active()
     };
     let mut conn = state.read().await?;
     let list = members::list(&mut conn, &filter).await?;
