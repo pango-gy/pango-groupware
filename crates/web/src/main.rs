@@ -1,6 +1,7 @@
 //! pango-groupware 웹 UI 진입점.
 
 mod api;
+mod badges;
 mod calendar;
 mod format;
 mod layout;

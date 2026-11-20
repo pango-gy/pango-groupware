@@ -22,6 +22,21 @@ fn field_label(field: &str) -> &str {
         "month" => "월",
         "timezone" => "시간대",
         "amount" | "amount_q" => "수량",
+        "company_name" => "회사 이름",
+        "day_cutoff" => "근무일 전환 시각",
+        "work_start" => "업무 시작 시각",
+        "work_end" => "업무 종료 시각",
+        "half_day_split" => "반차 기준 시각",
+        "quarter_minutes" => "반반차 길이",
+        "late_grace_minutes" => "지각 유예 시간",
+        "break_tiers" => "휴게 시간",
+        "workdays" => "근무 요일",
+        "department_id" => "대상 부서",
+        "audience" => "공지 대상",
+        "date" => "날짜",
+        "items" => "항목",
+        "year" => "연도",
+        "until" => "기간",
         other => other,
     }
 }
@@ -37,6 +52,31 @@ fn validation_message(field: Option<&str>, reason: Option<&str>) -> String {
             "아이디가 들어 있거나 같은 글자만 반복한 비밀번호는 쓸 수 없습니다.".into()
         }
         (Some("steps"), Some("empty")) => "결재자를 한 명 이상 지정해 주세요.".into(),
+        (Some("department_id"), Some("empty")) => "대상 부서를 선택해 주세요.".into(),
+        (Some("workdays"), _) => "근무 요일을 하루 이상 선택해 주세요.".into(),
+        (Some("timezone"), _) => "시간대 이름이 올바르지 않습니다. 예: Asia/Seoul".into(),
+        (Some("day_cutoff"), Some("out_of_range")) => {
+            "근무일 전환 시각은 12:00 이전이어야 합니다.".into()
+        }
+        (Some("work_end"), Some("inconsistent")) => {
+            "업무 종료 시각은 시작 시각보다 늦어야 합니다.".into()
+        }
+        (Some("half_day_split"), Some("out_of_range")) => {
+            "반차 기준 시각은 업무 시작과 종료 사이여야 합니다.".into()
+        }
+        (Some("quarter_minutes"), Some("out_of_range")) => {
+            "반반차 길이는 1분 이상이고 근무 시간보다 짧아야 합니다.".into()
+        }
+        (Some("late_grace_minutes"), Some("out_of_range")) => {
+            "지각 유예 시간은 0~120분이어야 합니다.".into()
+        }
+        (Some("break_tiers"), Some("too_long")) => "휴게 단계는 6개까지 둘 수 있습니다.".into(),
+        (Some("break_tiers"), Some("inconsistent")) => {
+            "휴게 기준은 위에서부터 커져야 하고, 휴게 시간은 기준보다 짧아야 합니다.".into()
+        }
+        (Some("break_tiers"), Some("out_of_range")) => {
+            "휴게 기준은 1440분(24시간) 이하여야 합니다.".into()
+        }
         (_, Some("empty")) => format!("{label}을(를) 입력해 주세요."),
         (_, Some("too_short")) => format!("{label}이(가) 너무 짧습니다."),
         (_, Some("too_long")) => format!("{label}이(가) 너무 깁니다."),
@@ -110,10 +150,98 @@ pub fn member_status_label(status: MemberStatus) -> &'static str {
     }
 }
 
+/// 감사 로그 동작 코드와 문구. 동작 필터의 선택지도 이 목록을 쓴다.
+pub const AUDIT_ACTIONS: &[(&str, &str)] = &[
+    ("auth.login", "로그인"),
+    ("auth.logout", "로그아웃"),
+    ("auth.password_change", "비밀번호 변경"),
+    ("auth.session_revoke", "기기 로그아웃"),
+    ("member.create", "구성원 추가"),
+    ("member.update", "구성원 정보 수정"),
+    ("member.role", "역할 변경"),
+    ("member.status", "재직 상태 변경"),
+    ("member.password_reset", "비밀번호 초기화"),
+    ("department.create", "부서 추가"),
+    ("department.update", "부서 수정"),
+    ("department.archive", "부서 삭제"),
+    ("position.create", "직책 추가"),
+    ("position.update", "직책 수정"),
+    ("position.archive", "직책 삭제"),
+    ("attendance.create", "출퇴근 기록 추가"),
+    ("attendance.edit", "출퇴근 기록 수정"),
+    ("attendance.export", "근태 내보내기"),
+    ("notice.create", "공지 게시"),
+    ("notice.update", "공지 수정"),
+    ("notice.archive", "공지 보관"),
+    ("settings.update", "회사 설정 변경"),
+    ("holiday.upsert", "공휴일 등록·변경"),
+    ("holiday.delete", "공휴일 삭제"),
+    ("holiday.import", "공휴일 일괄 등록"),
+    ("system.initialize", "초기 설정"),
+];
+
+/// 감사 로그 동작 문구. 모르는 코드는 코드를 그대로 보여 준다(새 동작이 생겨도 기록은 보여야 한다).
+pub fn audit_action_label(code: &str) -> String {
+    AUDIT_ACTIONS
+        .iter()
+        .find(|(known, _)| *known == code)
+        .map_or_else(|| code.to_owned(), |(_, label)| (*label).to_owned())
+}
+
+/// 감사 로그 대상 종류 문구. 모르는 종류는 그대로.
+pub fn audit_target_label(target_type: &str) -> String {
+    let label = match target_type {
+        "member" => "구성원",
+        "department" => "부서",
+        "position" => "직책",
+        "session" => "로그인 기기",
+        "attendance_record" => "출퇴근 기록",
+        "notice" => "공지",
+        "company_settings" => "회사 설정",
+        "holiday" => "공휴일",
+        other => return other.to_owned(),
+    };
+    label.to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use pango_core::error::ConflictReason;
+
+    #[test]
+    fn audit_codes_have_labels_and_unknown_codes_fall_back() {
+        assert_eq!(audit_action_label("notice.create"), "공지 게시");
+        assert_eq!(audit_action_label("holiday.import"), "공휴일 일괄 등록");
+        assert_eq!(audit_action_label("future.thing"), "future.thing");
+        assert_eq!(audit_action_label(""), "");
+        assert_eq!(audit_target_label("company_settings"), "회사 설정");
+        assert_eq!(audit_target_label("<b>x</b>"), "<b>x</b>");
+        let mut codes: Vec<_> = AUDIT_ACTIONS.iter().map(|(code, _)| *code).collect();
+        codes.sort_unstable();
+        codes.dedup();
+        assert_eq!(codes.len(), AUDIT_ACTIONS.len(), "코드가 중복되지 않는다");
+    }
+
+    #[test]
+    fn policy_fields_have_labels() {
+        assert_eq!(
+            error_message("validation_failed", Some("work_end"), Some("inconsistent")),
+            "업무 종료 시각은 시작 시각보다 늦어야 합니다."
+        );
+        assert!(
+            error_message("validation_failed", Some("department_id"), Some("empty"))
+                .contains("대상 부서")
+        );
+        assert_eq!(
+            error_message(
+                "validation_failed",
+                Some("quarter_minutes"),
+                Some("invalid_format")
+            ),
+            "반반차 길이의 형식이 올바르지 않습니다."
+        );
+    }
 
     #[test]
     fn every_conflict_code_has_a_specific_message() {

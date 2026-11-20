@@ -5,6 +5,7 @@ use pango_api::auth::Me;
 use pango_api::Empty;
 
 use crate::api;
+use crate::badges::{self, provide_badges, use_badges};
 use crate::route::Route;
 use crate::session::use_session;
 use crate::text;
@@ -82,6 +83,7 @@ fn is_active(current: &Route, target: &Route) -> bool {
 #[component]
 fn NavLink(item: NavItem, #[props(default)] compact: bool) -> Element {
     let current = use_route::<Route>();
+    let count = use_badges().for_route(&item.to);
     let active = is_active(&current, &item.to);
     let class = match (compact, active) {
         (true, true) => "tabbar-item tabbar-item-active",
@@ -93,6 +95,12 @@ fn NavLink(item: NavItem, #[props(default)] compact: bool) -> Element {
         Link { class, to: item.to.clone(), "aria-current": if active { "page" },
             Icon { name: item.icon }
             span { "{item.label}" }
+            if count > 0 {
+                span { class: "nav-count",
+                    span { class: "sr-only", "읽지 않음 " }
+                    "{badges::count_text(count)}"
+                }
+            }
         }
     }
 }
@@ -123,6 +131,7 @@ fn Sidebar(me: Me) -> Element {
                     }
                 }
             }
+            NavLink { item: item(Route::Notifications {}, "알림", IconName::Bell) }
             div { class: "sidebar-footer",
                 Link { class: "profile-chip", to: Route::Profile {},
                     Avatar { name: me.name.clone() }
@@ -143,12 +152,19 @@ fn Sidebar(me: Me) -> Element {
 
 #[component]
 fn TopBar(me: Me) -> Element {
+    let unread = use_badges().notifications();
     rsx! {
         header { class: "topbar",
             span { class: "topbar-title", "{me.company_name}" }
             div { class: "topbar-actions",
-                Link { class: "icon-btn", to: Route::Notifications {}, "aria-label": "알림",
+                Link {
+                    class: "icon-btn icon-btn-badged",
+                    to: Route::Notifications {},
+                    "aria-label": badges::unread_label("알림", unread),
                     Icon { name: IconName::Bell }
+                    if unread > 0 {
+                        span { class: "icon-badge", "aria-hidden": "true", "{badges::count_text(unread)}" }
+                    }
                 }
                 Link { class: "icon-btn", to: Route::Profile {}, "aria-label": "내 정보",
                     Avatar { name: me.name.clone() }
@@ -181,8 +197,16 @@ fn TabBar() -> Element {
 pub fn Shell() -> Element {
     let session = use_session();
     let nav = navigator();
+    let badges = provide_badges();
     let me = session.me();
     let loaded = session.is_loaded();
+
+    // 로그인 상태가 정해지면 배지를 한 번 읽는다.
+    use_effect(move || {
+        if session.me().is_some() {
+            spawn(badges.refresh());
+        }
+    });
 
     use_effect(move || {
         if !session.is_loaded() {
