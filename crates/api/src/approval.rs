@@ -179,10 +179,7 @@ pub struct DocumentQuery {
 
 impl DocumentQuery {
     pub fn page(&self) -> PageQuery {
-        PageQuery {
-            limit: self.limit,
-            cursor: self.cursor.clone(),
-        }
+        PageQuery::of(self.limit, &self.cursor)
     }
 }
 
@@ -203,10 +200,7 @@ pub struct AdminDocumentQuery {
 
 impl AdminDocumentQuery {
     pub fn page(&self) -> PageQuery {
-        PageQuery {
-            limit: self.limit,
-            cursor: self.cursor.clone(),
-        }
+        PageQuery::of(self.limit, &self.cursor)
     }
 }
 

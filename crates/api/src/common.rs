@@ -42,6 +42,14 @@ impl PageQuery {
     pub const DEFAULT_LIMIT: u32 = 50;
     pub const MAX_LIMIT: u32 = 200;
 
+    /// 목록 쿼리 DTO의 `limit`·`cursor` 필드로 만든다(필터와 함께 받는 목록용).
+    pub fn of(limit: Option<u32>, cursor: &Option<String>) -> Self {
+        Self {
+            limit,
+            cursor: cursor.clone(),
+        }
+    }
+
     /// 범위를 벗어난 값은 잘라서 쓴다(0 → 1, 너무 큰 값 → 최대).
     pub fn limit(&self) -> u32 {
         self.limit

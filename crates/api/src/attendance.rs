@@ -235,18 +235,12 @@ pub struct CorrectionQuery {
 
 impl AdminAttendanceQuery {
     pub fn page(&self) -> PageQuery {
-        PageQuery {
-            limit: self.limit,
-            cursor: self.cursor.clone(),
-        }
+        PageQuery::of(self.limit, &self.cursor)
     }
 }
 
 impl CorrectionQuery {
     pub fn page(&self) -> PageQuery {
-        PageQuery {
-            limit: self.limit,
-            cursor: self.cursor.clone(),
-        }
+        PageQuery::of(self.limit, &self.cursor)
     }
 }

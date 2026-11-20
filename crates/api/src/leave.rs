@@ -155,10 +155,7 @@ pub struct AdminLeaveRequestQuery {
 
 impl AdminLeaveRequestQuery {
     pub fn page(&self) -> PageQuery {
-        PageQuery {
-            limit: self.limit,
-            cursor: self.cursor.clone(),
-        }
+        PageQuery::of(self.limit, &self.cursor)
     }
 }
 

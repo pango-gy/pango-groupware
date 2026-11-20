@@ -33,10 +33,7 @@ pub struct NotificationQuery {
 
 impl NotificationQuery {
     pub fn page(&self) -> PageQuery {
-        PageQuery {
-            limit: self.limit,
-            cursor: self.cursor.clone(),
-        }
+        PageQuery::of(self.limit, &self.cursor)
     }
 }
 
