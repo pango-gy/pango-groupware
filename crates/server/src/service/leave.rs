@@ -867,6 +867,15 @@ pub async fn on_document_closed_tx(
     close_request_tx(conn, &request, status, restore_balance, actor_id, now).await
 }
 
+/// 휴가를 취소하는 자격. 본인 자격의 취소와 관리자 권한의 취소는 규칙이 다르다([`cancel_tx`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Canceller {
+    /// 신청자 본인.
+    Owner,
+    /// 관리자 권한(다른 사람의 신청).
+    Admin,
+}
+
 /// 휴가 취소의 공통 경로.
 ///
 /// 신청과 결재 문서가 어긋나지 않게 하는 규칙:
@@ -887,9 +896,10 @@ async fn cancel_tx(
     conn: &mut Conn,
     ctx: &AuthContext,
     request: &LeaveRequest,
-    by_admin: bool,
+    canceller: Canceller,
     now: Timestamp,
 ) -> ServiceResult<()> {
+    let by_admin = canceller == Canceller::Admin;
     let company = Company::load(conn).await?;
     let start = leave_start_tx(conn, &company, request).await?;
     let decision = rules::decide_cancel(request.status, start, company.today(now), by_admin)?;
@@ -964,7 +974,7 @@ pub async fn cancel_request(
         .write(async |conn: &mut Conn| {
             let request = found(leave::find_request(conn, id).await?)?;
             authz::require_own(&ctx.actor, request.member_id, DomainError::NotFound)?;
-            cancel_tx(conn, ctx, &request, false, now).await?;
+            cancel_tx(conn, ctx, &request, Canceller::Owner, now).await?;
             request_dto(conn, id).await
         })
         .await
@@ -987,7 +997,7 @@ pub async fn admin_cancel_request(
             let request = found(leave::find_request(conn, id).await?)?;
             let member = found(members::find(conn, request.member_id).await?)?;
             authz::edit_personal_records(&actor, &member.subject())?;
-            cancel_tx(conn, ctx, &request, true, now).await?;
+            cancel_tx(conn, ctx, &request, Canceller::Admin, now).await?;
             request_dto(conn, id).await
         })
         .await

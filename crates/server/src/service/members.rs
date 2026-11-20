@@ -115,11 +115,19 @@ async fn reload_detail(conn: &mut Conn, id: MemberId) -> ServiceResult<MemberDet
 
 // ── 조회 ────────────────────────────────────────────────────────────────
 
-fn filter(
-    query: &MemberQuery,
+/// 목록이 보여 줄 범위. 디렉터리와 관리자 목록이 같은 쿼리를 다르게 해석한다.
+struct ListScope {
+    /// 정지·퇴사 계정도 포함할지.
     include_inactive: bool,
+    /// 검색어를 로그인 아이디와도 비교할지(관리자 목록만).
     search_login_id: bool,
-) -> ServiceResult<MemberFilter> {
+}
+
+fn filter(query: &MemberQuery, scope: ListScope) -> ServiceResult<MemberFilter> {
+    let ListScope {
+        include_inactive,
+        search_login_id,
+    } = scope;
     let search = match &query.search {
         Some(raw) => Some(SearchTerm::parse(raw)?.into_string()).filter(|t| !t.is_empty()),
         None => None,
@@ -144,7 +152,11 @@ pub async fn list_directory(
     query: &MemberQuery,
 ) -> ServiceResult<Vec<MemberSummary>> {
     let include_inactive = query.include_inactive && authz::view_inactive_members(&ctx.actor);
-    let filter = filter(query, include_inactive, false)?;
+    let scope = ListScope {
+        include_inactive,
+        search_login_id: false,
+    };
+    let filter = filter(query, scope)?;
     let mut conn = state.read().await?;
     let list = members::list(&mut conn, &filter).await?;
     summaries(&mut conn, &list).await
@@ -184,7 +196,11 @@ pub async fn admin_list(
     query: &MemberQuery,
 ) -> ServiceResult<Vec<MemberDetail>> {
     authz::require_admin(&ctx.actor)?;
-    let filter = filter(query, query.include_inactive, true)?;
+    let scope = ListScope {
+        include_inactive: query.include_inactive,
+        search_login_id: true,
+    };
+    let filter = filter(query, scope)?;
     let mut conn = state.read().await?;
     let list = members::list(&mut conn, &filter).await?;
     let names = Names::load(&mut conn, &list).await?;
