@@ -2,16 +2,20 @@
 
 pub mod admin;
 mod auth;
+mod leave;
+mod leave_new;
 mod more;
 mod people;
 mod placeholder;
 mod profile;
 
 pub use auth::{ChangePassword, Login};
+pub use leave::Leave;
+pub use leave_new::LeaveNew;
 pub use more::{More, NotFound};
 pub use people::People;
 pub use placeholder::{
-    ApprovalDetail, ApprovalList, ApprovalNew, Attendance, Home, Leave, LeaveNew, NoticeDetail,
-    Notices, Notifications, Team,
+    ApprovalDetail, ApprovalList, ApprovalNew, Attendance, Home, NoticeDetail, Notices,
+    Notifications, Team,
 };
 pub use profile::Profile;

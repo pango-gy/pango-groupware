@@ -484,3 +484,142 @@ pub fn MonthCalendar(
         }
     }
 }
+
+// ── 휴가 화면과 함께 추가한 조각 ──
+
+pub mod approval_line;
+
+pub use approval_line::{ApprovalLineEditor, ApproverEntry};
+
+/// 되돌리기 어려운 동작의 확인 단계. `message`는 무엇이 일어나는지 한 문장으로 적는다.
+#[component]
+pub fn ConfirmModal(
+    #[props(into)] title: String,
+    #[props(into)] message: String,
+    #[props(into, default = "확인".to_owned())] confirm_label: String,
+    #[props(default = ButtonKind::Danger)] confirm_kind: ButtonKind,
+    #[props(default)] busy: bool,
+    onconfirm: EventHandler<()>,
+    onclose: EventHandler<()>,
+) -> Element {
+    rsx! {
+        Modal { title, onclose: move |_| onclose.call(()),
+            p { class: "confirm-message", "{message}" }
+            div { class: "modal-actions",
+                Button { kind: ButtonKind::Ghost, disabled: busy, onclick: move |_| onclose.call(()), "닫기" }
+                Button { kind: confirm_kind, busy, onclick: move |_| onconfirm.call(()), "{confirm_label}" }
+            }
+        }
+    }
+}
+
+/// 날짜 입력(`YYYY-MM-DD`). 브라우저의 날짜 선택기를 쓴다.
+#[component]
+pub fn DateField(
+    #[props(into)] label: String,
+    #[props(into)] value: String,
+    oninput: EventHandler<String>,
+    #[props(into, default)] min: String,
+    #[props(into, default)] max: String,
+    #[props(into, default)] hint: String,
+    #[props(into, default)] error: String,
+    #[props(default)] required: bool,
+    #[props(default)] disabled: bool,
+) -> Element {
+    rsx! {
+        label { class: "field",
+            span { class: "field-label",
+                "{label}"
+                if required {
+                    span { class: "field-required", "aria-hidden": "true", " *" }
+                }
+            }
+            input {
+                class: if error.is_empty() { "input" } else { "input input-error" },
+                r#type: "date",
+                value: "{value}",
+                min: "{min}",
+                max: "{max}",
+                required,
+                disabled,
+                "aria-invalid": !error.is_empty(),
+                oninput: move |event| oninput.call(event.value()),
+            }
+            if !error.is_empty() {
+                span { class: "field-error", role: "alert", "{error}" }
+            } else if !hint.is_empty() {
+                span { class: "field-hint", "{hint}" }
+            }
+        }
+    }
+}
+
+/// 체크 상자 하나와 설명.
+#[component]
+pub fn CheckboxField(
+    #[props(into)] label: String,
+    checked: bool,
+    onchange: EventHandler<bool>,
+    #[props(into, default)] hint: String,
+    #[props(default)] disabled: bool,
+) -> Element {
+    rsx! {
+        label { class: "check-field",
+            input {
+                r#type: "checkbox",
+                checked,
+                disabled,
+                onchange: move |event| onchange.call(event.checked()),
+            }
+            span { class: "check-field-text",
+                span { "{label}" }
+                if !hint.is_empty() {
+                    small { class: "field-hint", "{hint}" }
+                }
+            }
+        }
+    }
+}
+
+/// 연도 이동 머리: `‹ 2026년 ›`. 범위 밖으로는 이동할 수 없다.
+#[component]
+pub fn YearSwitcher(year: i32, min: i32, max: i32, onchange: EventHandler<i32>) -> Element {
+    rsx! {
+        div { class: "month-switcher",
+            button {
+                class: "icon-btn month-prev",
+                r#type: "button",
+                "aria-label": "이전 해",
+                disabled: year <= min,
+                onclick: move |_| onchange.call(year - 1),
+                Icon { name: IconName::Chevron }
+            }
+            strong { class: "month-label", "{year}년" }
+            button {
+                class: "icon-btn",
+                r#type: "button",
+                "aria-label": "다음 해",
+                disabled: year >= max,
+                onclick: move |_| onchange.call(year + 1),
+                Icon { name: IconName::Chevron }
+            }
+        }
+    }
+}
+
+/// 목록 아래의 "더 보기". `has_more`가 거짓이면 아무것도 그리지 않는다.
+#[component]
+pub fn LoadMore(
+    has_more: bool,
+    #[props(default)] busy: bool,
+    onclick: EventHandler<()>,
+) -> Element {
+    if !has_more {
+        return rsx! {};
+    }
+    rsx! {
+        div { class: "load-more",
+            Button { kind: ButtonKind::Secondary, busy, onclick: move |_| onclick.call(()), "더 보기" }
+        }
+    }
+}
