@@ -11,7 +11,6 @@ use pango_core::calendar::DateRange;
 use pango_core::id::{DepartmentId, LeaveRequestId, MemberId};
 use pango_core::leave::{Balance, LeaveUnit, LedgerEntry, LedgerEntryKind};
 use pango_core::member::MemberStatus;
-use pango_db::audit::{self, AuditFilter};
 use pango_db::leave::{self as ledger, LedgerRecord};
 use pango_db::settings::{self, Holiday};
 use pango_db::{approval as documents, members};
@@ -231,19 +230,6 @@ async fn adjust(app: &TestApp, token: &str, member: MemberId, amount_q: i64) -> 
         .await
 }
 
-async fn audit_count(app: &TestApp, action: &str) -> usize {
-    let mut conn = app.state.read().await.expect("read");
-    let filter = AuditFilter {
-        action: Some(action.to_owned()),
-        ..AuditFilter::default()
-    };
-    audit::list(&mut conn, &filter, 200)
-        .await
-        .expect("audit")
-        .0
-        .len()
-}
-
 fn date(value: &str) -> NaiveDate {
     value.parse().expect("date")
 }
@@ -303,7 +289,7 @@ async fn request_reserves_balance_and_approval_confirms_it() {
         .await
         .expect(StatusCode::OK);
     assert_eq!(reservations(&w.app, w.kim.id).await, (1, 0));
-    assert_eq!(audit_count(&w.app, "leave.request").await, 1);
+    assert_eq!(w.app.audit_entries("leave.request").await.len(), 1);
 }
 
 #[tokio::test]
@@ -391,7 +377,7 @@ async fn canceling_a_pending_request_withdraws_its_document() {
         .expect(StatusCode::OK);
     assert_eq!(again, canceled);
     assert_eq!(reservations(&w.app, w.kim.id).await, (1, 1));
-    assert_eq!(audit_count(&w.app, "leave.cancel").await, 1);
+    assert_eq!(w.app.audit_entries("leave.cancel").await.len(), 1);
     assert_eq!(
         w.app
             .notification_count(w.lead.id, "approval.withdrawn")
@@ -942,14 +928,14 @@ async fn approved_leave_can_be_canceled_by_the_member_only_before_it_starts() {
         w.app.notification_count(w.lead.id, "leave.canceled").await,
         2
     );
-    assert_eq!(audit_count(&w.app, "leave.admin_cancel").await, 1);
+    assert_eq!(w.app.audit_entries("leave.admin_cancel").await.len(), 1);
     assert_eq!(
         admin_cancel(&w.app, &w.owner, &second)
             .await
             .expect(StatusCode::OK),
         by_admin
     );
-    assert_eq!(audit_count(&w.app, "leave.admin_cancel").await, 1);
+    assert_eq!(w.app.audit_entries("leave.admin_cancel").await.len(), 1);
     assert_eq!(reservations(&w.app, w.kim.id).await, (2, 2));
     assert_ledger_invariants(&w.app, &w.kim).await;
 
@@ -1389,7 +1375,7 @@ async fn admin_adjustment_is_bounded_and_audited() {
         assert_eq!(send(body).await.status, status, "{field}");
     }
     assert!(stored_ledger(&w.app, w.kim.id).await.is_empty());
-    assert_eq!(audit_count(&w.app, "leave.adjust").await, 0);
+    assert_eq!(w.app.audit_entries("leave.adjust").await.len(), 0);
 
     // 경계값 ±400은 통과한다.
     let plus = adjust(&w.app, &w.owner, w.kim.id, 400)
@@ -1401,7 +1387,7 @@ async fn admin_adjustment_is_bounded_and_audited() {
         .expect(StatusCode::CREATED);
     assert_eq!(minus["balance"]["remaining"], FULL);
     assert_eq!(remaining(&w.app, &w.kim).await, FULL);
-    assert_eq!(audit_count(&w.app, "leave.adjust").await, 2);
+    assert_eq!(w.app.audit_entries("leave.adjust").await.len(), 2);
 
     let ledger = w
         .app
@@ -2174,7 +2160,7 @@ async fn admin_reject_restores_the_balance_of_a_stranded_request() {
     assert_eq!(status_of(&w.app, &w.kim, &id).await, "rejected");
     assert_eq!(remaining(&w.app, &w.kim).await, FULL, "예약이 풀린다");
     assert_eq!(reservations(&w.app, w.kim.id).await, (1, 1));
-    assert_eq!(audit_count(&w.app, "approval.admin_reject").await, 1);
+    assert_eq!(w.app.audit_entries("approval.admin_reject").await.len(), 1);
     assert_eq!(
         w.app
             .notification_count(w.kim.id, "approval.rejected")
@@ -2194,7 +2180,7 @@ async fn admin_reject_restores_the_balance_of_a_stranded_request() {
         .expect(StatusCode::OK);
     assert_eq!(reservations(&w.app, w.kim.id).await, (1, 1));
     assert_eq!(remaining(&w.app, &w.kim).await, FULL);
-    assert_eq!(audit_count(&w.app, "approval.admin_reject").await, 1);
+    assert_eq!(w.app.audit_entries("approval.admin_reject").await.len(), 1);
     assert_ledger_invariants(&w.app, &w.kim).await;
 
     // 같은 날짜로 다시 신청할 수 있다(결재선은 재직 중인 사람으로).
@@ -2232,8 +2218,8 @@ async fn admin_cancel_closes_a_stranded_request() {
     assert_eq!(remaining(&w.app, &w.kim).await, FULL);
     assert_eq!(reservations(&w.app, w.kim.id).await, (1, 1));
     // 취소와 대리 반려 양쪽이 감사 로그에 남는다.
-    assert_eq!(audit_count(&w.app, "leave.admin_cancel").await, 1);
-    assert_eq!(audit_count(&w.app, "approval.admin_reject").await, 1);
+    assert_eq!(w.app.audit_entries("leave.admin_cancel").await.len(), 1);
+    assert_eq!(w.app.audit_entries("approval.admin_reject").await.len(), 1);
     assert_eq!(
         w.app
             .notification_count(w.kim.id, "approval.rejected")
@@ -2247,8 +2233,8 @@ async fn admin_cancel_closes_a_stranded_request() {
         .await
         .expect_error(StatusCode::CONFLICT, "document_already_closed");
     assert_eq!(reservations(&w.app, w.kim.id).await, (1, 1));
-    assert_eq!(audit_count(&w.app, "leave.admin_cancel").await, 1);
-    assert_eq!(audit_count(&w.app, "approval.admin_reject").await, 1);
+    assert_eq!(w.app.audit_entries("leave.admin_cancel").await.len(), 1);
+    assert_eq!(w.app.audit_entries("approval.admin_reject").await.len(), 1);
 }
 
 /// 결재자가 재직 중이어도 관리자의 취소는 진행 중인 문서를 끝낸다. 아무도 결재하지 않은
@@ -2265,7 +2251,7 @@ async fn admin_cancel_withdraws_untouched_documents_and_rejects_touched_ones() {
         w.app.document(&w.kim.token, &untouched_doc).await["status"],
         "withdrawn"
     );
-    assert_eq!(audit_count(&w.app, "approval.admin_reject").await, 0);
+    assert_eq!(w.app.audit_entries("approval.admin_reject").await.len(), 0);
 
     let mut body = leave(&w.annual, "2026-03-11", "2026-03-11", "full_day");
     body["steps"] = json!([
@@ -2376,7 +2362,7 @@ async fn admin_cannot_adjust_or_admin_cancel_their_own_leave_but_the_owner_can()
         .await
         .expect_error(StatusCode::FORBIDDEN, "forbidden");
     assert_eq!(stored_ledger(&w.app, admin.id).await, ledger_before);
-    assert_eq!(audit_count(&w.app, "leave.adjust").await, 0);
+    assert_eq!(w.app.audit_entries("leave.adjust").await.len(), 0);
     assert_eq!(remaining(&w.app, &admin).await, FULL);
 
     // 관리자 취소: 이미 시작된 본인의 승인된 휴가를 스스로 되돌릴 수 없다.
@@ -2390,7 +2376,7 @@ async fn admin_cannot_adjust_or_admin_cancel_their_own_leave_but_the_owner_can()
         .expect_error(StatusCode::FORBIDDEN, "forbidden");
     assert_eq!(status_of(&w.app, &admin, &id).await, "approved");
     assert_eq!(reservations(&w.app, admin.id).await, (1, 0));
-    assert_eq!(audit_count(&w.app, "leave.admin_cancel").await, 0);
+    assert_eq!(w.app.audit_entries("leave.admin_cancel").await.len(), 0);
     // 본인 자격의 취소는 일반 구성원과 같은 규칙이다(시작된 휴가는 안 된다).
     cancel(&w.app, &admin.token, &id)
         .await
@@ -2409,11 +2395,11 @@ async fn admin_cannot_adjust_or_admin_cancel_their_own_leave_but_the_owner_can()
         .expect(StatusCode::CREATED);
 
     // 최고 관리자는 본인 것도 조정할 수 있고 감사 로그에 남는다.
-    let before = audit_count(&w.app, "leave.adjust").await;
+    let before = w.app.audit_entries("leave.adjust").await.len();
     adjust(&w.app, &w.owner, w.app.owner_id, 4)
         .await
         .expect(StatusCode::CREATED);
-    assert_eq!(audit_count(&w.app, "leave.adjust").await, before + 1);
+    assert_eq!(w.app.audit_entries("leave.adjust").await.len(), before + 1);
 }
 
 // ── 부여 경계를 넘는 신청 ─────────────────────────────────────────────────
@@ -2464,7 +2450,7 @@ async fn request_reaching_past_the_last_valid_grant_is_rejected() {
         w.app.notification_count(w.lead.id, "approval.todo").await,
         0
     );
-    assert_eq!(audit_count(&w.app, "leave.request").await, 0);
+    assert_eq!(w.app.audit_entries("leave.request").await.len(), 0);
     // 차감하지 않는 휴가는 부여와 무관하다.
     let sick = type_id(&w.app, &w.owner, "sick").await;
     request(
@@ -2600,7 +2586,7 @@ async fn admin_balances_reads_without_the_write_connection() {
 async fn admin_balances_still_applies_grants_that_became_due() {
     let w = world().await;
     let before = admin_balances(&w.app, &w.owner).await;
-    assert_eq!(audit_count(&w.app, "leave.accrual_run").await, 0);
+    assert_eq!(w.app.audit_entries("leave.accrual_run").await.len(), 0);
     // 1년 뒤: kim·lead의 3주년 연차(16일)와 대표의 1주년 연차가 생긴다.
     w.app.set_time("2027-03-02T00:00:00Z");
     let owner = w.app.login_owner().await;

@@ -6,7 +6,6 @@ use pango_api::leave::AccrualRunResult;
 use pango_core::authz::Role;
 use pango_core::id::MemberId;
 use pango_core::member::MemberStatus;
-use pango_db::audit::{self, AuditFilter};
 use pango_db::members;
 use pango_server::config::Config;
 use pango_server::service::maintenance::{self, Cleanup, DailyAccrual};
@@ -114,15 +113,6 @@ async fn cleanup_never_unlocks_an_account_early() {
 
 // ── 하루 한 번의 연차 자동 부여 ─────────────────────────────────────────
 
-async fn accrual_audits(app: &TestApp) -> Vec<audit::AuditEntry> {
-    let mut conn = app.state.db.read().await.expect("conn");
-    let filter = AuditFilter {
-        action: Some("leave.accrual_run".to_owned()),
-        ..AuditFilter::default()
-    };
-    audit::list(&mut conn, &filter, 200).await.expect("audit").0
-}
-
 async fn ledger_rows(app: &TestApp) -> i64 {
     app.count("SELECT COUNT(*) FROM leave_ledger").await
 }
@@ -161,7 +151,7 @@ async fn daily_accrual_runs_once_per_company_day() {
     );
     assert_eq!(app.grant_keys(kim).await.len(), 13);
     assert!(app.grant_keys(newbie).await.is_empty());
-    let audits = accrual_audits(&app).await;
+    let audits = app.audit_entries("leave.accrual_run").await;
     assert_eq!(audits.len(), 1);
     assert_eq!(audits[0].actor_id, None, "시스템 작업");
 
@@ -189,7 +179,7 @@ async fn daily_accrual_runs_once_per_company_day() {
         "반복 실행은 아무것도 넣지 않는다"
     );
     assert_eq!(
-        accrual_audits(&app).await.len(),
+        app.audit_entries("leave.accrual_run").await.len(),
         1,
         "바뀐 것이 없는 날은 감사 로그도 남기지 않는다"
     );
@@ -211,7 +201,7 @@ async fn daily_accrual_picks_up_new_grants_as_days_pass() {
     let monthly = accrual.run_if_due(&app.state).await.expect("run");
     assert_eq!(monthly.map(|result| result.grants_inserted), Some(1));
     assert_eq!(app.grant_keys(newbie).await, ["monthly:1"]);
-    assert_eq!(accrual_audits(&app).await.len(), 2);
+    assert_eq!(app.audit_entries("leave.accrual_run").await.len(), 2);
 
     // 서버를 다시 띄우면(새 상태) 같은 날 한 번 더 돌지만 아무것도 바꾸지 않는다.
     let rows = ledger_rows(&app).await;
@@ -304,5 +294,5 @@ async fn parallel_daily_accrual_runs_insert_each_grant_once() {
     let keys = app.grant_keys(kim).await;
     let unique: std::collections::BTreeSet<&String> = keys.iter().collect();
     assert_eq!((keys.len(), unique.len()), (13, 13));
-    assert_eq!(accrual_audits(&app).await.len(), 1);
+    assert_eq!(app.audit_entries("leave.accrual_run").await.len(), 1);
 }
