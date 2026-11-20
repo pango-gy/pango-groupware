@@ -262,6 +262,39 @@ mod tests {
     }
 
     #[test]
+    fn parse_month_accepts_only_fixed_width_year_month() {
+        let range = parse_month("2026-02").expect("month");
+        assert_eq!(
+            (range.start(), range.end()),
+            (d("2026-02-01"), d("2026-02-28"))
+        );
+        assert_eq!(parse_month("2028-02").expect("leap").end(), d("2028-02-29"));
+        assert_eq!(
+            parse_month("2026-12").expect("december").end(),
+            d("2026-12-31")
+        );
+        for bad in [
+            "",
+            "2026",
+            "2026-3",
+            "2026-003",
+            "26-03",
+            "2026-03-01",
+            "2026/03",
+            " 2026-03",
+            "2026-03 ",
+            "+026-03",
+            "2026-0a",
+            "２０２６-03",
+            "2026-00",
+            "2026-13",
+            "0000-00",
+        ] {
+            assert!(parse_month(bad).is_err(), "accepted {bad:?}");
+        }
+    }
+
+    #[test]
     fn overlap_is_inclusive_on_both_ends() {
         let a = DateRange::new(d("2026-03-02"), d("2026-03-04")).expect("a");
         let touching = DateRange::new(d("2026-03-04"), d("2026-03-06")).expect("touching");

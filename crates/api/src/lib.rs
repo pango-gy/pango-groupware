@@ -3,9 +3,11 @@
 //! 여기 있는 타입이 곧 HTTP API의 모양이다. 필드를 바꾸면 API가 바뀐다.
 
 pub mod admin;
+pub mod approval;
 pub mod attendance;
 pub mod auth;
 pub mod common;
+pub mod leave;
 pub mod notice;
 pub mod notification;
 pub mod org;

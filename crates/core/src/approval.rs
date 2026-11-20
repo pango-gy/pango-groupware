@@ -273,6 +273,32 @@ impl DocumentEvent {
     }
 }
 
+string_enum!(
+    /// 문서 이력(`approval_events`)에 남기는 사건 종류. [`DocumentEvent`]와 일대일이다.
+    EventKind, "event_kind" {
+        Submitted => "submitted",
+        /// 한 단계의 승인(결재·합의).
+        Approved => "approved",
+        /// 최종 승인.
+        Completed => "completed",
+        Rejected => "rejected",
+        Withdrawn => "withdrawn",
+    }
+);
+
+impl DocumentEvent {
+    /// 이력에 남길 종류.
+    pub const fn kind(&self) -> EventKind {
+        match self {
+            Self::Submitted { .. } => EventKind::Submitted,
+            Self::StepApproved { .. } => EventKind::Approved,
+            Self::Completed => EventKind::Completed,
+            Self::Rejected { .. } => EventKind::Rejected,
+            Self::Withdrawn => EventKind::Withdrawn,
+        }
+    }
+}
+
 /// 전이 결과.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use = "NoOp이면 저장·알림·연결 효과를 건너뛰어야 한다"]

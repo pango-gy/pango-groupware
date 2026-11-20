@@ -136,6 +136,7 @@ UUID v7을 타입별 newtype(`MemberId`, `DocumentId` …)으로 감쌉니다. D
   - 1년 이상: 15일. 3년 이상부터 2년마다 1일 가산, 최대 25일.
 - 신청 일수는 근무 요일과 공휴일을 제외하고 셉니다. 기간이 겹치는 신청은 거부합니다.
 - 신청 시점에 잔여를 **예약(차감)** 하고, 반려·취소·회수 시 복원합니다.
+- 취소와 결재 문서는 함께 움직입니다. 대기 중인 신청의 취소는 곧 문서 **회수**이며(누군가 결재한 뒤에는 회수할 수 없으므로 취소도 거부, 반려로 종료), 승인된 휴가의 취소는 문서를 승인된 기록으로 둔 채 신청만 취소하고 잔여를 복원합니다. 본인은 휴가 시작 전에만, 관리자는 언제든 취소할 수 있습니다.
 
 ### 전자결재
 - 문서 상태: `draft → in_progress → approved | rejected | withdrawn`.
@@ -155,9 +156,9 @@ UUID v7을 타입별 newtype(`MemberId`, `DocumentId` …)으로 감쌉니다. D
 | 홈 | `GET /home` |
 | 조직 | `GET /departments` `GET /positions` `GET /members` `GET /members/{id}` |
 | 출퇴근 | `GET /attendance/today` `POST /attendance/clock-in` `POST /attendance/clock-out` `GET /attendance/records` `GET /attendance/summary` `POST /attendance/corrections` |
-| 휴가 | `GET /leave/types` `GET /leave/balance` `GET /leave/ledger` `GET /leave/requests` `POST /leave/requests` `POST /leave/requests/{id}/cancel` |
+| 휴가 | `GET /leave/types` `GET /leave/balance` `GET /leave/ledger` `GET /leave/requests` `POST /leave/requests` `POST /leave/requests/{id}/cancel` `GET /leave/calendar` |
 | 조직장 | `GET /team/attendance` `GET /team/leave` `GET /team/members` |
-| 결재 | `GET /approval/forms` `GET /approval/documents` `POST /approval/documents` `GET /approval/documents/{id}` `POST /approval/documents/{id}/{approve,reject,withdraw}` |
+| 결재 | `GET /approval/forms` `GET /approval/counts` `GET /approval/line-suggestion` `GET /approval/documents` `POST /approval/documents` `GET·PATCH·DELETE /approval/documents/{id}` `POST /approval/documents/{id}/{submit,approve,reject,withdraw}` |
 | 공지 | `GET /notices` `GET /notices/{id}` `POST /notices/{id}/read` |
 | 알림 | `GET /notifications` `POST /notifications/{id}/read` `POST /notifications/read-all` |
 | 관리 | `/admin/members…` `/admin/departments…` `/admin/positions…` `/admin/attendance…` `/admin/leave…` `/admin/approval/forms…` `/admin/notices…` `/admin/holidays…` `/admin/settings` `/admin/audit-log` `/admin/dashboard` |

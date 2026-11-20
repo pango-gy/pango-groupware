@@ -1,17 +1,21 @@
 //! 서비스 공통 도구: 요청 맥락, 트랜잭션, 감사 로그, 회사 설정, 알림.
 
+use std::collections::BTreeMap;
+use std::str::FromStr;
+
 use chrono::NaiveDate;
+use pango_api::{Page, PageQuery};
 use pango_core::attendance::{BreakTier, WorkPolicy};
 use pango_core::authz::Actor;
 use pango_core::calendar::{DateRange, WorkCalendar};
-use pango_core::error::ConflictReason;
+use pango_core::error::{ConflictReason, ValidationReason};
 use pango_core::id::{AuditLogId, MemberId, NotificationId, SessionId};
 use pango_core::org::DepartmentTree;
 use pango_core::time::{parse_timezone, Timestamp, WorkCalendarZone};
 use pango_core::DomainError;
 use pango_db::audit::AuditEntry;
 use pango_db::idempotency::{self, StoredResponse};
-use pango_db::members::Member;
+use pango_db::members::{self, Member};
 use pango_db::notifications::Notification;
 use pango_db::sessions::SessionVia;
 use pango_db::settings::CompanySettings;
@@ -116,6 +120,51 @@ pub fn require_updated(updated: bool) -> ServiceResult<()> {
 /// 조회 결과가 없으면 `NotFound`.
 pub fn found<T>(value: Option<T>) -> ServiceResult<T> {
     value.ok_or(ServiceError::Domain(DomainError::NotFound))
+}
+
+/// 구성원 ID → 이름. 목록·상세 응답에 이름을 붙일 때 쓴다. 없는 ID는 결과에서 빠진다.
+pub async fn member_names(
+    conn: &mut Conn,
+    ids: impl IntoIterator<Item = MemberId>,
+) -> ServiceResult<BTreeMap<MemberId, String>> {
+    let mut unique: Vec<MemberId> = ids.into_iter().collect();
+    unique.sort_unstable();
+    unique.dedup();
+    let found = members::find_many(conn, &unique).await?;
+    Ok(found.into_iter().map(|m| (m.id, m.name)).collect())
+}
+
+/// 결재선·참조처럼 **새 업무의 당사자**로 지정된 구성원이 모두 재직 중인지 확인한다.
+/// 없는 ID는 `NotFound`, 재직 중이 아니면 `Conflict(MemberInactive)`.
+pub async fn require_active_members(conn: &mut Conn, ids: &[MemberId]) -> ServiceResult<()> {
+    let found = members::find_many(conn, ids).await?;
+    for id in ids {
+        let member = found
+            .iter()
+            .find(|member| member.id == *id)
+            .ok_or(DomainError::NotFound)?;
+        member.status.require_active()?;
+    }
+    Ok(())
+}
+
+/// 목록 커서(직전 페이지의 마지막 ID)를 읽는다. 형식이 틀리면 `Validation { cursor }`.
+pub fn parse_cursor<T: FromStr>(query: &PageQuery) -> ServiceResult<Option<T>> {
+    query
+        .cursor
+        .as_deref()
+        .map(|raw| {
+            raw.parse().map_err(|_| {
+                DomainError::validation("cursor", ValidationReason::InvalidFormat).into()
+            })
+        })
+        .transpose()
+}
+
+/// 저장소의 `(항목, 다음 있음)` 결과를 응답 페이지로 바꾼다. 커서는 마지막 항목의 ID다.
+pub fn page_of<T>(items: Vec<T>, has_more: bool, id_of: impl Fn(&T) -> String) -> Page<T> {
+    let next_cursor = items.last().filter(|_| has_more).map(id_of);
+    Page { items, next_cursor }
 }
 
 /// 감사 로그에 남길 행위. `action`은 `대상.동작` 형식(예: `member.create`).

@@ -1,9 +1,11 @@
 //! HTTP 계층: 라우터와 공통 미들웨어.
 
 pub mod admin;
+pub mod approval;
 pub mod attendance;
 pub mod auth;
 pub mod extract;
+pub mod leave;
 pub mod members;
 pub mod notices;
 pub mod notifications;
@@ -35,6 +37,8 @@ fn api_routes() -> Router<AppState> {
         .merge(notices::routes())
         .merge(notifications::routes())
         .merge(admin::routes())
+        .merge(approval::routes())
+        .merge(leave::routes())
         .fallback(not_found)
 }
 

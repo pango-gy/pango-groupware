@@ -102,6 +102,8 @@ pub async fn initialize(state: &AppState, input: InitInput) -> ServiceResult<Ini
             }
             settings::insert(conn, &settings).await?;
             members::insert(conn, &owner, &password_hash, now).await?;
+            super::approval::seed_defaults_tx(conn, now).await?;
+            super::leave::seed_defaults_tx(conn, now).await?;
             audit(
                 conn,
                 now,
