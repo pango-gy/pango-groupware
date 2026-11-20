@@ -115,7 +115,7 @@ pub async fn find_many(conn: &mut Conn, ids: &[MemberId]) -> DbResult<Vec<Member
     if ids.is_empty() {
         return Ok(Vec::new());
     }
-    let placeholders = vec!["?"; ids.len()].join(", ");
+    let placeholders = codec::placeholders(ids.len());
     let sql = format!("SELECT {MEMBER_COLUMNS} FROM members WHERE id IN ({placeholders})");
     let mut query = sqlx::query_as::<_, MemberRow>(&sql);
     for id in ids {
@@ -211,7 +211,7 @@ pub async fn list(conn: &mut Conn, filter: &MemberFilter) -> DbResult<Vec<Member
     if !filter.statuses.is_empty() {
         sql.push_str(&format!(
             " AND status IN ({})",
-            vec!["?"; filter.statuses.len()].join(", ")
+            codec::placeholders(filter.statuses.len())
         ));
         binds.extend(filter.statuses.iter().map(|s| s.as_str().to_owned()));
     }
@@ -221,7 +221,7 @@ pub async fn list(conn: &mut Conn, filter: &MemberFilter) -> DbResult<Vec<Member
         }
         sql.push_str(&format!(
             " AND department_id IN ({})",
-            vec!["?"; departments.len()].join(", ")
+            codec::placeholders(departments.len())
         ));
         binds.extend(departments.iter().map(ToString::to_string));
     }

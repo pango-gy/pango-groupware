@@ -409,7 +409,7 @@ pub async fn list_steps(conn: &mut Conn, id: DocumentId) -> DbResult<Vec<Step>> 
     rows.into_iter()
         .map(|row| {
             Ok(Step {
-                order: step_order(row.step_order)?,
+                order: codec::narrow("step_order", row.step_order)?,
                 approver: codec::parse("approver_id", &row.approver_id)?,
                 kind: codec::parse_with("kind", &row.kind, StepKind::parse)?,
                 status: codec::parse_with("status", &row.status, StepStatus::parse)?,
@@ -422,15 +422,6 @@ pub async fn list_steps(conn: &mut Conn, id: DocumentId) -> DbResult<Vec<Step>> 
             })
         })
         .collect()
-}
-
-fn step_order(raw: i64) -> DbResult<u8> {
-    u8::try_from(raw).map_err(|_| {
-        codec::corrupt("step_order")(pango_core::DomainError::validation(
-            "step_order",
-            pango_core::ValidationReason::OutOfRange,
-        ))
-    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -535,7 +526,10 @@ pub async fn list_events(conn: &mut Conn, id: DocumentId) -> DbResult<Vec<Event>
                 document_id: codec::parse("document_id", &row.document_id)?,
                 actor_id: codec::parse("actor_id", &row.actor_id)?,
                 kind: codec::parse_with("kind", &row.kind, EventKind::parse)?,
-                step_order: row.step_order.map(step_order).transpose()?,
+                step_order: row
+                    .step_order
+                    .map(|raw| codec::narrow("step_order", raw))
+                    .transpose()?,
                 comment: row.comment,
                 created_at: codec::timestamp("created_at", row.created_at)?,
             })

@@ -174,14 +174,7 @@ struct RequestRow {
 }
 
 fn amount(column: &'static str, raw: i64) -> DbResult<LeaveAmount> {
-    i32::try_from(raw)
-        .map(LeaveAmount::from_quarters)
-        .map_err(|_| {
-            codec::corrupt(column)(DomainError::validation(
-                column,
-                ValidationReason::OutOfRange,
-            ))
-        })
+    codec::narrow(column, raw).map(LeaveAmount::from_quarters)
 }
 
 impl TryFrom<RequestRow> for LeaveRequest {
@@ -315,7 +308,7 @@ pub async fn list_requests(
     if !filter.statuses.is_empty() {
         sql.push_str(&format!(
             " AND status IN ({})",
-            vec!["?"; filter.statuses.len()].join(", ")
+            codec::placeholders(filter.statuses.len())
         ));
         binds.extend(filter.statuses.iter().map(|s| s.as_str().to_owned()));
     }
@@ -568,7 +561,7 @@ pub async fn list_ledger_for_members(
 ) -> DbResult<Vec<LedgerRecord>> {
     let mut records = Vec::new();
     for chunk in member_ids.chunks(MEMBER_CHUNK) {
-        let placeholders = vec!["?"; chunk.len()].join(", ");
+        let placeholders = codec::placeholders(chunk.len());
         let sql = format!(
             "SELECT {LEDGER_COLUMNS} FROM leave_ledger
              WHERE member_id IN ({placeholders}) ORDER BY rowid"

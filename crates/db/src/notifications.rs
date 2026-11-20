@@ -120,7 +120,7 @@ pub async fn delete_unread(
     };
     let mut deleted = 0;
     for chunk in member_ids.chunks(MEMBER_CHUNK) {
-        let placeholders = vec!["?"; chunk.len()].join(", ");
+        let placeholders = codec::placeholders(chunk.len());
         let sql = format!("{BASE} AND member_id IN ({placeholders})");
         let mut query = sqlx::query(&sql).bind(kind).bind(dedupe_key);
         for id in chunk {

@@ -3,13 +3,28 @@
 use std::str::FromStr;
 
 use chrono::NaiveDate;
-use pango_core::error::DomainError;
+use pango_core::error::{DomainError, ValidationReason};
 use pango_core::time::Timestamp;
 
 use crate::error::{DbError, DbResult};
 
 pub fn corrupt(column: &'static str) -> impl FnOnce(DomainError) -> DbError {
     move |source| DbError::Corrupt { column, source }
+}
+
+/// `IN (…)` 목록의 자리표시자 `?, ?, …`(`n`개). 값은 같은 순서로 바인딩한다.
+pub fn placeholders(n: usize) -> String {
+    vec!["?"; n].join(", ")
+}
+
+/// 정수 열을 더 좁은 정수 타입으로 읽는다. 범위를 벗어나면 저장값이 손상된 것이다.
+pub fn narrow<T: TryFrom<i64>>(column: &'static str, raw: i64) -> DbResult<T> {
+    T::try_from(raw).map_err(|_| {
+        corrupt(column)(DomainError::validation(
+            column,
+            ValidationReason::OutOfRange,
+        ))
+    })
 }
 
 /// `FromStr<Err = DomainError>`인 타입(ID 등)을 읽는다.
@@ -79,6 +94,30 @@ pub fn split_page<T>(mut rows: Vec<T>, limit: u32) -> (Vec<T>, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn placeholders_match_the_count() {
+        assert_eq!(placeholders(1), "?");
+        assert_eq!(placeholders(3), "?, ?, ?");
+    }
+
+    #[test]
+    fn narrow_rejects_values_out_of_range() {
+        assert_eq!(narrow::<u8>("step_order", 255).ok(), Some(255));
+        assert_eq!(narrow::<u16>("late_grace_min", 0).ok(), Some(0));
+        for raw in [-1, 256] {
+            assert!(matches!(
+                narrow::<u8>("step_order", raw),
+                Err(DbError::Corrupt {
+                    column: "step_order",
+                    source: DomainError::Validation {
+                        field: "step_order",
+                        reason: ValidationReason::OutOfRange,
+                    },
+                })
+            ));
+        }
+    }
 
     #[test]
     fn date_requires_fixed_width() {

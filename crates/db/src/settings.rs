@@ -46,15 +46,6 @@ fn minute(column: &'static str, value: i64) -> DbResult<MinuteOfDay> {
     MinuteOfDay::new(u16::try_from(value).unwrap_or(u16::MAX)).map_err(codec::corrupt(column))
 }
 
-fn small(column: &'static str, value: i64) -> DbResult<u16> {
-    u16::try_from(value).map_err(|_| {
-        codec::corrupt(column)(pango_core::DomainError::validation(
-            column,
-            pango_core::error::ValidationReason::OutOfRange,
-        ))
-    })
-}
-
 impl TryFrom<SettingsRow> for CompanySettings {
     type Error = crate::DbError;
 
@@ -65,9 +56,9 @@ impl TryFrom<SettingsRow> for CompanySettings {
             day_cutoff: minute("day_cutoff_min", row.day_cutoff_min)?,
             work_start: minute("work_start_min", row.work_start_min)?,
             work_end: minute("work_end_min", row.work_end_min)?,
-            late_grace_minutes: small("late_grace_min", row.late_grace_min)?,
+            late_grace_minutes: codec::narrow("late_grace_min", row.late_grace_min)?,
             half_day_split: minute("half_day_split_min", row.half_day_split_min)?,
-            quarter_minutes: small("quarter_min", row.quarter_min)?,
+            quarter_minutes: codec::narrow("quarter_min", row.quarter_min)?,
             break_tiers: codec::json("break_tiers", &row.break_tiers)?,
             workdays: WorkWeek::from_bits(u8::try_from(row.workdays).unwrap_or(0))
                 .map_err(codec::corrupt("workdays"))?,

@@ -151,7 +151,7 @@ pub async fn list_for_members(
     if member_ids.is_empty() {
         return Ok(Vec::new());
     }
-    let placeholders = vec!["?"; member_ids.len()].join(", ");
+    let placeholders = codec::placeholders(member_ids.len());
     let sql = format!(
         "SELECT {RECORD_COLUMNS} FROM attendance_records r
          WHERE r.work_date BETWEEN ? AND ? AND r.member_id IN ({placeholders})
@@ -360,7 +360,7 @@ fn filter_clause(filter: &RecordFilter) -> (String, Vec<String>) {
         } else {
             sql.push_str(&format!(
                 " AND m.department_id IN ({})",
-                vec!["?"; departments.len()].join(", ")
+                codec::placeholders(departments.len())
             ));
             binds.extend(departments.iter().map(ToString::to_string));
         }
