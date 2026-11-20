@@ -122,7 +122,8 @@ html,
 .nav,
 .modal-body,
 .picker-results,
-.dept-nav {
+.dept-nav,
+.select-list {
   scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: var(--grey-300) transparent;
@@ -359,13 +360,52 @@ html,
 .input:disabled { color: var(--grey-500); cursor: not-allowed; }
 .input-error { box-shadow: inset 0 0 0 2px var(--red); }
 .textarea { resize: vertical; min-height: 120px; line-height: 1.6; }
-/* 선택 상자: 기본 화살표를 지우고 꺾쇠를 직접 그린다(외부 그림 없이). */
-.select { position: relative; display: block; }
-.select > .input { appearance: none; -webkit-appearance: none; padding-right: 40px; cursor: pointer; }
-.select::after {
-  content: ""; position: absolute; right: 16px; top: 50%; width: 8px; height: 8px; margin-top: -6px;
-  border-right: 2px solid var(--grey-600); border-bottom: 2px solid var(--grey-600);
-  transform: rotate(45deg); pointer-events: none;
+/* 선택 상자: 단추 + 목록. 기본 select의 펼친 목록은 꾸밀 수 없어 직접 그린다(ui/select.rs). */
+.select { position: relative; }
+.select-trigger {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  text-align: left; cursor: pointer; border: 0;
+}
+.select-trigger:disabled { cursor: not-allowed; }
+.select-value { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.select-trigger > .icon { width: 18px; height: 18px; color: var(--grey-500); transition: transform .16s; flex: none; }
+.select-open .select-trigger { box-shadow: inset 0 0 0 2px var(--blue); }
+.select-open .select-trigger > .icon { transform: rotate(180deg); color: var(--grey-900); }
+.select-backdrop { position: fixed; inset: 0; z-index: 40; }
+.select-popover {
+  position: absolute; z-index: 41; left: 0; right: 0; top: calc(100% + 6px);
+  background: var(--panel); border-radius: 14px; padding: 6px;
+  box-shadow: 0 10px 30px rgb(0 23 51 / 12%), 0 0 0 1px var(--grey-200);
+  animation: select-in .14s ease-out;
+}
+.select-sheet-title { display: none; }
+.select-list { margin: 0; padding: 0; list-style: none; max-height: 288px; overflow-y: auto; }
+.select-option {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  min-height: 40px; padding: 8px 12px; border-radius: 10px; cursor: pointer;
+  color: var(--grey-800); font-size: 15px;
+}
+.select-option > .icon { width: 18px; height: 18px; color: var(--blue); flex: none; }
+.select-option-active { background: var(--grey-100); }
+.select-option-selected { color: var(--blue-strong); font-weight: 600; }
+.select-option-text { min-width: 0; overflow-wrap: anywhere; }
+@keyframes select-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+@media (max-width: 959px) {
+  /* 모바일: 아래에서 올라오는 시트. */
+  .select-backdrop { background: rgb(0 0 0 / 40%); }
+  .select-popover {
+    position: fixed; top: auto; left: 0; right: 0; bottom: 0;
+    border-radius: 20px 20px 0 0; padding: 8px 12px calc(12px + env(safe-area-inset-bottom));
+    box-shadow: 0 -8px 32px rgb(0 0 0 / 16%);
+    animation: select-sheet-in .18s ease-out;
+  }
+  .select-sheet-title { display: block; padding: 14px 12px 10px; font-size: 17px; font-weight: 700; color: var(--grey-900); }
+  .select-list { max-height: 60vh; }
+  .select-option { min-height: 52px; font-size: 16px; }
+}
+@keyframes select-sheet-in { from { transform: translateY(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .select-popover, .select-trigger > .icon { animation: none; transition: none; }
 }
 .form { display: flex; flex-direction: column; gap: 20px; }
 .form-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }

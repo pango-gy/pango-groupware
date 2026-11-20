@@ -3,11 +3,13 @@
 pub mod approval_line;
 mod icon;
 mod member_picker;
+mod select;
 pub mod workday_bar;
 
 pub use approval_line::{use_line_draft, ApprovalLineEditor, ApproverEntry};
 pub use icon::{Icon, IconName};
 pub use member_picker::{MemberPicker, PickedMember};
+pub use select::SelectField;
 pub use workday_bar::{WeekProgress, WorkdayBar};
 
 use dioxus::prelude::*;
@@ -383,39 +385,6 @@ pub fn TextArea(
                 required,
                 maxlength,
                 oninput: move |event| oninput.call(event.value()),
-            }
-        }
-    }
-}
-
-/// 선택 상자. `options`는 `(값, 표시 문구)`.
-#[component]
-pub fn SelectField(
-    #[props(into)] label: String,
-    #[props(into)] value: String,
-    options: Vec<(String, String)>,
-    onchange: EventHandler<String>,
-    #[props(default)] required: bool,
-    #[props(default)] disabled: bool,
-) -> Element {
-    rsx! {
-        label { class: "field",
-            span { class: "field-label",
-                "{label}"
-                if required {
-                    span { class: "field-required", "aria-hidden": "true", " *" }
-                }
-            }
-            span { class: "select",
-                select {
-                    class: "input",
-                    required,
-                    disabled,
-                    onchange: move |event| onchange.call(event.value()),
-                    for (option_value , text) in options {
-                        option { value: "{option_value}", selected: option_value == value, "{text}" }
-                    }
-                }
             }
         }
     }
