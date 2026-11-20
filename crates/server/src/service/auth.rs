@@ -37,6 +37,7 @@ fn retry_after(window_ms: i64) -> ServiceError {
 ///
 /// 아이디 없음·비밀번호 불일치·비활성 계정을 같은 오류, 같은 소요 시간으로 응답한다.
 /// 시도 제한은 IP와 아이디 각각에 걸리며, 아이디 제한은 없는 아이디에도 똑같이 적용된다.
+/// 아이디별 횟수는 로그인에 성공하면 초기화된다.
 pub async fn login(
     state: &AppState,
     request: &LoginRequest,
@@ -49,7 +50,8 @@ pub async fn login(
     let login_id = LoginId::parse(&request.login_id).ok();
     let account_bucket = login_id.as_ref().map(|id| format!("acct:{id}"));
 
-    // 1) 시도 제한. 비밀번호 검증(비싼 연산) 전에 확인한다.
+    // 1) 시도 제한. 비밀번호 검증(비싼 연산) 전에 **시도를 먼저 기록**한다.
+    //    확인과 기록이 한 문장이라, 동시에 여러 요청을 보내도 제한을 넘겨 검증받을 수 없다.
     let blocked = state
         .write(async |conn: &mut Conn| {
             if let Some(ip) = &meta.ip {
@@ -61,8 +63,9 @@ pub async fn login(
                 }
             }
             if let Some(bucket) = &account_bucket {
-                let failures = sessions::throttle_peek(conn, bucket, now, account_window).await?;
-                if failures >= config.login_account_limit {
+                if sessions::throttle_hit(conn, bucket, now, account_window).await?
+                    > config.login_account_limit
+                {
                     return Ok(Some(account_window));
                 }
             }
@@ -97,10 +100,8 @@ pub async fn login(
     let token = SessionToken::generate()?;
     let issued = state
         .write(async |conn: &mut Conn| {
+            // 실패한 시도는 1)에서 이미 기록됐다.
             let Some(member) = member else {
-                if let Some(bucket) = &account_bucket {
-                    sessions::throttle_hit(conn, bucket, now, account_window).await?;
-                }
                 return Ok(None);
             };
             if let Some(bucket) = &account_bucket {
@@ -274,6 +275,18 @@ pub async fn change_password(
         return Err(DomainError::Conflict(ConflictReason::PasswordReused).into());
     }
 
+    // 탈취된 세션으로 현재 비밀번호를 무제한 추측하지 못하게, 로그인과 같은 한도를 건다.
+    let window = state.config.login_account_window.num_milliseconds();
+    let bucket = format!("pwchg:{}", ctx.member_id());
+    let attempts = state
+        .write(
+            async |conn: &mut Conn| Ok(sessions::throttle_hit(conn, &bucket, now, window).await?),
+        )
+        .await?;
+    if attempts > state.config.login_account_limit {
+        return Err(retry_after(window));
+    }
+
     let credentials =
         found(members::find_credentials_by_id(&mut *state.read().await?, ctx.member_id()).await?)?;
     let current = PlainPassword::for_verification(&request.current_password).ok();
@@ -296,6 +309,7 @@ pub async fn change_password(
     state
         .write(async |conn: &mut Conn| {
             members::set_password(conn, ctx.member_id(), &new_hash, false, now).await?;
+            sessions::throttle_clear(conn, &bucket).await?;
             let revoked =
                 sessions::revoke_all(conn, ctx.member_id(), Some(ctx.session_id), now).await?;
             audit(
