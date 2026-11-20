@@ -115,6 +115,7 @@ UUID v7을 타입별 newtype(`MemberId`, `DocumentId` …)으로 감쌉니다. D
 | 휴가 잔여·내역 조회 | ○ | ○ | ○ |
 | 휴가 일정(달력) 조회 | 같은 부서 | ○ | ○ |
 | 결재 문서 열람 | 기안자·결재선·참조자 | 문서의 당사자일 때만 | ○ (감사 로그 기록) |
+| 진행 중 문서의 대리 반려 | × | × | ○ (본인이 기안한 문서 제외, 사유 필수, 감사 로그 기록) |
 | 공지 작성 | × | × | ○ |
 | 구성원 관리 | × | × | ○ |
 
@@ -130,7 +131,7 @@ UUID v7을 타입별 newtype(`MemberId`, `DocumentId` …)으로 감쌉니다. D
 - 지각: 출근 > 시작 시각 + 유예. 조퇴: 퇴근 < 종료 시각. 휴가(반차)가 있으면 기준 시각을 조정합니다.
 - 관리자 수정과 정정 승인은 `attendance_events`에 이전/이후 값을 남깁니다.
 - 정정 요청은 오늘 근무일까지, 31일 전까지의 근무일에 대해 올릴 수 있고, 같은 근무일에 결재 중인 요청은 하나뿐입니다. 값은 요청할 때와 **최종 승인할 때** 두 번 검증합니다. 승인 시점의 기록이 요청 당시와 다르면(그사이 관리자가 고쳤거나 본인이 퇴근을 찍음) 반영하지 않고 승인이 409 `version_conflict`로 실패하며, 결재자는 반려로 끝냅니다.
-- 정정 요청의 취소는 곧 문서 회수입니다(누군가 결재한 뒤에는 `withdraw_too_late`).
+- 정정 요청의 취소는 곧 문서 회수입니다(누군가 결재한 뒤에는 `withdraw_too_late`). 남은 결재자가 처리할 수 없게 된 요청은 관리자가 문서를 대리 반려해 끝내고, 그 뒤에는 같은 근무일을 다시 요청할 수 있습니다.
 
 ### 휴가
 - 수량 단위는 **1/4일**(`LeaveAmount`, 정수). 연차 1일 = 4, 반차 = 2, 반반차 = 1.
@@ -141,13 +142,17 @@ UUID v7을 타입별 newtype(`MemberId`, `DocumentId` …)으로 감쌉니다. D
 - **입사일을 고쳐도 이미 들어간 부여는 다시 쓰지 않습니다.** 원장은 추가 전용이라 지난 부여의 부여일·만료일·수량은 받은 그대로 남고, 고친 입사일은 아직 없는 차수(앞당겼다면 새로 생긴 근속 연수의 부여)와 앞으로의 부여에만 적용됩니다. 그 결과가 실제와 다르면(예: 입사일을 몇 년 앞당겨 두 해의 연차가 함께 유효해진 경우) 관리자가 수동 조정으로 바로잡습니다.
 - 신청 일수는 근무 요일과 공휴일을 제외하고 셉니다. 기간이 겹치는 신청은 거부합니다.
 - 신청 시점에 잔여를 **예약(차감)** 하고, 반려·취소·회수 시 복원합니다.
-- 취소와 결재 문서는 함께 움직입니다. 대기 중인 신청의 취소는 곧 문서 **회수**이며(누군가 결재한 뒤에는 회수할 수 없으므로 취소도 거부, 반려로 종료), 승인된 휴가의 취소는 문서를 승인된 기록으로 둔 채 신청만 취소하고 잔여를 복원합니다. 본인은 휴가 시작 전에만, 관리자는 언제든 취소할 수 있습니다.
+- 취소와 결재 문서는 함께 움직입니다. 대기 중인 신청의 취소는 곧 문서 **회수**이며(누군가 결재한 뒤에는 회수할 수 없으므로 본인의 취소는 `withdraw_too_late`로 거부, 반려로 종료), **관리자의 취소**는 회수할 수 없는 문서를 대리 반려로 끝냅니다(신청은 문서와 같이 `rejected`, 잔여 복원. 그래서 관리자 취소는 `withdraw_too_late`가 되지 않습니다). 승인된 휴가의 취소는 문서를 승인된 기록으로 둔 채 신청만 취소하고 잔여를 복원합니다. 본인은 휴가 시작 전에만, 관리자는 언제든 취소할 수 있습니다.
 
 ### 전자결재
 - 문서 상태: `draft → in_progress → approved | rejected | withdrawn`.
 - 결재선은 순차 단계입니다. 단계 종류: `approve`(결재), `agree`(합의). 참조자는 단계가 아니며 열람만 합니다.
 - 현재 단계의 결재자만 처리할 수 있습니다. 반려는 즉시 문서를 종료합니다.
 - 회수는 기안자가 **아무도 처리하기 전**에만 할 수 있습니다.
+- **관리자의 대리 반려**: 차례인 결재자가 정지·퇴사하면 그 문서는 아무도 끝낼 수 없습니다(회수는 이미 늦었고 다른 사람은 차례가 아님). 그래서 관리자는 `POST /admin/approval/documents/{id}/reject`(`{reason}`)로 진행 중인 문서를 **지금 차례인 단계에서** 반려로 끝낼 수 있습니다(`Document::force_reject`). 결재자가 재직 중이어도 쓸 수 있습니다.
+  - 결과는 결재자가 직접 반려한 것과 같습니다: 그 단계가 `rejected`(사유 기록), 뒤 단계는 `waiting`, 문서는 `rejected`. 연결 효과(휴가 잔여 복원, 근태 정정 요청 종료)도 같은 트랜잭션에서 실행합니다.
+  - 누가 끝냈는지는 이력(`approval_events`의 `rejected` 행위자 = 관리자)과 감사 로그 `approval.admin_reject`(단계, 건너뛴 결재자, 사유)에 남습니다. 기안자(`approval.rejected`)와 건너뛴 결재자(`approval.admin_rejected`)에게 알립니다.
+  - 관리자만 할 수 있고(`authz::override_document`), **본인이 기안한 문서에는 쓸 수 없습니다**(403, 최고 관리자 포함). 임시저장 문서는 404, 승인·회수로 끝난 문서는 409 `document_already_closed`, 이미 반려된 문서는 아무것도 바꾸지 않고 성공합니다(자연 멱등).
 - 기안자는 자신을 결재자로 넣을 수 없습니다. 같은 사람이 결재선에 두 번 나올 수 없습니다.
 - 휴가 신청·근태 정정 같은 **개인 신청의 최종 결재자는 신청자의 관할 조직장 또는 관리자**여야 합니다. 결재선은 신청자가 고칠 수 있으므로, 신청할 때와 최종 승인할 때 모두 확인합니다(동료끼리 서로 승인하는 것을 막기 위해). 앞 단계(합의)에는 누구든 넣을 수 있습니다.
 - 휴가 신청·근태 정정은 **시스템 양식의 결재 문서**입니다. 최종 승인·반려·회수 시 같은 트랜잭션에서 연결된 효과(휴가 확정/복원, 기록 정정)를 실행합니다.
@@ -164,7 +169,7 @@ UUID v7을 타입별 newtype(`MemberId`, `DocumentId` …)으로 감쌉니다. D
 | 출퇴근 | `GET /attendance/today` `POST /attendance/clock-in` `POST /attendance/clock-out` `GET /attendance/records` `GET /attendance/summary` `GET·POST /attendance/corrections` `POST /attendance/corrections/{id}/cancel` |
 | 휴가 | `GET /leave/types` `GET /leave/balance` `GET /leave/ledger` `GET /leave/requests` `POST /leave/requests` `POST /leave/requests/{id}/cancel` `GET /leave/calendar` |
 | 조직장 | `GET /team/attendance` `GET /team/leave` `GET /team/members` |
-| 결재 | `GET /approval/forms` `GET /approval/counts` `GET /approval/line-suggestion` `GET /approval/documents` `POST /approval/documents` `GET·PATCH·DELETE /approval/documents/{id}` `POST /approval/documents/{id}/{submit,approve,reject,withdraw}` |
+| 결재 | `GET /approval/forms` `GET /approval/counts` `GET /approval/line-suggestion` `GET /approval/documents` `POST /approval/documents` `GET·PATCH·DELETE /approval/documents/{id}` `POST /approval/documents/{id}/{submit,approve,reject,withdraw}` `POST /admin/approval/documents/{id}/reject` |
 | 공지 | `GET /notices` `GET /notices/{id}` `POST /notices/{id}/read` |
 | 알림 | `GET /notifications` `POST /notifications/{id}/read` `POST /notifications/read-all` |
 | 관리 | `/admin/members…` `/admin/departments…` `/admin/positions…` `/admin/attendance…` `/admin/leave…` `/admin/approval/forms…` `/admin/notices…` `/admin/holidays…` `/admin/settings` `/admin/audit-log` `/admin/dashboard` |

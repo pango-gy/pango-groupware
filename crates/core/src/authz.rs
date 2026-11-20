@@ -187,6 +187,19 @@ pub fn edit_personal_records(actor: &Actor, subject: &Subject) -> DomainResult<(
     }
 }
 
+/// 진행 중인 결재 문서를 관리자가 **결재자를 대신해** 끝낼 수 있는지(대리 반려).
+///
+/// 관리자만 할 수 있고, 자기가 기안한 문서에는 쓸 수 없다(최고 관리자도 마찬가지). 자기
+/// 문서의 결과를 스스로 정하는 길이 되기 때문이다. 본인 문서는 다른 관리자가 처리한다.
+pub fn override_document(actor: &Actor, drafter: MemberId) -> DomainResult<()> {
+    require_admin(actor)?;
+    if actor.member_id == drafter {
+        Err(DomainError::Forbidden)
+    } else {
+        Ok(())
+    }
+}
+
 /// 계정 자체를 관리(수정·비활성화·비밀번호 초기화)할 수 있는지.
 ///
 /// 관리자는 일반 구성원 계정만, 최고 관리자는 모든 계정을 관리한다.
@@ -533,6 +546,33 @@ mod tests {
         );
         assert_eq!(edit_personal_records(&admin, &colleague), Ok(()));
         assert_eq!(edit_personal_records(&admin, &self_subject(&admin)), Ok(()));
+    }
+
+    #[test]
+    fn documents_are_overridden_only_by_admins_and_never_their_own() {
+        let w = world();
+        let other = MemberId::new();
+        for role in [Role::Admin, Role::Owner] {
+            let admin = actor(role, None, &[]);
+            assert_eq!(override_document(&admin, other), Ok(()));
+            assert_eq!(
+                override_document(&admin, admin.member_id),
+                Err(DomainError::Forbidden),
+                "{role:?} 본인 문서"
+            );
+        }
+        // 조직장이어도 관리자가 아니면 할 수 없다.
+        let head = actor(Role::Member, Some(w.dept_a), &[w.dept_a]);
+        assert_eq!(override_document(&head, other), Err(DomainError::Forbidden));
+        let member = actor(Role::Member, Some(w.dept_a), &[]);
+        assert_eq!(
+            override_document(&member, other),
+            Err(DomainError::Forbidden)
+        );
+        assert_eq!(
+            override_document(&member, member.member_id),
+            Err(DomainError::Forbidden)
+        );
     }
 
     #[test]

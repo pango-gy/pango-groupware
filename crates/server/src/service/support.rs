@@ -370,6 +370,29 @@ pub async fn current_actor(conn: &mut Conn, ctx: &AuthContext) -> ServiceResult<
     build_actor(conn, &member).await
 }
 
+/// 관리자 쓰기 동작의 권한을 **쓰기 트랜잭션 안에서** 다시 확인하고, 방금 읽은 권한 정보를
+/// 돌려준다. 그사이 관리자에서 해제됐으면 `Forbidden`, 계정이 정지됐으면 `Unauthenticated`.
+///
+/// 모든 관리자 쓰기 유스케이스는 트랜잭션의 첫 줄에서 이것을 부르고, 대상에 대한 판정
+/// (본인 기록 여부 등)도 `ctx.actor`가 아니라 여기서 받은 값으로 한다.
+pub async fn require_current_admin(conn: &mut Conn, ctx: &AuthContext) -> ServiceResult<Actor> {
+    let actor = current_actor(conn, ctx).await?;
+    pango_core::authz::require_admin(&actor)?;
+    Ok(actor)
+}
+
+/// 쓰기 트랜잭션 안에서 요청자 본인의 구성원 정보를 다시 읽는다.
+///
+/// 인증 뒤에 부서가 바뀌었거나 입사일이 정정됐을 수 있다. 본인의 소속·입사일로 판정하는
+/// 쓰기(휴가 신청의 최종 결재자 확인과 연차 부여, 근태 정정 요청)는 이 값으로 한다.
+/// 그사이 로그인할 수 없는 상태가 됐으면 `Unauthenticated`.
+pub async fn current_member(conn: &mut Conn, ctx: &AuthContext) -> ServiceResult<Member> {
+    pango_db::members::find(conn, ctx.member_id())
+        .await?
+        .filter(|member| member.status.can_sign_in())
+        .ok_or(ServiceError::Domain(DomainError::Unauthenticated))
+}
+
 /// 수정 요청의 변경 내역. 감사 로그 `detail`에 `{"changed": {"필드": {"from": …, "to": …}}}`로
 /// 남기고, 비어 있으면 수정할 것이 없다는 뜻이다(버전을 올리지 않는다).
 #[derive(Debug, Default)]

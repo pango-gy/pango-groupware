@@ -435,11 +435,9 @@ async fn pending_request_cannot_be_canceled_once_someone_approved() {
         .await
         .expect(StatusCode::OK);
 
-    // 문서를 회수할 수 없으므로 취소도 거부된다. 신청과 문서는 그대로 진행 중이다.
+    // 문서를 회수할 수 없으므로 본인의 취소는 거부된다. 신청과 문서는 그대로 진행 중이다.
+    // (관리자의 취소는 대리 반려로 끝낼 수 있다: `admin_cancel_closes_a_stranded_request`.)
     cancel(&w.app, &w.kim.token, &id)
-        .await
-        .expect_error(StatusCode::CONFLICT, "withdraw_too_late");
-    admin_cancel(&w.app, &w.owner, &id)
         .await
         .expect_error(StatusCode::CONFLICT, "withdraw_too_late");
     assert_eq!(status_of(&w.app, &w.kim, &id).await, "pending");
@@ -2120,4 +2118,250 @@ async fn moving_the_hire_date_earlier_adds_only_the_missing_ordinals() {
     // 다시 조회해도 더 들어가지 않는다.
     balance_of(&w.app, &w.kim.token).await;
     assert_eq!(stored_ledger(&w.app, w.kim.id).await, after);
+}
+
+// ── 결재자가 사라진 신청 ──────────────────────────────────────────────────
+
+async fn set_member_status(app: &TestApp, member: MemberId, status: MemberStatus) {
+    let mut tx = app.state.db.begin_write().await.expect("begin");
+    let mut found = members::find(&mut tx, member)
+        .await
+        .expect("find")
+        .expect("member");
+    found.status = status;
+    assert!(members::update(&mut tx, &found, app.state.now())
+        .await
+        .expect("update"));
+    tx.commit().await.expect("commit");
+}
+
+/// [합의 lee, 결재 lead]로 올린 kim의 연차 1일. lee가 합의한 뒤 lead가 정지됐다.
+async fn stranded(w: &World) -> (TestMember, String, String) {
+    let lee = w.app.add_member("lee", Role::Member, Some(w.dev)).await;
+    let mut body = leave(&w.annual, "2026-03-10", "2026-03-10", "full_day");
+    body["steps"] = json!([
+        { "approver_id": lee.id, "kind": "agree" },
+        { "approver_id": w.lead.id, "kind": "approve" },
+    ]);
+    let (id, doc) = ids(&request(&w.app, &w.kim, &body)
+        .await
+        .expect(StatusCode::CREATED));
+    decide(&w.app, &lee.token, &doc, "approve")
+        .await
+        .expect(StatusCode::OK);
+    set_member_status(&w.app, w.lead.id, MemberStatus::Suspended).await;
+    assert_eq!(remaining(&w.app, &w.kim).await, FULL - 4);
+    (lee, id, doc)
+}
+
+async fn admin_reject(app: &TestApp, token: &str, document: &str) -> TestResponse {
+    app.post(&format!("/admin/approval/documents/{document}/reject"))
+        .bearer(token)
+        .json(&json!({ "reason": "결재자 부재" }))
+        .send()
+        .await
+}
+
+/// 결재자가 정지되면 본인도 관리자도 신청을 끝낼 수 없어 잔여가 영영 예약돼 있었다.
+#[tokio::test]
+async fn admin_reject_restores_the_balance_of_a_stranded_request() {
+    let w = world().await;
+    let (lee, id, doc) = stranded(&w).await;
+    // 기존 길은 막혀 있다.
+    cancel(&w.app, &w.kim.token, &id)
+        .await
+        .expect_error(StatusCode::CONFLICT, "withdraw_too_late");
+    decide(&w.app, &w.owner, &doc, "reject")
+        .await
+        .expect_error(StatusCode::FORBIDDEN, "forbidden");
+    // 관리자가 아닌 사람은 대리 반려를 쓸 수 없다.
+    for token in [&w.kim.token, &lee.token] {
+        admin_reject(&w.app, token, &doc)
+            .await
+            .expect_error(StatusCode::FORBIDDEN, "forbidden");
+    }
+    assert_eq!(status_of(&w.app, &w.kim, &id).await, "pending");
+    assert_eq!(reservations(&w.app, w.kim.id).await, (1, 0));
+
+    let closed = admin_reject(&w.app, &w.owner, &doc)
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(closed["status"], "rejected");
+    assert_eq!(status_of(&w.app, &w.kim, &id).await, "rejected");
+    assert_eq!(remaining(&w.app, &w.kim).await, FULL, "예약이 풀린다");
+    assert_eq!(reservations(&w.app, w.kim.id).await, (1, 1));
+    assert_eq!(audit_count(&w.app, "approval.admin_reject").await, 1);
+    assert_eq!(
+        notification_count(&w.app, w.kim.id, "approval.rejected").await,
+        1
+    );
+    assert_eq!(
+        notification_count(&w.app, w.lead.id, "approval.admin_rejected").await,
+        1
+    );
+
+    // 반복해도 복원은 한 번뿐이다.
+    admin_reject(&w.app, &w.owner, &doc)
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(reservations(&w.app, w.kim.id).await, (1, 1));
+    assert_eq!(remaining(&w.app, &w.kim).await, FULL);
+    assert_eq!(audit_count(&w.app, "approval.admin_reject").await, 1);
+    assert_ledger_invariants(&w.app, &w.kim).await;
+
+    // 같은 날짜로 다시 신청할 수 있다(결재선은 재직 중인 사람으로).
+    let mut again = leave(&w.annual, "2026-03-10", "2026-03-10", "full_day");
+    again["steps"] = json!([{ "approver_id": w.app.owner_id, "kind": "approve" }]);
+    request(&w.app, &w.kim, &again)
+        .await
+        .expect(StatusCode::CREATED);
+    assert_eq!(remaining(&w.app, &w.kim).await, FULL - 4);
+}
+
+/// 관리자의 취소는 회수할 수 없는 문서도 대리 반려로 끝낸다(`withdraw_too_late`가 아니다).
+#[tokio::test]
+async fn admin_cancel_closes_a_stranded_request() {
+    let w = world().await;
+    let (_lee, id, doc) = stranded(&w).await;
+    let canceled = admin_cancel(&w.app, &w.owner, &id)
+        .await
+        .expect(StatusCode::OK);
+    // 문서는 반려로 끝나고, 신청도 문서와 같이 반려로 끝난다.
+    assert_eq!(canceled["status"], "rejected");
+    assert!(canceled["decided_at"].is_number());
+    let detail = document(&w.app, &w.kim.token, &doc).await;
+    assert_eq!(detail["status"], "rejected");
+    assert_eq!(detail["steps"][0]["status"], "approved");
+    assert_eq!(detail["steps"][1]["status"], "rejected");
+    let last = detail["events"]
+        .as_array()
+        .expect("events")
+        .last()
+        .expect("e")
+        .clone();
+    assert_eq!(last["kind"], "rejected");
+    assert_eq!(last["actor_id"], json!(w.app.owner_id));
+    assert_eq!(remaining(&w.app, &w.kim).await, FULL);
+    assert_eq!(reservations(&w.app, w.kim.id).await, (1, 1));
+    // 취소와 대리 반려 양쪽이 감사 로그에 남는다.
+    assert_eq!(audit_count(&w.app, "leave.admin_cancel").await, 1);
+    assert_eq!(audit_count(&w.app, "approval.admin_reject").await, 1);
+    assert_eq!(
+        notification_count(&w.app, w.kim.id, "approval.rejected").await,
+        1
+    );
+    assert_ledger_invariants(&w.app, &w.kim).await;
+
+    // 이미 끝난 신청이다: 다시 취소하면 409이고 아무것도 더 생기지 않는다.
+    admin_cancel(&w.app, &w.owner, &id)
+        .await
+        .expect_error(StatusCode::CONFLICT, "document_already_closed");
+    assert_eq!(reservations(&w.app, w.kim.id).await, (1, 1));
+    assert_eq!(audit_count(&w.app, "leave.admin_cancel").await, 1);
+    assert_eq!(audit_count(&w.app, "approval.admin_reject").await, 1);
+}
+
+/// 결재자가 재직 중이어도 관리자의 취소는 진행 중인 문서를 끝낸다. 아무도 결재하지 않은
+/// 문서는 예전처럼 회수로 끝난다.
+#[tokio::test]
+async fn admin_cancel_withdraws_untouched_documents_and_rejects_touched_ones() {
+    let w = world().await;
+    let (untouched, untouched_doc) = requested(&w, &w.kim, "2026-03-10", "2026-03-10").await;
+    let canceled = admin_cancel(&w.app, &w.owner, &untouched)
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(canceled["status"], "canceled");
+    assert_eq!(
+        document(&w.app, &w.kim.token, &untouched_doc).await["status"],
+        "withdrawn"
+    );
+    assert_eq!(audit_count(&w.app, "approval.admin_reject").await, 0);
+
+    let mut body = leave(&w.annual, "2026-03-11", "2026-03-11", "full_day");
+    body["steps"] = json!([
+        { "approver_id": w.lead.id, "kind": "agree" },
+        { "approver_id": w.app.owner_id, "kind": "approve" },
+    ]);
+    let (touched, touched_doc) = ids(&request(&w.app, &w.kim, &body)
+        .await
+        .expect(StatusCode::CREATED));
+    decide(&w.app, &w.lead.token, &touched_doc, "approve")
+        .await
+        .expect(StatusCode::OK);
+    // 조직장은 관리자가 아니므로 관리자 취소를 쓸 수 없다.
+    admin_cancel(&w.app, &w.lead.token, &touched)
+        .await
+        .expect_error(StatusCode::FORBIDDEN, "forbidden");
+    assert_eq!(status_of(&w.app, &w.kim, &touched).await, "pending");
+    let canceled = admin_cancel(&w.app, &w.owner, &touched)
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(canceled["status"], "rejected");
+    assert_eq!(
+        document(&w.app, &w.kim.token, &touched_doc).await["status"],
+        "rejected"
+    );
+    assert_eq!(remaining(&w.app, &w.kim).await, FULL);
+    assert_ledger_invariants(&w.app, &w.kim).await;
+}
+
+/// 차례인 결재자의 최종 승인과 관리자의 대리 반려가 동시에 오면 하나만 반영되고,
+/// 신청·문서·원장이 서로 어긋나지 않는다.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn admin_reject_racing_with_the_final_approval_keeps_leave_consistent() {
+    let w = world().await;
+    for day in 9..=13 {
+        let date = format!("2026-03-{day:02}");
+        let mut body = leave(&w.annual, &date, &date, "full_day");
+        body["steps"] = json!([
+            { "approver_id": w.app.owner_id, "kind": "agree" },
+            { "approver_id": w.lead.id, "kind": "approve" },
+        ]);
+        let (id, doc) = ids(&request(&w.app, &w.kim, &body)
+            .await
+            .expect(StatusCode::CREATED));
+        decide(&w.app, &w.owner, &doc, "approve")
+            .await
+            .expect(StatusCode::OK);
+        let approving = {
+            let (app, token, doc) = (w.app.clone(), w.lead.token.clone(), doc.clone());
+            tokio::spawn(async move { decide(&app, &token, &doc, "approve").await })
+        };
+        let rejecting = {
+            let (app, token, doc) = (w.app.clone(), w.owner.clone(), doc.clone());
+            tokio::spawn(async move { admin_reject(&app, &token, &doc).await })
+        };
+        let approved = approving.await.expect("join");
+        let rejected = rejecting.await.expect("join");
+        let status = status_of(&w.app, &w.kim, &id).await;
+        let detail = document(&w.app, &w.kim.token, &doc).await;
+        assert_eq!(detail["status"], status.as_str(), "신청과 문서가 같은 결과");
+        match status.as_str() {
+            "approved" => {
+                assert_eq!(approved.status, StatusCode::OK);
+                rejected.expect_error(StatusCode::CONFLICT, "document_already_closed");
+            }
+            "rejected" => {
+                assert_eq!(rejected.status, StatusCode::OK);
+                approved.expect_error(StatusCode::CONFLICT, "document_already_closed");
+            }
+            other => panic!("unexpected status {other}"),
+        }
+    }
+    // 승인된 것만 차감돼 있다.
+    let requests = w
+        .app
+        .get("/leave/requests?year=2026")
+        .bearer(&w.kim.token)
+        .send()
+        .await
+        .expect(StatusCode::OK);
+    let approved = requests
+        .as_array()
+        .expect("requests")
+        .iter()
+        .filter(|request| request["status"] == "approved")
+        .count() as i64;
+    assert_eq!(remaining(&w.app, &w.kim).await, FULL - 4 * approved);
+    assert_ledger_invariants(&w.app, &w.kim).await;
 }

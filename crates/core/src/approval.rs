@@ -229,6 +229,12 @@ pub enum DocumentEvent {
         order: u8,
         by: MemberId,
     },
+    /// 관리자가 진행 중인 단계를 대신 반려로 닫았다([`Document::force_reject`]).
+    /// `pending_approver`는 처리하지 못한 채 건너뛴 그 단계의 결재자다.
+    ForceRejected {
+        order: u8,
+        pending_approver: MemberId,
+    },
     Withdrawn,
 }
 
@@ -237,13 +243,15 @@ impl DocumentEvent {
     pub const fn is_terminal(&self) -> bool {
         matches!(
             self,
-            Self::Completed | Self::Rejected { .. } | Self::Withdrawn
+            Self::Completed | Self::Rejected { .. } | Self::ForceRejected { .. } | Self::Withdrawn
         )
     }
 }
 
 string_enum! {
-    /// 문서 이력(`approval_events`)에 남기는 사건 종류. [`DocumentEvent`]와 일대일이다.
+    /// 문서 이력(`approval_events`)에 남기는 사건 종류. [`DocumentEvent`]마다 하나씩이며,
+    /// 관리자의 대리 반려([`DocumentEvent::ForceRejected`])도 `Rejected`로 남긴다(이력의
+    /// 행위자가 그 단계의 결재자가 아닌 관리자라는 점으로 구별된다).
     #[derive(PartialOrd, Ord)]
     pub enum EventKind("event_kind") {
         Submitted => "submitted",
@@ -263,7 +271,7 @@ impl DocumentEvent {
             Self::Submitted { .. } => EventKind::Submitted,
             Self::StepApproved { .. } => EventKind::Approved,
             Self::Completed => EventKind::Completed,
-            Self::Rejected { .. } => EventKind::Rejected,
+            Self::Rejected { .. } | Self::ForceRejected { .. } => EventKind::Rejected,
             Self::Withdrawn => EventKind::Withdrawn,
         }
     }
@@ -680,6 +688,59 @@ impl Document {
         Ok(Transition::Applied(vec![DocumentEvent::Rejected {
             order,
             by: actor,
+        }]))
+    }
+
+    /// 관리자의 대리 반려. 진행 중인 문서를 **지금 차례인 단계에서** 반려로 닫는다.
+    ///
+    /// 차례인 결재자가 정지·퇴사하면 그 문서는 아무도 처리할 수 없다(기안자는 누군가 결재한
+    /// 뒤라 회수하지 못하고, 다른 사람은 차례가 아니다). 그러면 연결된 휴가의 예약 잔여나 근태
+    /// 정정 요청이 영원히 묶이므로, 관리자가 결재자를 대신해 문서를 끝낼 수 있게 한다.
+    ///
+    /// 결과는 결재자가 직접 반려한 것과 **같은 모양**이다: 차례였던 단계가 `Rejected`(사유·시각
+    /// 기록)가 되고 뒤 단계는 `Waiting`으로 남으며 문서는 `Rejected`로 종료된다. 그래서
+    /// [`Document::restore`]의 불변식을 그대로 만족한다. 누가 실제로 닫았는지는 문서가 아니라
+    /// 이력(`approval_events`의 행위자)과 감사 로그가 말해 준다.
+    ///
+    /// 이 함수는 **누가** 부를 수 있는지는 판정하지 않는다(행위자는 결재선의 사람이 아니다).
+    /// 호출하는 쪽이 먼저 [`crate::authz::override_document`]로 확인한다.
+    ///
+    /// | 상황 | 결과 |
+    /// | --- | --- |
+    /// | 진행 중 | 반려로 종료 (`ForceRejected`) |
+    /// | 이미 반려로 종료됨 | `NoOp` (사유·시각은 처음 것을 유지) |
+    /// | 임시저장 | `DocumentNotEditable` (아직 올리지 않은 글은 닫을 것이 없다) |
+    /// | 승인·회수로 종료됨 | `DocumentAlreadyClosed` |
+    pub fn force_reject(&mut self, now: Timestamp, reason: Reason) -> DomainResult<Transition> {
+        match self.status {
+            DocumentStatus::InProgress => {}
+            DocumentStatus::Rejected => return Ok(Transition::NoOp),
+            DocumentStatus::Draft => return Err(ConflictReason::DocumentNotEditable.into()),
+            DocumentStatus::Approved | DocumentStatus::Withdrawn => {
+                return Err(ConflictReason::DocumentAlreadyClosed.into());
+            }
+        }
+        let at = self.effective_time(now);
+        // 불변식상 진행 중인 문서에는 차례인 단계가 정확히 하나 있다. 없다면 손상된 문서이므로
+        // 바꾸지 않는다.
+        let Some(current) = self
+            .steps
+            .iter_mut()
+            .find(|step| step.status == StepStatus::Pending)
+        else {
+            return Err(invalid("steps", ValidationReason::Inconsistent));
+        };
+        // 실패하더라도 문서를 바꾸기 전이다.
+        let comment = Comment::parse(reason.as_str())?;
+        current.status = StepStatus::Rejected;
+        current.acted_at = Some(at);
+        current.comment = Some(comment);
+        let (order, pending_approver) = (current.order, current.approver);
+        self.status = DocumentStatus::Rejected;
+        self.completed_at = Some(at);
+        Ok(Transition::Applied(vec![DocumentEvent::ForceRejected {
+            order,
+            pending_approver,
         }]))
     }
 
@@ -2065,6 +2126,149 @@ mod tests {
         }
     }
 
+    // ---- 관리자의 대리 반려 ----
+
+    #[test]
+    fn force_reject_closes_at_the_pending_step_like_a_rejection() {
+        let mut doc = submitted(&[Agree, Approve, Approve]);
+        applied(doc.approve(approver(1), ts(2_000), None));
+        let events = applied(doc.force_reject(ts(3_000), reason("결재자 퇴사")));
+        assert_eq!(
+            events,
+            vec![DocumentEvent::ForceRejected {
+                order: 2,
+                pending_approver: approver(2),
+            }]
+        );
+        assert!(events[0].is_terminal());
+        assert_eq!(events[0].kind(), EventKind::Rejected);
+        assert_eq!(doc.status(), DocumentStatus::Rejected);
+        assert_eq!(doc.completed_at(), Some(ts(3_000)));
+        assert_eq!(doc.current_approver(), None);
+        let statuses: Vec<_> = doc.steps().iter().map(|s| s.status).collect();
+        assert_eq!(
+            statuses,
+            [
+                StepStatus::Approved,
+                StepStatus::Rejected,
+                StepStatus::Waiting
+            ]
+        );
+        let closed = &doc.steps()[1];
+        assert_eq!(closed.acted_at, Some(ts(3_000)));
+        assert_eq!(closed.comment, Some(comment("결재자 퇴사")));
+        assert_eq!(doc.steps()[2].acted_at, None);
+        // 저장했다 다시 읽어도 유효한 문서다.
+        assert_eq!(Raw::of(&doc).restore(), Ok(doc));
+    }
+
+    #[test]
+    fn force_reject_works_before_anyone_acted_and_at_the_last_step() {
+        let mut fresh = submitted(&[Approve, Approve]);
+        let events = applied(fresh.force_reject(ts(2_000), reason("사유")));
+        assert_eq!(
+            events,
+            vec![DocumentEvent::ForceRejected {
+                order: 1,
+                pending_approver: approver(1),
+            }]
+        );
+        assert_eq!(Raw::of(&fresh).restore(), Ok(fresh));
+
+        let mut last = submitted(&[Approve, Approve]);
+        applied(last.approve(approver(1), ts(2_000), None));
+        let events = applied(last.force_reject(ts(3_000), reason("사유")));
+        assert_eq!(
+            events,
+            vec![DocumentEvent::ForceRejected {
+                order: 2,
+                pending_approver: approver(2),
+            }]
+        );
+        assert_eq!(Raw::of(&last).restore(), Ok(last));
+    }
+
+    #[test]
+    fn force_reject_is_refused_on_drafts_and_documents_closed_otherwise() {
+        let mut doc = draft(&[Approve]);
+        let before = doc.clone();
+        assert_eq!(doc.force_reject(ts(1), reason("사유")), Err(NOT_EDITABLE));
+        assert_eq!(doc, before);
+
+        let mut approved = submitted(&[Approve]);
+        applied(approved.approve(approver(1), ts(2_000), None));
+        let before = approved.clone();
+        assert_eq!(
+            approved.force_reject(ts(3_000), reason("사유")),
+            Err(CLOSED)
+        );
+        assert_eq!(approved, before);
+
+        let mut withdrawn = submitted(&[Approve]);
+        applied(withdrawn.withdraw(member(DRAFTER), ts(2_000)));
+        let before = withdrawn.clone();
+        assert_eq!(
+            withdrawn.force_reject(ts(3_000), reason("사유")),
+            Err(CLOSED)
+        );
+        assert_eq!(withdrawn, before);
+    }
+
+    #[test]
+    fn repeated_force_reject_is_a_noop_and_keeps_the_first_reason() {
+        let mut doc = submitted(&[Approve, Approve]);
+        applied(doc.approve(approver(1), ts(2_000), None));
+        applied(doc.force_reject(ts(3_000), reason("첫 사유")));
+        let before = doc.clone();
+        assert_eq!(
+            doc.force_reject(ts(9_000), reason("다른 사유")),
+            Ok(Transition::NoOp)
+        );
+        assert_eq!(doc, before);
+        assert_eq!(doc.steps()[1].comment, Some(comment("첫 사유")));
+
+        // 결재자가 직접 반려한 문서도 이미 원하는 상태이므로 반복과 같이 답한다.
+        let mut rejected = submitted(&[Approve]);
+        applied(rejected.reject(approver(1), ts(2_000), reason("직접 반려")));
+        let before = rejected.clone();
+        assert_eq!(
+            rejected.force_reject(ts(3_000), reason("사유")),
+            Ok(Transition::NoOp)
+        );
+        assert_eq!(rejected, before);
+    }
+
+    #[test]
+    fn nobody_on_the_line_can_act_after_a_force_reject() {
+        let mut doc = submitted(&[Agree, Approve]);
+        applied(doc.approve(approver(1), ts(2_000), None));
+        applied(doc.force_reject(ts(3_000), reason("사유")));
+        let before = doc.clone();
+        // 건너뛴 결재자의 뒤늦은 승인, 앞 단계의 재요청, 기안자의 회수·재상신 모두 거부된다.
+        assert_eq!(doc.approve(approver(2), ts(4_000), None), Err(CLOSED));
+        assert_eq!(doc.approve(approver(1), ts(4_000), None), Err(CLOSED));
+        assert_eq!(doc.reject(approver(1), ts(4_000), reason("x")), Err(CLOSED));
+        assert_eq!(doc.withdraw(member(DRAFTER), ts(4_000)), Err(CLOSED));
+        assert_eq!(doc.submit(member(DRAFTER), ts(4_000)), Err(CLOSED));
+        assert_eq!(doc, before);
+        // 건너뛴 결재자 본인의 반려 재요청만은 "이미 반려됨"이 사실이므로 반복으로 답한다.
+        assert_eq!(
+            doc.reject(approver(2), ts(4_000), reason("x")),
+            Ok(Transition::NoOp)
+        );
+        assert_eq!(doc, before);
+    }
+
+    #[test]
+    fn force_reject_keeps_time_order_when_the_clock_goes_backwards() {
+        let mut doc = submitted(&[Approve, Approve]);
+        applied(doc.approve(approver(1), ts(5_000), None));
+        applied(doc.force_reject(ts(10), reason("사유")));
+        assert_eq!(doc.steps()[1].acted_at, Some(ts(5_000)));
+        assert_eq!(doc.completed_at(), Some(ts(5_000)));
+        assert_eq!(Raw::of(&doc).restore(), Ok(doc));
+    }
+
     // ---- 속성 기반 ----
 
     #[derive(Debug, Clone, Copy)]
@@ -2073,6 +2277,8 @@ mod tests {
         Approve,
         Reject,
         Withdraw,
+        /// 관리자의 대리 반려. 행위자와 무관하다.
+        ForceReject,
     }
 
     fn op_strategy() -> impl Strategy<Value = (Op, usize, i64)> {
@@ -2081,6 +2287,7 @@ mod tests {
             6 => Just(Op::Approve),
             1 => Just(Op::Reject),
             1 => Just(Op::Withdraw),
+            1 => Just(Op::ForceReject),
         ];
         // 시각은 가끔 뒤로 간다(음수 증분).
         (op, 0usize..8, -500i64..2_000)
@@ -2134,7 +2341,9 @@ mod tests {
                     Op::Approve => doc.approve(by, now, None),
                     Op::Reject => doc.reject(by, now, reason("사유")),
                     Op::Withdraw => doc.withdraw(by, now),
+                    Op::ForceReject => doc.force_reject(now, reason("대리 반려")),
                 };
+                let forced = matches!(op, Op::ForceReject);
 
                 // (a) 어떤 전이 뒤에도 불변식이 성립한다.
                 let restored = Raw::of(&doc).restore();
@@ -2161,8 +2370,28 @@ mod tests {
                 // (e) 종료 사건은 문서가 종료될 때 정확히 한 번 나온다.
                 prop_assert!(terminal_events <= 1);
                 prop_assert_eq!(terminal_events == 1, doc.status().is_closed());
-                // 외부인·참조자는 무엇도 할 수 없다.
-                if by == member(OUTSIDER) || by == member(REFERENCE) {
+                // (f) 대리 반려는 진행 중인 문서를 언제나 반려로 닫고, 그 밖에는 아무것도 바꾸지
+                // 않는다. 닫힌 자리는 그때 차례였던 단계다.
+                if forced {
+                    match before.status() {
+                        DocumentStatus::InProgress => {
+                            prop_assert_eq!(doc.status(), DocumentStatus::Rejected);
+                            let closed = doc
+                                .steps()
+                                .iter()
+                                .find(|step| step.status == StepStatus::Rejected)
+                                .map(|step| step.approver);
+                            prop_assert_eq!(closed, before.current_approver());
+                            prop_assert_eq!(doc.acted_count(), before.acted_count() + 1);
+                        }
+                        DocumentStatus::Rejected => {
+                            prop_assert_eq!(&result, &Ok(Transition::NoOp));
+                        }
+                        _ => prop_assert!(result.is_err()),
+                    }
+                }
+                // 외부인·참조자는 (결재선의 동작으로는) 무엇도 할 수 없다.
+                if !forced && (by == member(OUTSIDER) || by == member(REFERENCE)) {
                     prop_assert_eq!(result, Err(DomainError::Forbidden));
                 }
             }

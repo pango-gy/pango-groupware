@@ -1992,3 +1992,355 @@ async fn malformed_requests_are_rejected() {
         .await
         .expect_error(StatusCode::BAD_REQUEST, "malformed_request");
 }
+
+// ── 관리자의 대리 반려 ────────────────────────────────────────────────────
+
+async fn admin_reject(app: &TestApp, token: &str, id: &str) -> TestResponse {
+    app.post(&format!("/admin/approval/documents/{id}/reject"))
+        .bearer(token)
+        .json(&json!({ "reason": "결재자 부재로 종료" }))
+        .send()
+        .await
+}
+
+async fn audit_entries(app: &TestApp, action: &str) -> Vec<audit::AuditEntry> {
+    let mut conn = app.state.read().await.expect("read");
+    let filter = AuditFilter {
+        action: Some(action.into()),
+        ..AuditFilter::default()
+    };
+    audit::list(&mut conn, &filter, 200).await.expect("audit").0
+}
+
+/// 한 문서의 상태·이력과 그 문서에 딸린 알림·감사 로그의 줄 수. 거부된 요청이 아무것도
+/// 바꾸지 않았는지 비교한다. 관리자의 열람(`approval.admin_view`)은 세지 않는다.
+async fn footprint(app: &TestApp, id: &str) -> (Document, Vec<&'static str>, i64, i64) {
+    let document = restored(app, id).await;
+    let events = event_kinds(app, id).await;
+    let mut conn = app.state.db.read().await.expect("read");
+    let notifications: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM notifications WHERE link = ?")
+            .bind(format!("/approval/documents/{id}"))
+            .fetch_one(&mut *conn)
+            .await
+            .expect("count");
+    let audits: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM audit_log WHERE target_id = ? AND action <> 'approval.admin_view'",
+    )
+    .bind(id)
+    .fetch_one(&mut *conn)
+    .await
+    .expect("count");
+    (document, events, notifications, audits)
+}
+
+/// [합의 a1, 결재 a2]에서 a1이 처리한 뒤 a2가 정지되면 아무도 문서를 끝낼 수 없었다.
+#[tokio::test]
+async fn admin_reject_ends_a_document_stranded_on_a_deactivated_approver() {
+    let w = world().await;
+    let steps = vec![
+        step(&w.a1, "agree"),
+        step(&w.a2, "approve"),
+        step(&w.a3, "approve"),
+    ];
+    let body = draft(&w.form, "지출 품의", steps, &[&w.reader], true);
+    let id = id_of(&create(&w.app, &w.drafter, &body).await);
+    approve(&w.app, &w.a1, &id).await.expect(StatusCode::OK);
+    set_status(&w.app, w.a2.id, MemberStatus::Suspended).await;
+
+    // 기존 길은 모두 막혀 있다.
+    withdraw(&w.app, &w.drafter, &id)
+        .await
+        .expect_error(StatusCode::CONFLICT, "withdraw_too_late");
+    act(
+        &w.app,
+        &w.owner,
+        &id,
+        "reject",
+        json!({ "reason": "관리자 반려" }),
+    )
+    .await
+    .expect_error(StatusCode::FORBIDDEN, "forbidden");
+    approve(&w.app, &w.a3, &id)
+        .await
+        .expect_error(StatusCode::CONFLICT, "not_current_approver");
+
+    w.app.advance(Duration::minutes(5));
+    let closed = admin_reject(&w.app, &w.owner, &id)
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(closed["status"], "rejected");
+    assert_eq!(closed["my_turn"], false);
+    let statuses: Vec<&str> = closed["steps"]
+        .as_array()
+        .expect("steps")
+        .iter()
+        .map(|s| s["status"].as_str().expect("status"))
+        .collect();
+    assert_eq!(statuses, ["approved", "rejected", "waiting"]);
+    assert_eq!(closed["steps"][1]["comment"], "결재자 부재로 종료");
+    assert_eq!(closed["steps"][1]["acted_at"], closed["completed_at"]);
+    assert_eq!(closed["steps"][2]["acted_at"], Value::Null);
+    // 이력의 행위자는 건너뛴 결재자가 아니라 관리자다.
+    let events = closed["events"].as_array().expect("events");
+    assert_eq!(
+        event_kinds(&w.app, &id).await,
+        ["submitted", "approved", "rejected"]
+    );
+    let last = events.last().expect("event");
+    assert_eq!(last["kind"], "rejected");
+    assert_eq!(last["actor_id"], json!(w.app.owner_id));
+    assert_eq!(last["step_order"], 2);
+    assert_eq!(last["comment"], "결재자 부재로 종료");
+    // 저장된 문서는 상태 기계의 불변식을 만족한다.
+    let stored = restored(&w.app, &id).await;
+    assert_eq!(stored.status(), DocumentStatus::Rejected);
+    assert_eq!(stored.current_approver(), None);
+
+    // 기안자에게 반려를, 건너뛴 결재자에게 할 일이 사라졌음을 알린다. 다음 결재자는 모른다.
+    assert_eq!(
+        notification_count(&w.app, w.drafter.id, "approval.rejected").await,
+        1
+    );
+    assert_eq!(
+        notification_count(&w.app, w.a2.id, "approval.admin_rejected").await,
+        1
+    );
+    assert_eq!(
+        notification_count(&w.app, w.a3.id, "approval.todo").await,
+        0
+    );
+    let audits = audit_entries(&w.app, "approval.admin_reject").await;
+    assert_eq!(audits.len(), 1);
+    assert_eq!(audits[0].actor_id, Some(w.app.owner_id));
+    assert_eq!(audits[0].target_id.as_deref(), Some(id.as_str()));
+    let detail = audits[0].detail.as_ref().expect("detail");
+    assert_eq!(detail["step_order"], 2);
+    assert_eq!(detail["pending_approver_id"], json!(w.a2.id));
+    assert_eq!(detail["drafter_id"], json!(w.drafter.id));
+    assert_eq!(detail["reason"], "결재자 부재로 종료");
+    assert_eq!(detail["kind"], "general");
+
+    // 결재함에서도 끝난 문서다.
+    assert!(box_ids(&w.app, &w.a3, "todo").await.is_empty());
+    let page = app_page(&w.app, &w.drafter, "box=drafted&status=rejected").await;
+    assert_eq!(page["items"].as_array().expect("items").len(), 1);
+
+    // 같은 요청을 다시 보내도(다른 사유여도) 아무것도 더 생기지 않는다.
+    let before = footprint(&w.app, &id).await;
+    w.app.advance(Duration::minutes(5));
+    let again = w
+        .app
+        .post(&format!("/admin/approval/documents/{id}/reject"))
+        .bearer(&w.owner)
+        .json(&json!({ "reason": "다른 사유" }))
+        .send()
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(again["steps"][1]["comment"], "결재자 부재로 종료");
+    assert_eq!(again["completed_at"], closed["completed_at"]);
+    assert_eq!(footprint(&w.app, &id).await, before);
+
+    // 복직한 결재자의 뒤늦은 승인, 기안자의 회수는 거부된다.
+    set_status(&w.app, w.a2.id, MemberStatus::Active).await;
+    let a2 = w.app.login("second", MEMBER_PASSWORD).await;
+    act(&w.app, &a2, &id, "approve", json!({}))
+        .await
+        .expect_error(StatusCode::CONFLICT, "document_already_closed");
+    withdraw(&w.app, &w.drafter, &id)
+        .await
+        .expect_error(StatusCode::CONFLICT, "document_already_closed");
+    assert_eq!(footprint(&w.app, &id).await, before);
+}
+
+/// 결재자가 재직 중이어도, 아무도 처리하기 전이어도 쓸 수 있다.
+#[tokio::test]
+async fn admin_reject_works_whoever_the_pending_approver_is() {
+    let w = world().await;
+    let id = submitted(&w, &[&w.a1, &w.a2]).await;
+    let closed = admin_reject(&w.app, &w.owner, &id)
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(closed["status"], "rejected");
+    assert_eq!(closed["steps"][0]["status"], "rejected");
+    assert_eq!(closed["steps"][1]["status"], "waiting");
+    assert_eq!(event_kinds(&w.app, &id).await, ["submitted", "rejected"]);
+    assert_eq!(
+        notification_count(&w.app, w.a1.id, "approval.admin_rejected").await,
+        1
+    );
+    approve(&w.app, &w.a1, &id)
+        .await
+        .expect_error(StatusCode::CONFLICT, "document_already_closed");
+
+    // 관리자(admin 역할)도 쓸 수 있다. 결재선에 있는 관리자여도 마찬가지다.
+    promote_to_admin(&w.app, w.a2.id).await;
+    let other = submitted(&w, &[&w.a1, &w.a2]).await;
+    let closed = admin_reject(&w.app, &w.a2.token, &other)
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(closed["steps"][0]["status"], "rejected");
+    let audits = audit_entries(&w.app, "approval.admin_reject").await;
+    assert_eq!(audits.len(), 2);
+    assert!(audits.iter().any(|a| a.actor_id == Some(w.a2.id)));
+}
+
+#[tokio::test]
+async fn admin_reject_is_refused_for_wrong_actors_and_wrong_states() {
+    let w = world().await;
+    let id = submitted(&w, &[&w.a1, &w.a2]).await;
+    approve(&w.app, &w.a1, &id).await.expect(StatusCode::OK);
+    let before = footprint(&w.app, &id).await;
+
+    // 관리자가 아닌 사람: 기안자, 처리한 결재자, 차례인 결재자, 뒤 결재자, 외부인.
+    for who in [&w.drafter, &w.a1, &w.a2, &w.outsider] {
+        admin_reject(&w.app, &who.token, &id)
+            .await
+            .expect_error(StatusCode::FORBIDDEN, "forbidden");
+    }
+    w.app
+        .post(&format!("/admin/approval/documents/{id}/reject"))
+        .json(&json!({ "reason": "x" }))
+        .send()
+        .await
+        .expect_error(StatusCode::UNAUTHORIZED, "unauthenticated");
+    // 사유는 반려와 같은 규칙이다.
+    for body in [
+        json!({ "reason": "" }),
+        json!({ "reason": "  " }),
+        json!({}),
+    ] {
+        let response = w
+            .app
+            .post(&format!("/admin/approval/documents/{id}/reject"))
+            .bearer(&w.owner)
+            .json(&body)
+            .send()
+            .await;
+        assert_eq!(response.status, StatusCode::BAD_REQUEST, "{body}");
+    }
+    admin_reject(&w.app, &w.owner, &DocumentId::new().to_string())
+        .await
+        .expect_error(StatusCode::NOT_FOUND, "not_found");
+    assert_eq!(footprint(&w.app, &id).await, before);
+
+    // 본인이 기안한 문서에는 관리자도, 최고 관리자도 쓸 수 없다.
+    promote_to_admin(&w.app, w.drafter.id).await;
+    admin_reject(&w.app, &w.drafter.token, &id)
+        .await
+        .expect_error(StatusCode::FORBIDDEN, "forbidden");
+    let owner = TestMember {
+        id: w.app.owner_id,
+        login_id: "owner".into(),
+        token: w.owner.clone(),
+    };
+    let steps = vec![step(&w.a1, "approve")];
+    let own = id_of(
+        &create(
+            &w.app,
+            &owner,
+            &draft(&w.form, "대표 품의", steps, &[], true),
+        )
+        .await,
+    );
+    let own_before = footprint(&w.app, &own).await;
+    admin_reject(&w.app, &w.owner, &own)
+        .await
+        .expect_error(StatusCode::FORBIDDEN, "forbidden");
+    assert_eq!(footprint(&w.app, &own).await, own_before);
+    assert_eq!(footprint(&w.app, &id).await, before);
+    // 다른 관리자는 그 문서를 끝낼 수 있다.
+    admin_reject(&w.app, &w.drafter.token, &own)
+        .await
+        .expect(StatusCode::OK);
+
+    // 임시저장: 남의 것은 보이지 않고(404), 본인 것은 본인 문서라 403.
+    let steps = vec![step(&w.a1, "approve")];
+    let draft_body = draft(&w.form, "임시", steps, &[], false);
+    let others_draft = id_of(&create(&w.app, &w.outsider, &draft_body).await);
+    admin_reject(&w.app, &w.owner, &others_draft)
+        .await
+        .expect_error(StatusCode::NOT_FOUND, "not_found");
+    let own_draft = id_of(&create(&w.app, &owner, &draft_body).await);
+    admin_reject(&w.app, &w.owner, &own_draft)
+        .await
+        .expect_error(StatusCode::FORBIDDEN, "forbidden");
+    assert_eq!(event_kinds(&w.app, &others_draft).await, Vec::<&str>::new());
+
+    // 승인·회수로 끝난 문서.
+    let approved = submitted(&w, &[&w.a1]).await;
+    approve(&w.app, &w.a1, &approved)
+        .await
+        .expect(StatusCode::OK);
+    let withdrawn = submitted(&w, &[&w.a1]).await;
+    withdraw(&w.app, &w.drafter, &withdrawn)
+        .await
+        .expect(StatusCode::OK);
+    for closed in [&approved, &withdrawn] {
+        let closed_before = footprint(&w.app, closed).await;
+        admin_reject(&w.app, &w.owner, closed)
+            .await
+            .expect_error(StatusCode::CONFLICT, "document_already_closed");
+        assert_eq!(footprint(&w.app, closed).await, closed_before);
+    }
+    assert_eq!(
+        audit_entries(&w.app, "approval.admin_reject").await.len(),
+        1
+    );
+}
+
+/// 차례인 결재자의 승인과 관리자의 대리 반려가 동시에 오면 하나만 반영된다.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn admin_reject_racing_with_the_final_approval_has_exactly_one_winner() {
+    let w = world().await;
+    let mut outcomes = BTreeSet::new();
+    for _ in 0..12 {
+        let id = submitted(&w, &[&w.a1]).await;
+        let approving = {
+            let (app, token, id) = (w.app.clone(), w.a1.token.clone(), id.clone());
+            tokio::spawn(async move { act(&app, &token, &id, "approve", json!({})).await })
+        };
+        let rejecting = {
+            let (app, token, id) = (w.app.clone(), w.owner.clone(), id.clone());
+            tokio::spawn(async move { admin_reject(&app, &token, &id).await })
+        };
+        let approved = approving.await.expect("join");
+        let rejected = rejecting.await.expect("join");
+        let document = restored(&w.app, &id).await;
+        match document.status() {
+            DocumentStatus::Approved => {
+                assert_eq!(approved.status, StatusCode::OK);
+                rejected.expect_error(StatusCode::CONFLICT, "document_already_closed");
+                assert_eq!(
+                    event_kinds(&w.app, &id).await,
+                    ["submitted", "approved", "completed"]
+                );
+            }
+            DocumentStatus::Rejected => {
+                assert_eq!(rejected.status, StatusCode::OK);
+                approved.expect_error(StatusCode::CONFLICT, "document_already_closed");
+                assert_eq!(event_kinds(&w.app, &id).await, ["submitted", "rejected"]);
+            }
+            other => panic!("unexpected final status {other:?}"),
+        }
+        outcomes.insert(document.status());
+    }
+    // 반영된 대리 반려마다 감사 로그가 정확히 한 줄이다.
+    let mut conn = w.app.state.read().await.expect("read");
+    let filter = documents::DocumentFilter {
+        scope: documents::Scope::Submitted,
+        status: Some(DocumentStatus::Rejected),
+        kind: None,
+        drafter_id: None,
+        before: None,
+    };
+    let (rejected_documents, _) = documents::list_documents(&mut conn, &filter, 200)
+        .await
+        .expect("list");
+    drop(conn);
+    assert_eq!(
+        audit_entries(&w.app, "approval.admin_reject").await.len(),
+        rejected_documents.len()
+    );
+    assert!(!outcomes.is_empty());
+}

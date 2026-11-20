@@ -50,6 +50,8 @@ const MAX_BACKDATE_DAYS: u64 = 30;
 const EXPIRING_SOON_DAYS: u64 = 30;
 /// 수동 조정 한 건의 최대 크기(1/4일 단위, 100일).
 const MAX_ADJUST_QUARTERS: i32 = 400;
+/// 관리자가 회수할 수 없는 신청을 취소할 때 결재 문서에 남기는 반려 사유.
+const ADMIN_CANCEL_REASON: &str = "관리자가 휴가 신청을 취소했습니다.";
 /// 저장·전송 표기(`YYYY-MM-DD`)로 쓸 수 있는 연도 범위.
 const YEARS: std::ops::RangeInclusive<i32> = 2000..=9999;
 
@@ -878,8 +880,12 @@ pub async fn on_document_closed_tx(
 /// - **대기 중**: 취소는 곧 문서 **회수**다. 문서를 회수하면 그 연결 효과
 ///   ([`on_document_closed_tx`])가 신청을 `canceled`로 바꾸고 잔여를 복원한다. 따라서 결재
 ///   화면에서 회수하든 휴가 화면에서 취소하든 같은 경로, 같은 결과다. 누군가 이미 결재한
-///   문서는 회수할 수 없으므로 취소도 `WithdrawTooLate`로 거부한다(남은 결재자의 반려로
-///   끝낼 수 있고, 그때 잔여가 복원된다). 문서만 진행 중으로 남는 일을 막기 위해서다.
+///   문서는 회수할 수 없으므로 **본인의** 취소는 `WithdrawTooLate`로 거부한다(남은 결재자의
+///   반려로 끝낼 수 있고, 그때 잔여가 복원된다). 문서만 진행 중으로 남는 일을 막기 위해서다.
+///   **관리자의** 취소는 그 경우 문서를 대리 반려로 끝낸다
+///   ([`approval::close_linked_by_admin_tx`]). 남은 결재자가 정지·퇴사해 아무도 끝낼 수 없는
+///   신청의 잔여가 영영 예약돼 있지 않게 하기 위해서다. 이때 신청은 문서와 같이 `rejected`가
+///   되고 잔여가 복원된다.
 /// - **승인됨**: 결재는 이미 끝난 기록이므로 문서는 `approved`로 둔 채 신청만 `canceled`로
 ///   바꾸고 잔여를 복원한다. 휴가가 실제로 유효한지는 신청의 상태가 정한다. 결재했던
 ///   사람들에게 취소를 알린다. 본인은 휴가 시작 전에만, 관리자는 언제든 할 수 있다.
@@ -898,7 +904,10 @@ async fn cancel_tx(
         return Ok(());
     };
     let actor_id = ctx.member_id();
-    if request.status == LeaveRequestStatus::Pending {
+    if request.status == LeaveRequestStatus::Pending && by_admin {
+        let reason = Reason::parse(ADMIN_CANCEL_REASON)?;
+        approval::close_linked_by_admin_tx(conn, ctx, request.document_id, reason, now).await?;
+    } else if request.status == LeaveRequestStatus::Pending {
         approval::withdraw_linked_tx(conn, actor_id, request.document_id, now).await?;
     } else {
         close_request_tx(

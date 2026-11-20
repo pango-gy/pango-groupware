@@ -35,7 +35,7 @@ use pango_db::{org, Conn};
 
 use super::support::{
     audit, found, member_names, notify, page_of, parse_cursor, require_active_members,
-    require_updated, Audit, AuthContext, Company, Idempotency, Notify,
+    require_current_admin, require_updated, Audit, AuthContext, Company, Idempotency, Notify,
 };
 use super::{attendance, leave};
 use crate::error::{ServiceError, ServiceResult};
@@ -61,7 +61,9 @@ impl LinkedOutcome {
     fn from_event(event: &DocumentEvent) -> Option<Self> {
         match event {
             DocumentEvent::Completed => Some(Self::Completed),
-            DocumentEvent::Rejected { .. } => Some(Self::Rejected),
+            DocumentEvent::Rejected { .. } | DocumentEvent::ForceRejected { .. } => {
+                Some(Self::Rejected)
+            }
             DocumentEvent::Withdrawn => Some(Self::Withdrawn),
             DocumentEvent::Submitted { .. } | DocumentEvent::StepApproved { .. } => None,
         }
@@ -659,9 +661,9 @@ async fn commit_transition_tx(
 
     for event in events {
         let step_order = match event {
-            DocumentEvent::StepApproved { order, .. } | DocumentEvent::Rejected { order, .. } => {
-                Some(*order)
-            }
+            DocumentEvent::StepApproved { order, .. }
+            | DocumentEvent::Rejected { order, .. }
+            | DocumentEvent::ForceRejected { order, .. } => Some(*order),
             _ => None,
         };
         let comment = step_order
@@ -757,6 +759,23 @@ async fn notify_event_tx(
             "문서가 반려되었습니다",
             format!("approval.rejected:{id}"),
         )),
+        // 기안자에게는 반려를, 처리하지 못한 채 건너뛴 결재자에게는 할 일이 사라졌음을 알린다.
+        DocumentEvent::ForceRejected {
+            pending_approver, ..
+        } => messages.extend([
+            (
+                record.drafter_id,
+                "approval.rejected",
+                "문서가 반려되었습니다",
+                format!("approval.rejected:{id}"),
+            ),
+            (
+                pending_approver,
+                "approval.admin_rejected",
+                "관리자가 결재 대기 문서를 반려 처리했습니다",
+                format!("approval.admin_rejected:{id}"),
+            ),
+        ]),
         // 결재 요청을 받았던 사람(첫 결재자)에게 할 일이 사라졌음을 알린다.
         DocumentEvent::Withdrawn => messages.extend(document.steps().first().map(|step| {
             (
@@ -1086,6 +1105,105 @@ pub async fn reject(
         document.reject(actor, now, reason)
     })
     .await
+}
+
+/// 대리 반려를 적용하고 저장한다. 문서가 실제로 바뀌었을 때만 이력·알림·연결 효과와 감사
+/// 로그(`approval.admin_reject`)를 남긴다. 권한은 호출한 쪽이 이미 확인했어야 한다.
+async fn force_reject_tx(
+    conn: &mut Conn,
+    ctx: &AuthContext,
+    loaded: &mut Loaded,
+    reason: Reason,
+    now: Timestamp,
+) -> ServiceResult<()> {
+    let reason_text = reason.as_str().to_owned();
+    let Transition::Applied(events) = loaded.document.force_reject(now, reason)? else {
+        return Ok(());
+    };
+    commit_transition_tx(conn, ctx.member_id(), loaded, &events, now).await?;
+    let skipped = events.iter().find_map(|event| match event {
+        DocumentEvent::ForceRejected {
+            order,
+            pending_approver,
+        } => Some((*order, *pending_approver)),
+        _ => None,
+    });
+    audit(
+        conn,
+        now,
+        Audit {
+            action: "approval.admin_reject",
+            target_type: "approval_document",
+            target_id: Some(loaded.record.id.to_string()),
+            detail: Some(serde_json::json!({
+                "kind": loaded.record.kind,
+                "drafter_id": loaded.record.drafter_id,
+                "step_order": skipped.map(|(order, _)| order),
+                "pending_approver_id": skipped.map(|(_, approver)| approver),
+                "reason": reason_text,
+            })),
+            ctx: Some(ctx),
+        },
+    )
+    .await
+}
+
+/// 관리자의 대리 반려: 진행 중인 문서를 지금 차례인 단계에서 반려로 끝낸다.
+///
+/// 차례인 결재자가 정지·퇴사해 아무도 처리할 수 없게 된 문서를 끝내기 위한 길이다(결재자가
+/// 재직 중이어도 쓸 수 있다). 결과와 연결 효과(휴가 잔여 복원, 근태 정정 요청 종료)는 결재자가
+/// 직접 반려한 것과 같고, 이력의 행위자와 감사 로그에는 관리자가 남는다.
+///
+/// - 관리자만 할 수 있고(트랜잭션 안에서 다시 확인), 본인이 기안한 문서에는 쓸 수 없다(403).
+/// - 임시저장 문서는 관리자에게 보이지 않으므로 404, 승인·회수로 끝난 문서는 409
+///   `document_already_closed`다. 이미 반려된 문서는 아무것도 바꾸지 않고 성공으로 답한다.
+pub async fn admin_reject(
+    state: &AppState,
+    ctx: &AuthContext,
+    id: DocumentId,
+    request: &RejectRequest,
+) -> ServiceResult<DocumentDetail> {
+    authz::require_admin(&ctx.actor)?;
+    let reason = Reason::parse(&request.reason)?;
+    let now = state.now();
+    state
+        .write(async |conn: &mut Conn| {
+            let actor = require_current_admin(conn, ctx).await?;
+            let mut loaded = load(conn, id).await?;
+            rules::view(&actor, &loaded.document)?;
+            authz::override_document(&actor, loaded.document.drafter())?;
+            force_reject_tx(conn, ctx, &mut loaded, reason, now).await?;
+            detail_tx(conn, ctx.member_id(), id).await
+        })
+        .await
+}
+
+/// 연결된 기능의 **관리자 취소**가 문서를 끝낸다(휴가 신청의 관리자 취소). 호출한 쪽의
+/// 트랜잭션에 묶이고, 권한도 호출한 쪽이 이미 확인했어야 한다.
+///
+/// 아무도 결재하지 않았으면 회수와 같다([`withdraw_linked_tx`]). 누군가 결재한 뒤라 회수할 수
+/// 없으면 대리 반려로 끝낸다. 그래서 관리자의 취소는 `WithdrawTooLate`로 막히지 않는다.
+/// 어느 쪽인지는 상태 기계가 정한다(회수 전이가 거부한 경우에만 대리 반려를 시도한다).
+pub async fn close_linked_by_admin_tx(
+    conn: &mut Conn,
+    ctx: &AuthContext,
+    id: DocumentId,
+    reason: Reason,
+    now: Timestamp,
+) -> ServiceResult<()> {
+    let mut loaded = load(conn, id).await?;
+    let drafter = loaded.document.drafter();
+    match loaded.document.withdraw(drafter, now) {
+        Ok(Transition::Applied(events)) => {
+            commit_transition_tx(conn, ctx.member_id(), &loaded, &events, now).await
+        }
+        Ok(Transition::NoOp) => Ok(()),
+        // 전이가 거부되면 문서는 바뀌지 않았으므로 그대로 다음 전이를 시도할 수 있다.
+        Err(DomainError::Conflict(ConflictReason::WithdrawTooLate)) => {
+            force_reject_tx(conn, ctx, &mut loaded, reason, now).await
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// 회수. 휴가 신청·근태 정정 문서라면 연결된 요청도 같은 트랜잭션에서 취소된다.

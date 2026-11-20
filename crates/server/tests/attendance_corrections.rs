@@ -1440,3 +1440,99 @@ async fn list_is_newest_first_and_paginated() {
         .expect(StatusCode::OK);
     assert_eq!(page_ids(&own).len(), 3);
 }
+
+// ── 결재자가 사라진 요청 ─────────────────────────────────────────────────
+
+/// [합의 lee, 결재 lead]에서 lee가 합의한 뒤 lead가 정지되면, 요청을 끝낼 사람이 없어 그 날짜의
+/// 정정을 다시 올릴 수도 없었다. 관리자의 대리 반려로 끝낸 뒤에는 다시 올릴 수 있다.
+#[tokio::test]
+async fn admin_reject_closes_a_stranded_correction_so_the_day_can_be_refiled() {
+    let (w, _) = world_with_late_record().await;
+    let mut body = full_day("2026-03-02");
+    body["steps"] = json!([
+        { "approver_id": w.lee.id, "kind": "agree" },
+        { "approver_id": w.lead.id, "kind": "approve" },
+    ]);
+    let (id, doc) = requested(&w.app, &w.kim, &body).await;
+    decide(&w.app, &w.lee.token, &doc, "approve")
+        .await
+        .expect(StatusCode::OK);
+    let mut tx = w.app.state.db.begin_write().await.expect("begin");
+    let mut lead = members::find(&mut tx, w.lead.id)
+        .await
+        .expect("find")
+        .expect("member");
+    lead.status = MemberStatus::Suspended;
+    assert!(members::update(&mut tx, &lead, w.app.state.now())
+        .await
+        .expect("update"));
+    tx.commit().await.expect("commit");
+    let record_before = day(&w.app, &w.kim.token, "2026-03-02").await;
+
+    // 막혀 있던 길: 본인 취소, 관리자의 일반 반려, 같은 날짜 재요청.
+    cancel(&w.app, &w.kim.token, &id)
+        .await
+        .expect_error(StatusCode::CONFLICT, "withdraw_too_late");
+    decide(&w.app, &w.admin.token, &doc, "reject")
+        .await
+        .expect_error(StatusCode::FORBIDDEN, "forbidden");
+    let mut again = full_day("2026-03-02");
+    again["steps"] = json!([{ "approver_id": w.admin.id, "kind": "approve" }]);
+    request(&w.app, &w.kim, &again)
+        .await
+        .expect_error(StatusCode::CONFLICT, "already_exists");
+    // 관리자가 아니면 대리 반려를 쓸 수 없다.
+    for token in [&w.kim.token, &w.lee.token] {
+        w.app
+            .post(&format!("/admin/approval/documents/{doc}/reject"))
+            .bearer(token)
+            .json(&json!({ "reason": "결재자 부재" }))
+            .send()
+            .await
+            .expect_error(StatusCode::FORBIDDEN, "forbidden");
+    }
+    assert_eq!(status_of(&w.app, &w.kim, &id).await, "pending");
+
+    let reject = || async {
+        w.app
+            .post(&format!("/admin/approval/documents/{doc}/reject"))
+            .bearer(&w.admin.token)
+            .json(&json!({ "reason": "결재자 부재" }))
+            .send()
+            .await
+            .expect(StatusCode::OK)
+    };
+    let closed = reject().await;
+    assert_eq!(closed["status"], "rejected");
+    assert_eq!(status_of(&w.app, &w.kim, &id).await, "rejected");
+    // 기록은 건드리지 않는다.
+    assert_eq!(day(&w.app, &w.kim.token, "2026-03-02").await, record_before);
+    assert_eq!(count(&w.app, CORRECTION_EVENTS).await, 0);
+    let audits = audit_entries(&w.app, "approval.admin_reject").await;
+    assert_eq!(audits.len(), 1);
+    assert_eq!(audits[0].actor_id, Some(w.admin.id));
+    assert_eq!(
+        audits[0].detail.as_ref().expect("detail")["kind"],
+        "attendance_correction"
+    );
+    assert_eq!(
+        notification_count(&w.app, w.kim.id, "approval.rejected").await,
+        1
+    );
+    // 반복은 아무것도 바꾸지 않는다.
+    reject().await;
+    assert_eq!(
+        audit_entries(&w.app, "approval.admin_reject").await.len(),
+        1
+    );
+    assert_eq!(stored(&w.app, w.kim.id).await.len(), 1);
+
+    // 이제 같은 날짜를 다시 올려 승인받을 수 있다.
+    let (second, second_doc) = requested(&w.app, &w.kim, &again).await;
+    assert_ne!(second, id);
+    decide(&w.app, &w.admin.token, &second_doc, "approve")
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(status_of(&w.app, &w.kim, &second).await, "approved");
+    assert_eq!(count(&w.app, CORRECTION_EVENTS).await, 1);
+}

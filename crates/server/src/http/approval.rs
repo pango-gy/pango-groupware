@@ -42,6 +42,7 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/admin/approval/forms/{id}", patch(admin_update_form))
         .route("/admin/approval/documents", get(admin_list_documents))
+        .route("/admin/approval/documents/{id}/reject", post(admin_reject))
 }
 
 async fn list_forms(
@@ -183,6 +184,17 @@ async fn admin_list_documents(
     ApiQuery(query): ApiQuery<AdminDocumentQuery>,
 ) -> ServiceResult<Json<Page<DocumentSummary>>> {
     approval::admin_list_documents(&state, &ctx, &query)
+        .await
+        .map(Json)
+}
+
+async fn admin_reject(
+    State(state): State<AppState>,
+    Auth(ctx): Auth,
+    ApiPath(id): ApiPath<DocumentId>,
+    ApiJson(request): ApiJson<RejectRequest>,
+) -> ServiceResult<Json<DocumentDetail>> {
+    approval::admin_reject(&state, &ctx, id, &request)
         .await
         .map(Json)
 }
