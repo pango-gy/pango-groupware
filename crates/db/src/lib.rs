@@ -4,10 +4,12 @@
 //! 서비스 계층에 있다. 저장소 함수는 연결(`&mut Conn`)을 받으므로, 호출하는 쪽이
 //! 트랜잭션 경계를 정한다.
 
+pub mod approval;
 pub mod audit;
 pub mod codec;
 pub mod error;
 pub mod idempotency;
+pub mod leave;
 pub mod members;
 pub mod notifications;
 pub mod org;

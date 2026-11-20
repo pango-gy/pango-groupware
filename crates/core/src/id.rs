@@ -82,6 +82,7 @@ define_id!(
     FormId,
     DocumentId,
     ApprovalStepId,
+    ApprovalEventId,
     NoticeId,
     NotificationId,
     AuditLogId,

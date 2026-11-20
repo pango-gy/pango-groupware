@@ -110,6 +110,23 @@ impl DateRange {
     }
 }
 
+/// `YYYY-MM` 표기를 그 달 전체 구간으로 읽는다. 자릿수를 고정해 표기를 하나로 유지한다
+/// (`2026-3`, `2026-03-01`, 공백·부호는 받지 않는다).
+pub fn parse_month(value: &str) -> DomainResult<DateRange> {
+    let malformed = DomainError::validation("month", ValidationReason::InvalidFormat);
+    let all_digits = |part: &str| part.bytes().all(|b| b.is_ascii_digit());
+    let Some((year, month)) = value.split_once('-') else {
+        return Err(malformed);
+    };
+    if year.len() != 4 || month.len() != 2 || !all_digits(year) || !all_digits(month) {
+        return Err(malformed);
+    }
+    match (year.parse(), month.parse()) {
+        (Ok(year), Ok(month)) => DateRange::month(year, month),
+        _ => Err(malformed),
+    }
+}
+
 /// 근무 요일 + 공휴일.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkCalendar {
@@ -208,6 +225,39 @@ mod tests {
         assert!(DateRange::month(2026, 0).is_err());
         assert!(DateRange::month(2026, 13).is_err());
         assert!(DateRange::month(i32::MAX, 12).is_err());
+    }
+
+    #[test]
+    fn parse_month_accepts_only_fixed_width_year_month() {
+        let range = parse_month("2026-02").expect("month");
+        assert_eq!(
+            (range.start(), range.end()),
+            (d("2026-02-01"), d("2026-02-28"))
+        );
+        assert_eq!(parse_month("2028-02").expect("leap").end(), d("2028-02-29"));
+        assert_eq!(
+            parse_month("2026-12").expect("december").end(),
+            d("2026-12-31")
+        );
+        for bad in [
+            "",
+            "2026",
+            "2026-3",
+            "2026-003",
+            "26-03",
+            "2026-03-01",
+            "2026/03",
+            " 2026-03",
+            "2026-03 ",
+            "+026-03",
+            "2026-0a",
+            "２０２６-03",
+            "2026-00",
+            "2026-13",
+            "0000-00",
+        ] {
+            assert!(parse_month(bad).is_err(), "accepted {bad:?}");
+        }
     }
 
     #[test]

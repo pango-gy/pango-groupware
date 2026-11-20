@@ -192,6 +192,46 @@ impl std::fmt::Display for LoginId {
     }
 }
 
+/// 양식·휴가 종류의 식별 코드(`annual`, `family_event`). 한번 정하면 바꾸지 않으며
+/// 다른 코드·설정이 이 값으로 대상을 찾으므로, 소문자 영문·숫자와 `_`만 쓰고 영문으로 시작한다.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Code(String);
+
+impl Code {
+    pub const MIN_LEN: usize = 2;
+    pub const MAX_LEN: usize = 32;
+
+    /// 정규화하지 않는다. 대문자·공백이 섞인 입력은 거부한다.
+    pub fn parse(raw: &str) -> DomainResult<Self> {
+        let err = |reason| DomainError::validation("code", reason);
+        if raw.len() > Self::MAX_LEN {
+            return Err(err(ValidationReason::TooLong { max: Self::MAX_LEN }));
+        }
+        if raw.is_empty() {
+            return Err(err(ValidationReason::Empty));
+        }
+        if raw.len() < Self::MIN_LEN {
+            return Err(err(ValidationReason::TooShort { min: Self::MIN_LEN }));
+        }
+        let valid_char = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_';
+        if !raw.bytes().all(valid_char) {
+            return Err(err(ValidationReason::InvalidCharacter));
+        }
+        if !raw.as_bytes()[0].is_ascii_lowercase() {
+            return Err(err(ValidationReason::InvalidFormat));
+        }
+        Ok(Self(raw.to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
 /// 이메일 주소. 발송 가능 여부가 아니라 형태만 확인한다.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Email(String);
@@ -390,6 +430,38 @@ mod tests {
             reason(Title::parse("👨\u{200D}👩")),
             ValidationReason::InvalidCharacter
         );
+    }
+
+    #[test]
+    fn code_rules() {
+        for good in ["annual", "family_event", "a1", &"a".repeat(32)] {
+            assert_eq!(Code::parse(good).expect("valid").as_str(), good);
+        }
+        assert_eq!(reason(Code::parse("")), ValidationReason::Empty);
+        assert_eq!(
+            reason(Code::parse("a")),
+            ValidationReason::TooShort { min: 2 }
+        );
+        assert_eq!(
+            reason(Code::parse(&"a".repeat(33))),
+            ValidationReason::TooLong { max: 32 }
+        );
+        for bad in [
+            "Annual", "an nual", "연차", "a-b", "a.b", "ab\n", "ab\0", "a'--",
+        ] {
+            assert_eq!(
+                reason(Code::parse(bad)),
+                ValidationReason::InvalidCharacter,
+                "{bad:?}"
+            );
+        }
+        for bad in ["1ab", "_ab"] {
+            assert_eq!(
+                reason(Code::parse(bad)),
+                ValidationReason::InvalidFormat,
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]
