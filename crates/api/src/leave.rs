@@ -2,6 +2,7 @@
 
 use chrono::NaiveDate;
 use pango_core::id::{DocumentId, LeaveLedgerEntryId, LeaveRequestId, LeaveTypeId, MemberId};
+pub use pango_core::leave::LedgerKind;
 use pango_core::leave::{Balance, LeaveAmount, LeaveRequestStatus, LeaveUnit};
 use pango_core::time::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -52,15 +53,6 @@ pub struct BalanceDto {
     pub balance: Balance,
     /// 30일 안에 소멸하는 수량(쓰지 않으면 사라진다).
     pub expiring_soon: LeaveAmount,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LedgerKind {
-    Grant,
-    Use,
-    Restore,
-    Adjust,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

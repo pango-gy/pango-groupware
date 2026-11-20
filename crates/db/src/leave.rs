@@ -3,7 +3,9 @@
 use chrono::NaiveDate;
 use pango_core::calendar::DateRange;
 use pango_core::id::{DocumentId, LeaveLedgerEntryId, LeaveRequestId, LeaveTypeId, MemberId};
-use pango_core::leave::{LeaveAmount, LeaveRequestStatus, LeaveUnit, LedgerEntry, LedgerEntryKind};
+use pango_core::leave::{
+    LeaveAmount, LeaveRequestStatus, LeaveUnit, LedgerEntry, LedgerEntryKind, LedgerKind,
+};
 use pango_core::time::Timestamp;
 use pango_core::{DomainError, ValidationReason};
 
@@ -407,27 +409,21 @@ impl TryFrom<LedgerRow> for LedgerRecord {
         let effective_on = codec::date_opt("effective_on", row.effective_on.as_deref())?;
         let request: Option<LeaveRequestId> =
             codec::parse_opt("request_id", row.request_id.as_deref())?;
-        let kind = match row.kind.as_str() {
-            "grant" => LedgerEntryKind::Grant {
+        let kind = match LedgerKind::parse(&row.kind).map_err(codec::corrupt("kind"))? {
+            LedgerKind::Grant => LedgerEntryKind::Grant {
                 valid_from: missing("valid_from", valid_from)?,
                 expires_on,
             },
-            "use" => LedgerEntryKind::Use {
+            LedgerKind::Use => LedgerEntryKind::Use {
                 effective_on: missing("effective_on", effective_on)?,
                 request: missing("request_id", request)?,
             },
-            "restore" => LedgerEntryKind::Restore {
+            LedgerKind::Restore => LedgerEntryKind::Restore {
                 request: missing("request_id", request)?,
             },
-            "adjust" => LedgerEntryKind::Adjust {
+            LedgerKind::Adjust => LedgerEntryKind::Adjust {
                 effective_on: missing("effective_on", effective_on)?,
             },
-            _ => {
-                return Err(codec::corrupt("kind")(DomainError::validation(
-                    "kind",
-                    ValidationReason::InvalidFormat,
-                )))
-            }
         };
         Ok(Self {
             id: codec::parse("id", &row.id)?,
@@ -466,7 +462,7 @@ fn ledger_columns(kind: LedgerEntryKind) -> LedgerColumns {
             valid_from,
             expires_on,
         } => LedgerColumns {
-            kind: "grant",
+            kind: LedgerKind::Grant.as_str(),
             valid_from: Some(valid_from),
             expires_on,
             ..empty
@@ -475,18 +471,18 @@ fn ledger_columns(kind: LedgerEntryKind) -> LedgerColumns {
             effective_on,
             request,
         } => LedgerColumns {
-            kind: "use",
+            kind: LedgerKind::Use.as_str(),
             effective_on: Some(effective_on),
             request: Some(request),
             ..empty
         },
         LedgerEntryKind::Restore { request } => LedgerColumns {
-            kind: "restore",
+            kind: LedgerKind::Restore.as_str(),
             request: Some(request),
             ..empty
         },
         LedgerEntryKind::Adjust { effective_on } => LedgerColumns {
-            kind: "adjust",
+            kind: LedgerKind::Adjust.as_str(),
             effective_on: Some(effective_on),
             ..empty
         },

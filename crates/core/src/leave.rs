@@ -352,6 +352,16 @@ pub fn accrual_grants(
 
 // ───────────── 원장과 잔여 ─────────────
 
+crate::string_enum! {
+    /// 원장 항목 종류의 표기. DB(`leave_ledger.kind`)와 API(`LedgerEntryDto.kind`)가 같은 값을 쓴다.
+    pub enum LedgerKind("kind") {
+        Grant => "grant",
+        Use => "use",
+        Restore => "restore",
+        Adjust => "adjust",
+    }
+}
+
 /// 원장 항목의 종류. 원장은 추가만 하며 고치거나 지우지 않는다.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LedgerEntryKind {
@@ -2123,6 +2133,27 @@ mod tests {
             );
         }
         assert!(serde_json::from_str::<LeaveUnit>("\"FullDay\"").is_err());
+    }
+
+    #[test]
+    fn ledger_kind_wire_strings_are_fixed() {
+        let strings: Vec<&str> = LedgerKind::ALL.iter().map(|kind| kind.as_str()).collect();
+        assert_eq!(strings, ["grant", "use", "restore", "adjust"]);
+        for &kind in LedgerKind::ALL {
+            let json = serde_json::to_string(&kind).expect("serialize");
+            assert_eq!(json, format!("\"{}\"", kind.as_str()));
+            assert_eq!(
+                serde_json::from_str::<LedgerKind>(&json).expect("deserialize"),
+                kind
+            );
+        }
+        assert_eq!(
+            LedgerKind::parse("Grant"),
+            Err(DomainError::validation(
+                "kind",
+                ValidationReason::InvalidFormat
+            ))
+        );
     }
 
     #[test]
