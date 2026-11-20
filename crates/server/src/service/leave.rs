@@ -37,8 +37,8 @@ use pango_db::{org, Conn};
 
 use super::approval::{self, LinkedOutcome, SystemDocument};
 use super::support::{
-    audit, current_member, found, member_names, notify, page_of, parse_cursor,
-    require_current_admin, require_updated, Audit, AuthContext, Company, Idempotency, Notify,
+    audit, current_member, found, member_names, next_page, notify, require_current_admin,
+    require_updated, Audit, AuthContext, Company, Idempotency, Notify,
 };
 use crate::error::{ServiceError, ServiceResult};
 use crate::state::AppState;
@@ -461,14 +461,12 @@ pub async fn admin_list_requests(
         member_id: query.member_id,
         overlapping: None,
         statuses: query.status.into_iter().collect(),
-        before: parse_cursor(&page)?,
+        before: page.after()?,
     };
     let mut conn = state.read().await?;
     let (requests, has_more) = leave::list_requests(&mut conn, &filter, Some(page.limit())).await?;
     let items = request_dtos(&mut conn, requests).await?;
-    Ok(page_of(items, has_more, |item: &LeaveRequestDto| {
-        item.id.to_string()
-    }))
+    next_page(items, has_more, |last: &LeaveRequestDto| last.id)
 }
 
 const SCHEDULED: [LeaveRequestStatus; 2] =

@@ -16,8 +16,8 @@ use pango_db::notices::{self, Notice, NoticeCursor, NoticeFilter, NoticeListItem
 use pango_db::{notifications, org, Conn};
 
 use super::support::{
-    audit, department_tree, found, notify, require_current_admin, require_updated, Audit,
-    AuthContext, Idempotency, Notify,
+    audit, department_tree, found, next_page, notify, require_current_admin, require_updated,
+    Audit, AuthContext, Idempotency, Notify,
 };
 use crate::error::{ServiceError, ServiceResult};
 use crate::state::AppState;
@@ -199,12 +199,11 @@ async fn page(
     let after = query.after::<NoticeCursor>()?;
     let (items, has_more) = notices::list(conn, filter, after, query.limit()).await?;
     let items = items.into_iter().map(summary).collect();
-    Page::next(items, has_more, |last: &NoticeSummary| NoticeCursor {
+    next_page(items, has_more, |last: &NoticeSummary| NoticeCursor {
         pinned: last.pinned,
         published_at: last.published_at,
         id: last.id,
     })
-    .map_err(ServiceError::internal)
 }
 
 /// 내가 볼 수 있는 공지 목록. 고정 공지 먼저, 그다음 최신순.

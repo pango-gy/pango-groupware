@@ -5,6 +5,7 @@ use pango_core::attendance::{AttendanceEventKind, RecordState, WorkType};
 use pango_core::calendar::DateRange;
 use pango_core::id::{AttendanceEventId, AttendanceRecordId, DepartmentId, MemberId};
 use pango_core::time::Timestamp;
+use serde::{Deserialize, Serialize};
 
 use crate::codec;
 use crate::error::{DbError, DbResult};
@@ -334,8 +335,9 @@ pub struct RecordFilter {
     pub departments: Option<Vec<DepartmentId>>,
 }
 
-/// 관리 목록의 다음 페이지 위치. 정렬 키(근무일, ID) 그대로다.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// 관리 목록의 다음 페이지 위치. 정렬 키(근무일, ID) 그대로다. 다음 페이지 커서에 담는다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RecordCursor {
     pub work_date: NaiveDate,
     pub id: AttendanceRecordId,

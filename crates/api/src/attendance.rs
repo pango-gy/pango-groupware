@@ -233,6 +233,15 @@ pub struct CorrectionQuery {
     pub cursor: Option<String>,
 }
 
+impl AdminAttendanceQuery {
+    pub fn page(&self) -> PageQuery {
+        PageQuery {
+            limit: self.limit,
+            cursor: self.cursor.clone(),
+        }
+    }
+}
+
 impl CorrectionQuery {
     pub fn page(&self) -> PageQuery {
         PageQuery {

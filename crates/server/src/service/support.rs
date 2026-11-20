@@ -1,14 +1,13 @@
 //! 서비스 공통 도구: 요청 맥락, 트랜잭션, 감사 로그, 회사 설정, 알림.
 
 use std::collections::BTreeMap;
-use std::str::FromStr;
 
 use chrono::NaiveDate;
-use pango_api::{Page, PageQuery};
+use pango_api::Page;
 use pango_core::attendance::{BreakTier, WorkPolicy};
 use pango_core::authz::Actor;
 use pango_core::calendar::{DateRange, WorkCalendar};
-use pango_core::error::{ConflictReason, ValidationReason};
+use pango_core::error::ConflictReason;
 use pango_core::id::{AuditLogId, MemberId, NotificationId, SessionId};
 use pango_core::org::DepartmentTree;
 use pango_core::time::{parse_timezone, Timestamp, WorkCalendarZone};
@@ -154,23 +153,15 @@ pub async fn require_active_members(conn: &mut Conn, ids: &[MemberId]) -> Servic
     Ok(())
 }
 
-/// 목록 커서(직전 페이지의 마지막 ID)를 읽는다. 형식이 틀리면 `Validation { cursor }`.
-pub fn parse_cursor<T: FromStr>(query: &PageQuery) -> ServiceResult<Option<T>> {
-    query
-        .cursor
-        .as_deref()
-        .map(|raw| {
-            raw.parse().map_err(|_| {
-                DomainError::validation("cursor", ValidationReason::InvalidFormat).into()
-            })
-        })
-        .transpose()
-}
-
-/// 저장소의 `(항목, 다음 있음)` 결과를 응답 페이지로 바꾼다. 커서는 마지막 항목의 ID다.
-pub fn page_of<T>(items: Vec<T>, has_more: bool, id_of: impl Fn(&T) -> String) -> Page<T> {
-    let next_cursor = items.last().filter(|_| has_more).map(id_of);
-    Page { items, next_cursor }
+/// 저장소의 `(항목, 다음 있음)` 결과를 응답 페이지로 바꾼다. 다음 페이지가 있으면 마지막 항목의
+/// 정렬 키(`key`)를 불투명한 커서로 싣는다. 받은 커서는 `PageQuery::after`로 같은 키 타입으로
+/// 되읽는다(형식이 틀리면 `Validation { cursor }`).
+pub fn next_page<T, K: Serialize>(
+    items: Vec<T>,
+    has_more: bool,
+    key: impl FnOnce(&T) -> K,
+) -> ServiceResult<Page<T>> {
+    Page::next(items, has_more, key).map_err(ServiceError::internal)
 }
 
 /// 감사 로그에 남길 행위. `action`은 `대상.동작` 형식(예: `member.create`).

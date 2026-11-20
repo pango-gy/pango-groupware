@@ -17,7 +17,7 @@ use pango_api::attendance::{
     TeamAttendance, TeamAttendanceEntry, TeamAttendanceQuery, TodayResponse,
 };
 use pango_api::home::MissingClockOut;
-use pango_api::{Page, PageQuery};
+use pango_api::Page;
 use pango_core::approval::DocumentKind;
 use pango_core::attendance::{
     decide_clock_in, decide_clock_out, decide_correction_close, evaluate_day,
@@ -45,8 +45,9 @@ use pango_db::{org, settings, Conn};
 
 use super::approval::{self, LinkedOutcome, SystemDocument};
 use super::support::{
-    audit, audit_as, current_member, department_tree, found, member_names, notify, push_csv_row,
-    require_current_admin, require_updated, Audit, AuthContext, Company, Idempotency, Notify,
+    audit, audit_as, current_member, department_tree, found, member_names, next_page, notify,
+    push_csv_row, require_current_admin, require_updated, Audit, AuthContext, Company, Idempotency,
+    Notify,
 };
 use crate::error::{ServiceError, ServiceResult};
 use crate::state::AppState;
@@ -868,7 +869,7 @@ pub async fn list_corrections(
     let (items, has_more) =
         corrections::list_for_member(&mut conn, member.id, before, page.limit()).await?;
     let items = correction_dtos(&mut conn, items).await?;
-    Page::next(items, has_more, |last: &CorrectionDto| last.id).map_err(ServiceError::internal)
+    next_page(items, has_more, |last: &CorrectionDto| last.id)
 }
 
 /// 본인의 정정 요청 취소. 남의 요청은 `NotFound`다.
@@ -1040,19 +1041,6 @@ async fn apply_correction_tx(
 
 // ── 관리자 ──────────────────────────────────────────────────────────────
 
-fn encode_cursor(cursor: RecordCursor) -> String {
-    format!("{}~{}", cursor.work_date.format("%Y-%m-%d"), cursor.id)
-}
-
-fn decode_cursor(raw: &str) -> ServiceResult<RecordCursor> {
-    let invalid = || DomainError::validation("cursor", ValidationReason::InvalidFormat);
-    let (date, id) = raw.split_once('~').ok_or_else(invalid)?;
-    Ok(RecordCursor {
-        work_date: parse_date("cursor", date)?,
-        id: id.parse().map_err(|_| invalid())?,
-    })
-}
-
 async fn admin_filter(
     conn: &mut Conn,
     range: DateRange,
@@ -1082,26 +1070,16 @@ pub async fn admin_list(
 ) -> ServiceResult<Page<AdminAttendanceItem>> {
     authz::require_admin(&ctx.actor)?;
     let range = parse_range(&query.from, &query.to)?;
-    let after = query.cursor.as_deref().map(decode_cursor).transpose()?;
-    let limit = PageQuery {
-        limit: query.limit,
-        cursor: None,
-    }
-    .limit();
+    let page = query.page();
+    let after = page.after::<RecordCursor>()?;
     let now = state.now();
     let mut conn = state.read().await?;
     let filter = admin_filter(&mut conn, range, query).await?;
-    let (rows, has_more) = attendance::list_page(&mut conn, &filter, after, limit).await?;
+    let (rows, has_more) = attendance::list_page(&mut conn, &filter, after, page.limit()).await?;
     let leaves = leaves_for(&mut conn, member_ids_of(&rows), range).await?;
     let owners = record_owners(&mut conn, member_ids_of(&rows)).await?;
     let company = Company::load(&mut conn).await?;
     let evaluator = Evaluator::new(&mut conn, company, range, now).await?;
-    let next_cursor = rows.last().filter(|_| has_more).map(|last| {
-        encode_cursor(RecordCursor {
-            work_date: last.record.work_date,
-            id: last.record.id,
-        })
-    });
     let items = rows
         .into_iter()
         .map(|row| {
@@ -1120,7 +1098,10 @@ pub async fn admin_list(
             })
         })
         .collect::<ServiceResult<_>>()?;
-    Ok(Page { items, next_cursor })
+    next_page(items, has_more, |last: &AdminAttendanceItem| RecordCursor {
+        work_date: last.record.work_date,
+        id: last.record.id,
+    })
 }
 
 /// 관리자가 기록을 새로 만든다(누락된 날 등). 같은 구성원·근무일 기록이 있으면 409.

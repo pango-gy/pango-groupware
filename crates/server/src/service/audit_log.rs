@@ -12,8 +12,8 @@ use pango_core::DomainError;
 use pango_db::audit::{self, AuditEntry, AuditFilter};
 use pango_db::{members, Conn};
 
-use super::support::AuthContext;
-use crate::error::{ServiceError, ServiceResult};
+use super::support::{next_page, AuthContext};
+use crate::error::ServiceResult;
 use crate::state::AppState;
 
 /// 최신순 목록. `from`은 포함, `until`은 제외.
@@ -41,7 +41,7 @@ pub async fn list(
     let mut conn = state.read().await?;
     let (entries, has_more) = audit::list(&mut conn, &filter, page.limit()).await?;
     let items = with_actor_names(&mut conn, entries).await?;
-    Page::next(items, has_more, |last: &AuditEntryDto| last.id).map_err(ServiceError::internal)
+    next_page(items, has_more, |last: &AuditEntryDto| last.id)
 }
 
 /// 가장 최근 `limit`건(관리 대시보드). 권한은 호출한 쪽이 확인한다.

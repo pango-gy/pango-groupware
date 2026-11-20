@@ -7,7 +7,7 @@ use pango_core::DomainError;
 use pango_db::notifications::{self, Notification};
 use pango_db::Conn;
 
-use super::support::AuthContext;
+use super::support::{next_page, AuthContext};
 use crate::error::{ServiceError, ServiceResult};
 use crate::state::AppState;
 
@@ -40,7 +40,7 @@ pub async fn list(
     )
     .await?;
     let items = items.into_iter().map(dto).collect();
-    Page::next(items, has_more, |last: &NotificationDto| last.id).map_err(ServiceError::internal)
+    next_page(items, has_more, |last: &NotificationDto| last.id)
 }
 
 pub async fn unread_count(state: &AppState, ctx: &AuthContext) -> ServiceResult<UnreadCount> {

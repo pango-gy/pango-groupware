@@ -34,8 +34,8 @@ use pango_db::members::{self, Member};
 use pango_db::{org, Conn};
 
 use super::support::{
-    audit, found, member_names, notify, page_of, parse_cursor, require_active_members,
-    require_current_admin, require_updated, Audit, AuthContext, Company, Idempotency, Notify,
+    audit, found, member_names, next_page, notify, require_active_members, require_current_admin,
+    require_updated, Audit, AuthContext, Company, Idempotency, Notify,
 };
 use super::{attendance, leave};
 use crate::error::{ServiceError, ServiceResult};
@@ -430,7 +430,7 @@ async fn list_page(
     page: &PageQuery,
 ) -> ServiceResult<Page<DocumentSummary>> {
     let filter = DocumentFilter {
-        before: parse_cursor(page)?,
+        before: page.after()?,
         ..filter
     };
     let (items, has_more) =
@@ -439,9 +439,7 @@ async fn list_page(
         .into_iter()
         .map(|item| summary(item, viewer))
         .collect();
-    Ok(page_of(items, has_more, |item: &DocumentSummary| {
-        item.id.to_string()
-    }))
+    next_page(items, has_more, |last: &DocumentSummary| last.id)
 }
 
 /// 내 문서함. 범위가 본인으로 고정되므로 따로 권한을 확인하지 않는다.
