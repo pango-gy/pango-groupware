@@ -60,23 +60,6 @@ async fn approved_leave(
         .expect(StatusCode::OK);
 }
 
-async fn day(app: &TestApp, token: &str, date: &str) -> Value {
-    let month = &date[..7];
-    let records = app
-        .get(&format!("/attendance/records?month={month}"))
-        .bearer(token)
-        .send()
-        .await
-        .expect(StatusCode::OK);
-    records["days"]
-        .as_array()
-        .expect("days")
-        .iter()
-        .find(|d| d["date"] == date)
-        .expect("day")
-        .clone()
-}
-
 async fn clock(app: &TestApp, token: &str, at: &str, action: &str) {
     app.set_time(at);
     let body = if action == "clock-in" {
@@ -101,12 +84,12 @@ async fn approved_full_day_leave_shows_as_on_leave_not_absent() {
     // 휴가일이 지난 뒤에 본다.
     app.set_time("2026-03-05T01:00:00Z");
     assert_eq!(
-        day(&app, &member.token, "2026-03-03").await["evaluation"]["status"],
+        app.attendance_day(&member.token, "2026-03-03").await["evaluation"]["status"],
         "on_leave"
     );
     // 휴가가 없던 2026-03-04는 결근.
     assert_eq!(
-        day(&app, &member.token, "2026-03-04").await["evaluation"]["status"],
+        app.attendance_day(&member.token, "2026-03-04").await["evaluation"]["status"],
         "absent"
     );
 }
@@ -128,7 +111,7 @@ async fn pending_leave_does_not_excuse_absence() {
 
     app.set_time("2026-03-05T01:00:00Z");
     assert_eq!(
-        day(&app, &member.token, "2026-03-03").await["evaluation"]["status"],
+        app.attendance_day(&member.token, "2026-03-03").await["evaluation"]["status"],
         "absent"
     );
 }
@@ -142,7 +125,7 @@ async fn morning_half_day_leave_moves_the_expected_start() {
     // 오전 반차: 14:00(KST) 출근이면 지각이 아니다.
     clock(&app, &member.token, "2026-03-03T05:00:00Z", "clock-in").await;
     clock(&app, &member.token, "2026-03-03T09:00:00Z", "clock-out").await;
-    let evaluation = day(&app, &member.token, "2026-03-03").await["evaluation"].clone();
+    let evaluation = app.attendance_day(&member.token, "2026-03-03").await["evaluation"].clone();
     assert_eq!(evaluation["status"], "normal");
     assert_eq!(evaluation["late_minutes"], 0);
 }
@@ -153,7 +136,7 @@ async fn without_leave_the_same_clock_in_is_late() {
     let (_head, member) = team(&app).await;
     clock(&app, &member.token, "2026-03-03T05:00:00Z", "clock-in").await;
     clock(&app, &member.token, "2026-03-03T09:00:00Z", "clock-out").await;
-    let evaluation = day(&app, &member.token, "2026-03-03").await["evaluation"].clone();
+    let evaluation = app.attendance_day(&member.token, "2026-03-03").await["evaluation"].clone();
     assert_eq!(evaluation["status"], "late");
     assert_eq!(evaluation["late_minutes"], 300);
 }
@@ -179,7 +162,7 @@ async fn canceled_leave_no_longer_affects_attendance() {
 
     app.set_time("2026-03-12T01:00:00Z");
     assert_eq!(
-        day(&app, &member.token, "2026-03-10").await["evaluation"]["status"],
+        app.attendance_day(&member.token, "2026-03-10").await["evaluation"]["status"],
         "absent"
     );
 }

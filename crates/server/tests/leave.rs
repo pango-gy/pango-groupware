@@ -14,7 +14,7 @@ use pango_core::member::MemberStatus;
 use pango_db::audit::{self, AuditFilter};
 use pango_db::leave::{self as ledger, LedgerRecord};
 use pango_db::settings::{self, Holiday};
-use pango_db::{approval as documents, members, notifications};
+use pango_db::{approval as documents, members};
 use pango_server::service::leave as leave_service;
 use pango_server::testing::{TestApp, TestMember, TestResponse, MEMBER_PASSWORD};
 use serde_json::{json, Value};
@@ -220,22 +220,6 @@ async fn assert_ledger_invariants(app: &TestApp, who: &TestMember) -> Balance {
     computed
 }
 
-async fn notification_count(app: &TestApp, member: MemberId, kind: &str) -> usize {
-    let mut conn = app.state.read().await.expect("read");
-    let (items, _) = notifications::list(&mut conn, member, false, None, 200)
-        .await
-        .expect("notifications");
-    items.iter().filter(|n| n.kind == kind).count()
-}
-
-async fn document(app: &TestApp, token: &str, id: &str) -> Value {
-    app.get(&format!("/approval/documents/{id}"))
-        .bearer(token)
-        .send()
-        .await
-        .expect(StatusCode::OK)
-}
-
 async fn adjust(app: &TestApp, token: &str, member: MemberId, amount_q: i64) -> TestResponse {
     app.post("/admin/leave/adjustments")
         .bearer(token)
@@ -288,7 +272,7 @@ async fn request_reserves_balance_and_approval_confirms_it() {
     );
 
     // 결재 문서: 추천 결재선(팀장)으로 바로 상신된다.
-    let detail = document(&w.app, &w.kim.token, &doc).await;
+    let detail = w.app.document(&w.kim.token, &doc).await;
     assert_eq!(detail["kind"], "leave");
     assert_eq!(detail["form_name"], "휴가 신청서");
     assert_eq!(detail["status"], "in_progress");
@@ -301,7 +285,7 @@ async fn request_reserves_balance_and_approval_confirms_it() {
     assert_eq!(detail["payload"]["amount_q"], 8);
     assert_eq!(detail["payload"]["unit"], "full_day");
     assert_eq!(
-        notification_count(&w.app, w.lead.id, "approval.todo").await,
+        w.app.notification_count(w.lead.id, "approval.todo").await,
         1
     );
 
@@ -384,7 +368,7 @@ async fn canceling_a_pending_request_withdraws_its_document() {
         .expect(StatusCode::OK);
     assert_eq!(canceled["status"], "canceled");
     assert_eq!(canceled["decided_at"], json!(w.app.state.now()));
-    let detail = document(&w.app, &w.kim.token, &doc).await;
+    let detail = w.app.document(&w.kim.token, &doc).await;
     assert_eq!(detail["status"], "withdrawn");
     let kinds: Vec<&str> = detail["events"]
         .as_array()
@@ -395,7 +379,9 @@ async fn canceling_a_pending_request_withdraws_its_document() {
     assert_eq!(kinds, ["submitted", "withdrawn"]);
     assert_eq!(remaining(&w.app, &w.kim).await, FULL);
     assert_eq!(
-        notification_count(&w.app, w.lead.id, "approval.withdrawn").await,
+        w.app
+            .notification_count(w.lead.id, "approval.withdrawn")
+            .await,
         1
     );
 
@@ -407,7 +393,9 @@ async fn canceling_a_pending_request_withdraws_its_document() {
     assert_eq!(reservations(&w.app, w.kim.id).await, (1, 1));
     assert_eq!(audit_count(&w.app, "leave.cancel").await, 1);
     assert_eq!(
-        notification_count(&w.app, w.lead.id, "approval.withdrawn").await,
+        w.app
+            .notification_count(w.lead.id, "approval.withdrawn")
+            .await,
         1
     );
     decide(&w.app, &w.lead.token, &doc, "approve")
@@ -442,7 +430,7 @@ async fn pending_request_cannot_be_canceled_once_someone_approved() {
         .expect_error(StatusCode::CONFLICT, "withdraw_too_late");
     assert_eq!(status_of(&w.app, &w.kim, &id).await, "pending");
     assert_eq!(
-        document(&w.app, &w.kim.token, &doc).await["status"],
+        w.app.document(&w.kim.token, &doc).await["status"],
         "in_progress"
     );
     assert_eq!(remaining(&w.app, &w.kim).await, FULL - 4);
@@ -490,7 +478,7 @@ async fn request_equal_to_the_balance_passes_and_a_quarter_more_fails() {
     assert_eq!(remaining(&w.app, &w.kim).await, FULL - 1);
     assert_eq!(reservations(&w.app, w.kim.id).await, (2, 1));
     assert_eq!(
-        notification_count(&w.app, w.lead.id, "approval.todo").await,
+        w.app.notification_count(w.lead.id, "approval.todo").await,
         2
     );
     assert_ledger_invariants(&w.app, &w.kim).await;
@@ -580,7 +568,7 @@ async fn weekends_and_holidays_are_not_counted() {
     .await
     .expect(StatusCode::CREATED);
     assert_eq!(created["amount"], 8);
-    let detail = document(&w.app, &w.kim.token, &ids(&created).1).await;
+    let detail = w.app.document(&w.kim.token, &ids(&created).1).await;
     assert_eq!(detail["title"], "휴가 신청 (2026-03-10 ~ 2026-03-12, 2일)");
     assert_eq!(remaining(&w.app, &w.kim).await, FULL - 16);
 
@@ -727,7 +715,7 @@ async fn parallel_requests_cannot_spend_the_same_balance_twice() {
     assert_eq!(created, 1, "정확히 한 건만 성공한다");
     assert_eq!(reservations(&w.app, w.kim.id).await, (1, 0));
     assert_eq!(
-        notification_count(&w.app, w.lead.id, "approval.todo").await,
+        w.app.notification_count(w.lead.id, "approval.todo").await,
         1
     );
     let balance = assert_ledger_invariants(&w.app, &w.kim).await;
@@ -899,16 +887,16 @@ async fn approved_leave_can_be_canceled_by_the_member_only_before_it_starts() {
         .expect(StatusCode::OK);
     assert_eq!(canceled["status"], "canceled");
     assert_eq!(
-        document(&w.app, &w.kim.token, &first_doc).await["status"],
+        w.app.document(&w.kim.token, &first_doc).await["status"],
         "approved"
     );
     assert_eq!(remaining(&w.app, &w.kim).await, FULL - 8);
     assert_eq!(
-        notification_count(&w.app, w.lead.id, "leave.canceled").await,
+        w.app.notification_count(w.lead.id, "leave.canceled").await,
         1
     );
     assert_eq!(
-        notification_count(&w.app, w.kim.id, "leave.canceled").await,
+        w.app.notification_count(w.kim.id, "leave.canceled").await,
         0
     );
     let again = cancel(&w.app, &w.kim.token, &first)
@@ -917,7 +905,7 @@ async fn approved_leave_can_be_canceled_by_the_member_only_before_it_starts() {
     assert_eq!(again, canceled);
     assert_eq!(reservations(&w.app, w.kim.id).await, (2, 1));
     assert_eq!(
-        notification_count(&w.app, w.lead.id, "leave.canceled").await,
+        w.app.notification_count(w.lead.id, "leave.canceled").await,
         1
     );
 
@@ -947,11 +935,11 @@ async fn approved_leave_can_be_canceled_by_the_member_only_before_it_starts() {
     assert_eq!(by_admin["status"], "canceled");
     assert_eq!(remaining(&w.app, &w.kim).await, FULL);
     assert_eq!(
-        notification_count(&w.app, w.kim.id, "leave.canceled").await,
+        w.app.notification_count(w.kim.id, "leave.canceled").await,
         1
     );
     assert_eq!(
-        notification_count(&w.app, w.lead.id, "leave.canceled").await,
+        w.app.notification_count(w.lead.id, "leave.canceled").await,
         2
     );
     assert_eq!(audit_count(&w.app, "leave.admin_cancel").await, 1);
@@ -983,7 +971,7 @@ async fn admin_can_cancel_a_pending_request_on_behalf_of_the_member() {
         .await
         .expect(StatusCode::OK);
     assert_eq!(canceled["status"], "canceled");
-    let detail = document(&w.app, &w.kim.token, &doc).await;
+    let detail = w.app.document(&w.kim.token, &doc).await;
     assert_eq!(detail["status"], "withdrawn");
     // 이력에는 실제로 취소한 사람이 남는다.
     assert_eq!(detail["events"][1]["kind"], "withdrawn");
@@ -1015,7 +1003,7 @@ async fn idempotency_key_replay_does_not_reserve_twice() {
     assert_eq!(reservations(&w.app, w.kim.id).await, (1, 0));
     assert_eq!(remaining(&w.app, &w.kim).await, FULL - 8);
     assert_eq!(
-        notification_count(&w.app, w.lead.id, "approval.todo").await,
+        w.app.notification_count(w.lead.id, "approval.todo").await,
         1
     );
 
@@ -1820,7 +1808,7 @@ async fn request_needs_an_approver_and_validates_an_explicit_line() {
     assert_eq!(reservations(&w.app, solo.id).await, (0, 0));
     assert_eq!(remaining(&w.app, &solo).await, FULL);
     assert_eq!(
-        notification_count(&w.app, w.lead.id, "approval.todo").await,
+        w.app.notification_count(w.lead.id, "approval.todo").await,
         0
     );
     let mut conn = w.app.state.read().await.expect("read");
@@ -1851,7 +1839,7 @@ async fn request_needs_an_approver_and_validates_an_explicit_line() {
     )
     .await
     .expect(StatusCode::CREATED);
-    let detail = document(&w.app, &w.owner, &ids(&created).1).await;
+    let detail = w.app.document(&w.owner, &ids(&created).1).await;
     assert_eq!(detail["references"][0]["member_id"], json!(w.lead.id));
     assert_eq!(remaining(&w.app, &solo).await, FULL - 4);
     assert_ledger_invariants(&w.app, &solo).await;
@@ -1933,7 +1921,7 @@ async fn malformed_requests_are_rejected_without_side_effects() {
     // 아무것도 만들어지지 않았다.
     assert_eq!(reservations(&w.app, w.kim.id).await, (0, 0));
     assert_eq!(
-        notification_count(&w.app, w.lead.id, "approval.todo").await,
+        w.app.notification_count(w.lead.id, "approval.todo").await,
         0
     );
     assert_eq!(remaining(&w.app, &w.kim).await, FULL);
@@ -2122,19 +2110,6 @@ async fn moving_the_hire_date_earlier_adds_only_the_missing_ordinals() {
 
 // ── 결재자가 사라진 신청 ──────────────────────────────────────────────────
 
-async fn set_member_status(app: &TestApp, member: MemberId, status: MemberStatus) {
-    let mut tx = app.state.db.begin_write().await.expect("begin");
-    let mut found = members::find(&mut tx, member)
-        .await
-        .expect("find")
-        .expect("member");
-    found.status = status;
-    assert!(members::update(&mut tx, &found, app.state.now())
-        .await
-        .expect("update"));
-    tx.commit().await.expect("commit");
-}
-
 /// [합의 lee, 결재 lead]로 올린 kim의 연차 1일. lee가 합의한 뒤 lead가 정지됐다.
 async fn stranded(w: &World) -> (TestMember, String, String) {
     let lee = w.app.add_member("lee", Role::Member, Some(w.dev)).await;
@@ -2149,7 +2124,7 @@ async fn stranded(w: &World) -> (TestMember, String, String) {
     decide(&w.app, &lee.token, &doc, "approve")
         .await
         .expect(StatusCode::OK);
-    set_member_status(&w.app, w.lead.id, MemberStatus::Suspended).await;
+    w.app.set_status(w.lead.id, MemberStatus::Suspended).await;
     assert_eq!(remaining(&w.app, &w.kim).await, FULL - 4);
     (lee, id, doc)
 }
@@ -2192,11 +2167,15 @@ async fn admin_reject_restores_the_balance_of_a_stranded_request() {
     assert_eq!(reservations(&w.app, w.kim.id).await, (1, 1));
     assert_eq!(audit_count(&w.app, "approval.admin_reject").await, 1);
     assert_eq!(
-        notification_count(&w.app, w.kim.id, "approval.rejected").await,
+        w.app
+            .notification_count(w.kim.id, "approval.rejected")
+            .await,
         1
     );
     assert_eq!(
-        notification_count(&w.app, w.lead.id, "approval.admin_rejected").await,
+        w.app
+            .notification_count(w.lead.id, "approval.admin_rejected")
+            .await,
         1
     );
 
@@ -2229,7 +2208,7 @@ async fn admin_cancel_closes_a_stranded_request() {
     // 문서는 반려로 끝나고, 신청도 문서와 같이 반려로 끝난다.
     assert_eq!(canceled["status"], "rejected");
     assert!(canceled["decided_at"].is_number());
-    let detail = document(&w.app, &w.kim.token, &doc).await;
+    let detail = w.app.document(&w.kim.token, &doc).await;
     assert_eq!(detail["status"], "rejected");
     assert_eq!(detail["steps"][0]["status"], "approved");
     assert_eq!(detail["steps"][1]["status"], "rejected");
@@ -2247,7 +2226,9 @@ async fn admin_cancel_closes_a_stranded_request() {
     assert_eq!(audit_count(&w.app, "leave.admin_cancel").await, 1);
     assert_eq!(audit_count(&w.app, "approval.admin_reject").await, 1);
     assert_eq!(
-        notification_count(&w.app, w.kim.id, "approval.rejected").await,
+        w.app
+            .notification_count(w.kim.id, "approval.rejected")
+            .await,
         1
     );
     assert_ledger_invariants(&w.app, &w.kim).await;
@@ -2272,7 +2253,7 @@ async fn admin_cancel_withdraws_untouched_documents_and_rejects_touched_ones() {
         .expect(StatusCode::OK);
     assert_eq!(canceled["status"], "canceled");
     assert_eq!(
-        document(&w.app, &w.kim.token, &untouched_doc).await["status"],
+        w.app.document(&w.kim.token, &untouched_doc).await["status"],
         "withdrawn"
     );
     assert_eq!(audit_count(&w.app, "approval.admin_reject").await, 0);
@@ -2298,7 +2279,7 @@ async fn admin_cancel_withdraws_untouched_documents_and_rejects_touched_ones() {
         .expect(StatusCode::OK);
     assert_eq!(canceled["status"], "rejected");
     assert_eq!(
-        document(&w.app, &w.kim.token, &touched_doc).await["status"],
+        w.app.document(&w.kim.token, &touched_doc).await["status"],
         "rejected"
     );
     assert_eq!(remaining(&w.app, &w.kim).await, FULL);
@@ -2334,7 +2315,7 @@ async fn admin_reject_racing_with_the_final_approval_keeps_leave_consistent() {
         let approved = approving.await.expect("join");
         let rejected = rejecting.await.expect("join");
         let status = status_of(&w.app, &w.kim, &id).await;
-        let detail = document(&w.app, &w.kim.token, &doc).await;
+        let detail = w.app.document(&w.kim.token, &doc).await;
         assert_eq!(detail["status"], status.as_str(), "신청과 문서가 같은 결과");
         match status.as_str() {
             "approved" => {
@@ -2471,7 +2452,7 @@ async fn request_reaching_past_the_last_valid_grant_is_rejected() {
     assert_eq!(stored_ledger(&w.app, newbie.id).await, before);
     assert_eq!(reservations(&w.app, newbie.id).await, (0, 0));
     assert_eq!(
-        notification_count(&w.app, w.lead.id, "approval.todo").await,
+        w.app.notification_count(w.lead.id, "approval.todo").await,
         0
     );
     assert_eq!(audit_count(&w.app, "leave.request").await, 0);

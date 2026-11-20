@@ -7,7 +7,7 @@ use pango_core::authz::Role;
 use pango_core::id::MemberId;
 use pango_core::member::MemberStatus;
 use pango_db::audit::{self, AuditFilter};
-use pango_db::{leave, members};
+use pango_db::members;
 use pango_server::config::Config;
 use pango_server::service::maintenance::{self, Cleanup, DailyAccrual};
 use pango_server::testing::{TestApp, OWNER_LOGIN, OWNER_PASSWORD};
@@ -114,16 +114,6 @@ async fn cleanup_never_unlocks_an_account_early() {
 
 // ── 하루 한 번의 연차 자동 부여 ─────────────────────────────────────────
 
-async fn grant_keys(app: &TestApp, member: MemberId) -> Vec<String> {
-    let mut conn = app.state.db.read().await.expect("conn");
-    leave::list_ledger(&mut conn, member)
-        .await
-        .expect("ledger")
-        .into_iter()
-        .filter_map(|record| record.grant_key)
-        .collect()
-}
-
 async fn accrual_audits(app: &TestApp) -> Vec<audit::AuditEntry> {
     let mut conn = app.state.db.read().await.expect("conn");
     let filter = AuditFilter {
@@ -134,11 +124,7 @@ async fn accrual_audits(app: &TestApp) -> Vec<audit::AuditEntry> {
 }
 
 async fn ledger_rows(app: &TestApp) -> i64 {
-    let mut conn = app.state.db.read().await.expect("conn");
-    sqlx::query_scalar("SELECT COUNT(*) FROM leave_ledger")
-        .fetch_one(&mut *conn)
-        .await
-        .expect("count")
+    app.count("SELECT COUNT(*) FROM leave_ledger").await
 }
 
 /// kim(입사 2024-03-02)과 newbie(입사 2026-02-10).
@@ -173,8 +159,8 @@ async fn daily_accrual_runs_once_per_company_day() {
             grants_inserted: 13
         })
     );
-    assert_eq!(grant_keys(&app, kim).await.len(), 13);
-    assert!(grant_keys(&app, newbie).await.is_empty());
+    assert_eq!(app.grant_keys(kim).await.len(), 13);
+    assert!(app.grant_keys(newbie).await.is_empty());
     let audits = accrual_audits(&app).await;
     assert_eq!(audits.len(), 1);
     assert_eq!(audits[0].actor_id, None, "시스템 작업");
@@ -224,7 +210,7 @@ async fn daily_accrual_picks_up_new_grants_as_days_pass() {
     app.set_time("2026-03-10T00:00:00+09:00");
     let monthly = accrual.run_if_due(&app.state).await.expect("run");
     assert_eq!(monthly.map(|result| result.grants_inserted), Some(1));
-    assert_eq!(grant_keys(&app, newbie).await, ["monthly:1"]);
+    assert_eq!(app.grant_keys(newbie).await, ["monthly:1"]);
     assert_eq!(accrual_audits(&app).await.len(), 2);
 
     // 서버를 다시 띄우면(새 상태) 같은 날 한 번 더 돌지만 아무것도 바꾸지 않는다.
@@ -240,10 +226,10 @@ async fn daily_accrual_picks_up_new_grants_as_days_pass() {
     app.set_time("2027-03-02T00:30:00+09:00");
     let anniversary = accrual.run_if_due(&app.state).await.expect("run");
     assert!(anniversary.is_some_and(|result| result.grants_inserted >= 2));
-    let keys = grant_keys(&app, kim).await;
+    let keys = app.grant_keys(kim).await;
     assert_eq!(keys.len(), 14);
     assert!(keys.contains(&"annual:3".to_owned()));
-    let newbie_keys = grant_keys(&app, newbie).await;
+    let newbie_keys = app.grant_keys(newbie).await;
     assert!(newbie_keys.contains(&"monthly:11".to_owned()));
     assert!(newbie_keys.contains(&"annual:1".to_owned()));
     // 잔여 조회가 보는 값과 같다(조회가 새로 넣을 부여가 남아 있지 않다).
@@ -284,7 +270,7 @@ async fn daily_accrual_skips_inactive_members_and_an_uninitialized_server() {
             grants_inserted: 0
         })
     );
-    assert!(grant_keys(&app, kim).await.is_empty());
+    assert!(app.grant_keys(kim).await.is_empty());
 
     // 초기화 전에는 회사 시간대를 모르므로 아무것도 하지 않고, 다음 주기에 다시 본다.
     let blank = TestApp::uninitialized(Config::for_tests()).await;
@@ -315,7 +301,7 @@ async fn parallel_daily_accrual_runs_insert_each_grant_once() {
         inserted += task.await.expect("join");
     }
     assert_eq!(inserted, 13);
-    let keys = grant_keys(&app, kim).await;
+    let keys = app.grant_keys(kim).await;
     let unique: std::collections::BTreeSet<&String> = keys.iter().collect();
     assert_eq!((keys.len(), unique.len()), (13, 13));
     assert_eq!(accrual_audits(&app).await.len(), 1);

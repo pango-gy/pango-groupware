@@ -18,17 +18,8 @@ use http::StatusCode;
 use pango_core::authz::Role;
 use pango_core::id::{DepartmentId, MemberId};
 use pango_core::member::MemberStatus;
-use pango_db::members;
-use pango_server::testing::{TestApp, TestMember};
+use pango_server::testing::{kst, millis, TestApp, TestMember};
 use serde_json::{json, Value};
-
-fn kst(local: &str) -> String {
-    format!("{local}+09:00")
-}
-
-fn millis(local: &str) -> i64 {
-    pango_server::testing::ts(&kst(local)).as_millis()
-}
 
 struct Scene {
     app: TestApp,
@@ -71,19 +62,6 @@ async fn clock_in(app: &TestApp, who: &TestMember) {
         StatusCode::OK,
     )
     .await;
-}
-
-async fn set_status(app: &TestApp, id: MemberId, status: MemberStatus) {
-    let mut tx = app.state.db.begin_write().await.expect("begin");
-    let mut member = members::find(&mut tx, id)
-        .await
-        .expect("find")
-        .expect("member");
-    member.status = status;
-    assert!(members::update(&mut tx, &member, app.state.now())
-        .await
-        .expect("update"));
-    tx.commit().await.expect("commit");
 }
 
 async fn annual_type(app: &TestApp, token: &str) -> String {
@@ -132,14 +110,6 @@ async fn dashboard(app: &TestApp, token: &str) -> Value {
     get(app, token, "/admin/dashboard").await
 }
 
-async fn count(app: &TestApp, sql: &str) -> i64 {
-    let mut conn = app.state.db.read().await.expect("conn");
-    sqlx::query_scalar(sql)
-        .fetch_one(&mut *conn)
-        .await
-        .expect("count")
-}
-
 /// 모든 테이블의 행 수와, 조회가 몰래 바꿀 만한 "읽음" 표시의 수.
 async fn snapshot(app: &TestApp) -> Vec<(String, i64)> {
     let mut conn = app.state.db.read().await.expect("conn");
@@ -155,7 +125,7 @@ async fn snapshot(app: &TestApp) -> Vec<(String, i64)> {
     assert!(tables.len() > 15, "tables: {tables:?}");
     let mut counts = Vec::new();
     for table in tables {
-        let rows = count(app, &format!("SELECT COUNT(*) FROM {table}")).await;
+        let rows = app.count(&format!("SELECT COUNT(*) FROM {table}")).await;
         counts.push((table, rows));
     }
     for (name, sql) in [
@@ -172,7 +142,7 @@ async fn snapshot(app: &TestApp) -> Vec<(String, i64)> {
             "SELECT COALESCE(SUM(version), 0) FROM attendance_records",
         ),
     ] {
-        counts.push((name.to_owned(), count(app, sql).await));
+        counts.push((name.to_owned(), app.count(sql).await));
     }
     counts
 }
@@ -194,7 +164,7 @@ async fn scene() -> Scene {
     let gone = app.add_member("gone", Role::Member, Some(dev)).await;
     app.set_department_head(dev, Some(lead.id)).await;
     app.set_department_head(sales, Some(shead.id)).await;
-    set_status(&app, gone.id, MemberStatus::Suspended).await;
+    app.set_status(gone.id, MemberStatus::Suspended).await;
 
     clock_in(&app, &kim).await;
     clock_in(&app, &carol).await;
@@ -273,7 +243,7 @@ async fn home_leave_summary_reports_the_stored_ledger_without_writing() {
         "SELECT COUNT(*) FROM leave_ledger WHERE member_id = '{}'",
         s.kim.id
     );
-    assert_eq!(count(&s.app, &kim_ledger).await, 0);
+    assert_eq!(s.app.count(&kim_ledger).await, 0);
     let before = snapshot(&s.app).await;
     let view = home(&s.app, &s.kim.token).await;
     assert_eq!(view["leave"]["member_id"], s.kim.id.to_string());
@@ -282,7 +252,7 @@ async fn home_leave_summary_reports_the_stored_ledger_without_writing() {
     assert_eq!(view["leave"]["expiring_soon"], 0);
     assert_eq!(view["upcoming_leaves"], json!([]));
     assert_eq!(
-        count(&s.app, &kim_ledger).await,
+        s.app.count(&kim_ledger).await,
         0,
         "홈은 부여를 반영하지 않는다"
     );
@@ -623,8 +593,8 @@ async fn home_performs_no_writes() {
     request_leave(&s.app, &s.kim, "2026-03-10", "2026-03-10").await;
     create_notice(&s.app, &s.admin.token, notice("공지")).await;
     let before = snapshot(&s.app).await;
-    let audit = count(&s.app, "SELECT COUNT(*) FROM audit_log").await;
-    let ledger = count(&s.app, "SELECT COUNT(*) FROM leave_ledger").await;
+    let audit = s.app.count("SELECT COUNT(*) FROM audit_log").await;
+    let ledger = s.app.count("SELECT COUNT(*) FROM leave_ledger").await;
     for _ in 0..3 {
         for token in [
             &s.kim.token,
@@ -640,9 +610,9 @@ async fn home_performs_no_writes() {
         dashboard(&s.app, &s.owner).await;
     }
     assert_eq!(snapshot(&s.app).await, before);
-    assert_eq!(count(&s.app, "SELECT COUNT(*) FROM audit_log").await, audit);
+    assert_eq!(s.app.count("SELECT COUNT(*) FROM audit_log").await, audit);
     assert_eq!(
-        count(&s.app, "SELECT COUNT(*) FROM leave_ledger").await,
+        s.app.count("SELECT COUNT(*) FROM leave_ledger").await,
         ledger
     );
 }
@@ -800,7 +770,7 @@ async fn dashboard_today_and_pending_counts() {
     assert_eq!(board["today"]["on_leave"], 1);
 
     // 퇴직·정지된 구성원은 재직 인원에서 빠진다.
-    set_status(&s.app, s.shead.id, MemberStatus::Retired).await;
+    s.app.set_status(s.shead.id, MemberStatus::Retired).await;
     let board = dashboard(&s.app, &s.admin.token).await;
     assert_eq!(board["today"]["active_members"], 7);
     assert_eq!(board["today"]["not_clocked_in"], 2);

@@ -12,18 +12,10 @@ use pango_core::member::MemberStatus;
 use pango_db::audit::{self, AuditFilter};
 use pango_db::settings::{self, Holiday};
 use pango_db::{attendance, members};
-use pango_server::testing::{TestApp, TestMember, TestResponse};
+use pango_server::testing::{id_of, kst, millis, TestApp, TestMember, TestResponse};
 use serde_json::{json, Value};
 
 // ── 도우미 ──────────────────────────────────────────────────────────────
-
-fn kst(local: &str) -> String {
-    format!("{local}+09:00")
-}
-
-fn millis(local: &str) -> i64 {
-    pango_server::testing::ts(&kst(local)).as_millis()
-}
 
 async fn clock_in(app: &TestApp, token: &str) -> TestResponse {
     app.post("/attendance/clock-in")
@@ -62,21 +54,6 @@ fn day<'a>(records: &'a Value, date: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("no entry for {date}"))
 }
 
-async fn events(app: &TestApp, token: &str, record_id: &str) -> Vec<Value> {
-    app.get(&format!("/attendance/records/{record_id}/events"))
-        .bearer(token)
-        .send()
-        .await
-        .expect(StatusCode::OK)
-        .as_array()
-        .expect("events")
-        .clone()
-}
-
-fn id_of(body: &Value) -> String {
-    body["id"].as_str().expect("id").to_owned()
-}
-
 /// 구성원의 2026년 3월 저장 기록 수(API를 거치지 않고 DB에서 직접).
 async fn stored_records(app: &TestApp, member_id: MemberId, range: (&str, &str)) -> usize {
     let range =
@@ -86,14 +63,6 @@ async fn stored_records(app: &TestApp, member_id: MemberId, range: (&str, &str))
         .await
         .expect("list")
         .len()
-}
-
-async fn audit_actions(app: &TestApp) -> Vec<String> {
-    let mut conn = app.state.db.read().await.expect("conn");
-    let (entries, _) = audit::list(&mut conn, &AuditFilter::default(), 200)
-        .await
-        .expect("audit");
-    entries.into_iter().map(|e| e.action).collect()
 }
 
 async fn add_holiday(app: &TestApp, date: &str, name: &str) {
@@ -120,13 +89,6 @@ async fn update_member(app: &TestApp, id: MemberId, change: impl FnOnce(&mut mem
     assert!(members::update(&mut tx, &member, app.state.now())
         .await
         .expect("update"));
-    tx.commit().await.expect("commit");
-}
-
-/// 테스트 DB에 직접 SQL을 실행한다(장애 주입용 트리거 등).
-async fn execute(app: &TestApp, sql: &str) {
-    let mut tx = app.state.db.begin_write().await.expect("begin");
-    sqlx::query(sql).execute(&mut *tx).await.expect("execute");
     tx.commit().await.expect("commit");
 }
 
@@ -217,7 +179,7 @@ async fn happy_day_clock_in_then_out() {
         })
     );
 
-    let history = events(&app, &alice.token, &id_of(&record)).await;
+    let history = app.attendance_events(&alice.token, &id_of(&record)).await;
     let kinds: Vec<_> = history.iter().map(|e| e["kind"].clone()).collect();
     assert_eq!(kinds, vec![json!("clock_in"), json!("clock_out")]);
     assert_eq!(history[0]["before"], Value::Null);
@@ -316,7 +278,7 @@ async fn clock_in_after_closed_day_is_conflict() {
         .await
         .expect_error(StatusCode::CONFLICT, "already_clocked_out");
     // 거부된 출근은 기록도 이력도 바꾸지 않았다.
-    let history = events(&app, &alice.token, &id_of(&record)).await;
+    let history = app.attendance_events(&alice.token, &id_of(&record)).await;
     assert_eq!(history.len(), 2);
     assert_eq!(
         today(&app, &alice.token).await["record"]["clock_out_at"],
@@ -347,7 +309,7 @@ async fn repeated_clock_in_and_out_are_idempotent() {
     let out_again = clock_out(&app, &alice.token).await.expect(StatusCode::OK);
     assert_eq!(out_again, out, "퇴근 시각을 덮어쓰지 않는다");
 
-    let history = events(&app, &alice.token, &id_of(&first)).await;
+    let history = app.attendance_events(&alice.token, &id_of(&first)).await;
     let kinds: Vec<_> = history.iter().map(|e| e["kind"].clone()).collect();
     assert_eq!(kinds, vec![json!("clock_in"), json!("clock_out")]);
     assert_eq!(
@@ -383,7 +345,7 @@ async fn concurrent_clock_ins_create_exactly_one_record_and_event() {
         1
     );
     let id = ids.into_iter().next().expect("id");
-    assert_eq!(events(&app, &alice.token, &id).await.len(), 1);
+    assert_eq!(app.attendance_events(&alice.token, &id).await.len(), 1);
 }
 
 // ── 엣지: 근무일 전환 ────────────────────────────────────────────────────
@@ -785,14 +747,17 @@ async fn admin_routes_reject_non_admins_without_side_effects() {
             .expect_error(StatusCode::FORBIDDEN, "forbidden");
     }
     assert_eq!(
-        events(&app, &org.alice.token, &id_of(&record)).await.len(),
+        app.attendance_events(&org.alice.token, &id_of(&record))
+            .await
+            .len(),
         1
     );
     assert_eq!(
         stored_records(&app, org.bob.id, ("2026-03-01", "2026-03-31")).await,
         0
     );
-    assert!(audit_actions(&app)
+    assert!(app
+        .audit_actions("")
         .await
         .iter()
         .all(|a| !a.starts_with("attendance.")));
@@ -860,7 +825,8 @@ impl Edited {
     }
 
     async fn history_len(&self) -> usize {
-        events(&self.app, &self.org.admin.token, &id_of(&self.record))
+        self.app
+            .attendance_events(&self.org.admin.token, &id_of(&self.record))
             .await
             .len()
     }
@@ -878,7 +844,10 @@ async fn admin_edit_records_history_with_before_and_after() {
     assert_eq!(edited["clock_in_at"], millis("2026-03-02T08:50:00"));
     assert_eq!(edited["clock_out_at"], millis("2026-03-02T18:30:00"));
 
-    let history = events(&fx.app, &fx.org.alice.token, &id_of(&fx.record)).await;
+    let history = fx
+        .app
+        .attendance_events(&fx.org.alice.token, &id_of(&fx.record))
+        .await;
     let last = history.last().expect("event");
     assert_eq!(last["kind"], "admin_edit");
     assert_eq!(last["reason"], "퇴근 누락");
@@ -886,7 +855,9 @@ async fn admin_edit_records_history_with_before_and_after() {
     assert_eq!(last["before"]["clock_out_at"], Value::Null);
     assert_eq!(last["before"]["clock_in_at"], millis("2026-03-02T09:00:00"));
     assert_eq!(last["after"]["clock_out_at"], millis("2026-03-02T18:30:00"));
-    assert!(audit_actions(&fx.app)
+    assert!(fx
+        .app
+        .audit_actions("")
         .await
         .contains(&"attendance.edit".to_owned()));
 
@@ -972,7 +943,9 @@ async fn admin_edit_validation_failures_change_nothing() {
     );
     let records = month(&fx.app, &fx.org.alice.token, "2026-03").await;
     assert_eq!(day(&records, "2026-03-02")["record"], fx.record);
-    assert!(!audit_actions(&fx.app)
+    assert!(!fx
+        .app
+        .audit_actions("")
         .await
         .contains(&"attendance.edit".to_owned()));
 }
@@ -1001,7 +974,9 @@ async fn stale_version_loses_and_changes_nothing() {
     let stored = &day(&records, "2026-03-02")["record"];
     assert_eq!(stored["version"], 2);
     assert_eq!(stored["clock_out_at"], millis("2026-03-02T18:00:00"));
-    let edits = audit_actions(&fx.app)
+    let edits = fx
+        .app
+        .audit_actions("")
         .await
         .into_iter()
         .filter(|a| a == "attendance.edit")
@@ -1072,12 +1047,15 @@ async fn admin_create_and_duplicates() {
     assert_eq!(created["work_type"], "field");
     assert_eq!(created["note"], "외근");
 
-    let history = events(&app, &org.bob.token, &id_of(&created)).await;
+    let history = app
+        .attendance_events(&org.bob.token, &id_of(&created))
+        .await;
     assert_eq!(history.len(), 1);
     assert_eq!(history[0]["kind"], "admin_create");
     assert_eq!(history[0]["before"], Value::Null);
     assert_eq!(history[0]["reason"], "출장 중 기록 누락");
-    assert!(audit_actions(&app)
+    assert!(app
+        .audit_actions("")
         .await
         .contains(&"attendance.create".to_owned()));
 
@@ -1116,7 +1094,8 @@ async fn admin_create_and_duplicates() {
         stored_records(&app, org.bob.id, ("2026-03-01", "2026-03-31")).await,
         2
     );
-    let creates = audit_actions(&app)
+    let creates = app
+        .audit_actions("")
         .await
         .into_iter()
         .filter(|a| a == "attendance.create")
@@ -1173,7 +1152,12 @@ async fn admin_create_honours_idempotency_key() {
     let first = send().await.expect(StatusCode::OK);
     let second = send().await.expect(StatusCode::OK);
     assert_eq!(first, second);
-    assert_eq!(events(&app, &org.bob.token, &id_of(&first)).await.len(), 1);
+    assert_eq!(
+        app.attendance_events(&org.bob.token, &id_of(&first))
+            .await
+            .len(),
+        1
+    );
 }
 
 // ── 관리자 목록 ─────────────────────────────────────────────────────────
@@ -1323,7 +1307,8 @@ async fn csv_export_is_excel_safe() {
         !csv.contains(",=") && !csv.contains(",+"),
         "수식으로 시작하는 칸이 없다"
     );
-    assert!(audit_actions(&app)
+    assert!(app
+        .audit_actions("")
         .await
         .contains(&"attendance.export".to_owned()));
 }
@@ -1525,8 +1510,7 @@ async fn unauthenticated_requests_are_rejected() {
 async fn failure_after_record_insert_rolls_back_clock_in() {
     let app = TestApp::new().await;
     let alice = app.add_member("alice", Role::Member, None).await;
-    execute(
-        &app,
+    app.execute(
         "CREATE TRIGGER fail_clock_in BEFORE INSERT ON attendance_events
          WHEN NEW.kind = 'clock_in' BEGIN SELECT RAISE(ABORT, 'injected'); END",
     )
@@ -1539,7 +1523,7 @@ async fn failure_after_record_insert_rolls_back_clock_in() {
         0
     );
 
-    execute(&app, "DROP TRIGGER fail_clock_in").await;
+    app.execute("DROP TRIGGER fail_clock_in").await;
     clock_in(&app, &alice.token).await.expect(StatusCode::OK);
 }
 
@@ -1548,8 +1532,7 @@ async fn failure_at_audit_rolls_back_admin_create_entirely() {
     let app = TestApp::new().await;
     let org = org(&app).await;
     app.set_time(&kst("2026-03-04T12:00:00"));
-    execute(
-        &app,
+    app.execute(
         "CREATE TRIGGER fail_audit BEFORE INSERT ON audit_log
          WHEN NEW.action = 'attendance.create' BEGIN SELECT RAISE(ABORT, 'injected'); END",
     )
@@ -1577,7 +1560,8 @@ async fn failure_at_audit_rolls_back_admin_create_entirely() {
         .expect("count");
     assert_eq!(event_count, 0, "이력도 남지 않는다");
     drop(conn);
-    assert!(!audit_actions(&app)
+    assert!(!app
+        .audit_actions("")
         .await
         .contains(&"attendance.create".to_owned()));
 }
@@ -1585,12 +1569,12 @@ async fn failure_at_audit_rolls_back_admin_create_entirely() {
 #[tokio::test]
 async fn failure_at_audit_rolls_back_admin_edit() {
     let fx = edit_fixture().await;
-    execute(
-        &fx.app,
-        "CREATE TRIGGER fail_audit BEFORE INSERT ON audit_log
+    fx.app
+        .execute(
+            "CREATE TRIGGER fail_audit BEFORE INSERT ON audit_log
          WHEN NEW.action = 'attendance.edit' BEGIN SELECT RAISE(ABORT, 'injected'); END",
-    )
-    .await;
+        )
+        .await;
     fx.patch(&fx.body("2026-03-02T09:00:00", Some("2026-03-02T18:00:00")))
         .await
         .expect_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error");
@@ -1951,7 +1935,7 @@ async fn admin_cannot_create_or_edit_their_own_record_but_the_owner_can() {
     let admin_id = org.admin.id;
     let before = (
         stored_records(&app, admin_id, ("2026-03-01", "2026-03-31")).await,
-        audit_actions(&app).await,
+        app.audit_actions("").await,
     );
 
     // 만들기: 본인 기록은 403.
@@ -1979,13 +1963,18 @@ async fn admin_cannot_create_or_edit_their_own_record_but_the_owner_can() {
     assert_eq!(
         (
             stored_records(&app, admin_id, ("2026-03-01", "2026-03-31")).await,
-            audit_actions(&app).await,
+            app.audit_actions("").await,
         ),
         before
     );
     let records = month(&app, &org.admin.token, "2026-03").await;
     assert_eq!(day(&records, "2026-03-02")["record"], own);
-    assert_eq!(events(&app, &org.admin.token, &id_of(&own)).await.len(), 1);
+    assert_eq!(
+        app.attendance_events(&org.admin.token, &id_of(&own))
+            .await
+            .len(),
+        1
+    );
 
     // 다른 관리자·최고 관리자는 그 관리자의 기록을 다룰 수 있다.
     let other_admin = app.add_member("admin2", Role::Admin, None).await;
@@ -2105,8 +2094,7 @@ async fn csv_export_fails_when_it_cannot_be_audited() {
     clock_in(&app, &org.alice.token)
         .await
         .expect(StatusCode::OK);
-    execute(
-        &app,
+    app.execute(
         "CREATE TRIGGER fail_export_audit BEFORE INSERT ON audit_log
          WHEN NEW.action = 'attendance.export'
          BEGIN SELECT RAISE(ABORT, 'injected failure'); END",
@@ -2119,7 +2107,8 @@ async fn csv_export_fails_when_it_cannot_be_audited() {
         .await;
     assert_eq!(response.status, StatusCode::INTERNAL_SERVER_ERROR);
     assert!(!response.body.to_string().contains("alice"));
-    assert!(!audit_actions(&app)
+    assert!(!app
+        .audit_actions("")
         .await
         .contains(&"attendance.export".to_owned()));
 }

@@ -13,8 +13,7 @@ use pango_core::id::{DocumentId, MemberId};
 use pango_core::member::MemberStatus;
 use pango_db::approval::{self as documents, DocumentRecord};
 use pango_db::audit::{self, AuditFilter};
-use pango_db::{members, notifications};
-use pango_server::testing::{TestApp, TestMember, TestResponse, MEMBER_PASSWORD};
+use pango_server::testing::{id_of, TestApp, TestMember, TestResponse, MEMBER_PASSWORD};
 use serde_json::{json, Value};
 
 /// 기안자 한 명, 결재자 세 명, 참조자, 결재선 밖의 구성원, 관리자(대표).
@@ -126,10 +125,6 @@ async fn submitted(w: &World, approvers: &[&TestMember]) -> String {
     id_of(&create(&w.app, &w.drafter, &body).await)
 }
 
-fn id_of(document: &Value) -> String {
-    document["id"].as_str().expect("id").to_owned()
-}
-
 async fn act(app: &TestApp, token: &str, id: &str, action: &str, body: Value) -> TestResponse {
     app.post(&format!("/approval/documents/{id}/{action}"))
         .bearer(token)
@@ -155,14 +150,6 @@ async fn reject(app: &TestApp, who: &TestMember, id: &str) -> TestResponse {
 
 async fn withdraw(app: &TestApp, who: &TestMember, id: &str) -> TestResponse {
     act(app, &who.token, id, "withdraw", json!({})).await
-}
-
-async fn detail(app: &TestApp, token: &str, id: &str) -> Value {
-    app.get(&format!("/approval/documents/{id}"))
-        .bearer(token)
-        .send()
-        .await
-        .expect(StatusCode::OK)
 }
 
 async fn box_ids(app: &TestApp, who: &TestMember, name: &str) -> Vec<String> {
@@ -195,14 +182,6 @@ async fn event_kinds(app: &TestApp, id: &str) -> Vec<&'static str> {
         .collect()
 }
 
-async fn notification_count(app: &TestApp, member: MemberId, kind: &str) -> usize {
-    let mut conn = app.state.read().await.expect("read");
-    let (items, _) = notifications::list(&mut conn, member, false, None, 200)
-        .await
-        .expect("notifications");
-    items.iter().filter(|n| n.kind == kind).count()
-}
-
 /// 저장된 문서가 상태 기계의 불변식을 모두 만족하는지 확인하고 되살린다.
 async fn restored(app: &TestApp, id: &str) -> Document {
     let mut conn = app.state.read().await.expect("read");
@@ -230,19 +209,6 @@ async fn restored(app: &TestApp, id: &str) -> Document {
     .expect("stored document satisfies the invariants")
 }
 
-async fn set_status(app: &TestApp, member: MemberId, status: MemberStatus) {
-    let mut tx = app.state.db.begin_write().await.expect("begin");
-    let mut found = members::find(&mut tx, member)
-        .await
-        .expect("find")
-        .expect("member");
-    found.status = status;
-    assert!(members::update(&mut tx, &found, app.state.now())
-        .await
-        .expect("update"));
-    tx.commit().await.expect("commit");
-}
-
 // ── 해피 ─────────────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -267,12 +233,9 @@ async fn one_step_document_goes_from_submission_to_final_approval() {
     assert_eq!(created["steps"][0]["approver_name"], "first 님");
     assert_eq!(created["my_turn"], false);
     assert_eq!(event_kinds(&w.app, &id).await, ["submitted"]);
-    assert_eq!(
-        notification_count(&w.app, w.a1.id, "approval.todo").await,
-        1
-    );
+    assert_eq!(w.app.notification_count(w.a1.id, "approval.todo").await, 1);
 
-    assert_eq!(detail(&w.app, &w.a1.token, &id).await["my_turn"], true);
+    assert_eq!(w.app.document(&w.a1.token, &id).await["my_turn"], true);
     let approved = act(
         &w.app,
         &w.a1.token,
@@ -293,7 +256,9 @@ async fn one_step_document_goes_from_submission_to_final_approval() {
     assert_eq!(approved["events"][1]["comment"], "확인했습니다");
     assert_eq!(approved["events"][1]["actor_name"], "first 님");
     assert_eq!(
-        notification_count(&w.app, w.drafter.id, "approval.approved").await,
+        w.app
+            .notification_count(w.drafter.id, "approval.approved")
+            .await,
         1
     );
     restored(&w.app, &id).await;
@@ -324,16 +289,12 @@ async fn three_step_line_hands_over_in_order_and_mailboxes_follow() {
     for name in ["todo", "upcoming", "drafted", "done", "reference"] {
         assert_eq!(box_ids(&w.app, &w.outsider, name).await, none, "{name}");
     }
+    assert_eq!(w.app.notification_count(w.a1.id, "approval.todo").await, 1);
+    assert_eq!(w.app.notification_count(w.a2.id, "approval.todo").await, 0);
     assert_eq!(
-        notification_count(&w.app, w.a1.id, "approval.todo").await,
-        1
-    );
-    assert_eq!(
-        notification_count(&w.app, w.a2.id, "approval.todo").await,
-        0
-    );
-    assert_eq!(
-        notification_count(&w.app, w.reader.id, "approval.reference").await,
+        w.app
+            .notification_count(w.reader.id, "approval.reference")
+            .await,
         1
     );
     let counts = |who: &TestMember| {
@@ -371,10 +332,7 @@ async fn three_step_line_hands_over_in_order_and_mailboxes_follow() {
     assert_eq!(box_ids(&w.app, &w.a2, "todo").await, only);
     assert_eq!(box_ids(&w.app, &w.a2, "upcoming").await, none);
     assert_eq!(box_ids(&w.app, &w.a3, "upcoming").await, only);
-    assert_eq!(
-        notification_count(&w.app, w.a2.id, "approval.todo").await,
-        1
-    );
+    assert_eq!(w.app.notification_count(w.a2.id, "approval.todo").await, 1);
     let todo = app_page(&w.app, &w.a2, "box=todo").await;
     assert_eq!(todo["items"][0]["my_turn"], true);
     assert_eq!(todo["items"][0]["current_approver_name"], "second 님");
@@ -383,7 +341,9 @@ async fn three_step_line_hands_over_in_order_and_mailboxes_follow() {
 
     approve(&w.app, &w.a2, &id).await.expect(StatusCode::OK);
     assert_eq!(
-        notification_count(&w.app, w.drafter.id, "approval.approved").await,
+        w.app
+            .notification_count(w.drafter.id, "approval.approved")
+            .await,
         0,
         "마지막 단계 전에는 완료 알림이 없다"
     );
@@ -405,7 +365,9 @@ async fn three_step_line_hands_over_in_order_and_mailboxes_follow() {
         "끝난 문서는 진행 중 건수에서 빠진다"
     );
     assert_eq!(
-        notification_count(&w.app, w.drafter.id, "approval.approved").await,
+        w.app
+            .notification_count(w.drafter.id, "approval.approved")
+            .await,
         1
     );
     restored(&w.app, &id).await;
@@ -430,13 +392,12 @@ async fn rejection_closes_the_document_and_tells_the_drafter() {
     assert_eq!(rejected["steps"][1]["status"], "waiting");
     assert_eq!(event_kinds(&w.app, &id).await, ["submitted", "rejected"]);
     assert_eq!(
-        notification_count(&w.app, w.drafter.id, "approval.rejected").await,
+        w.app
+            .notification_count(w.drafter.id, "approval.rejected")
+            .await,
         1
     );
-    assert_eq!(
-        notification_count(&w.app, w.a2.id, "approval.todo").await,
-        0
-    );
+    assert_eq!(w.app.notification_count(w.a2.id, "approval.todo").await, 0);
     assert_eq!(box_ids(&w.app, &w.a1, "done").await, vec![id.clone()]);
     assert!(box_ids(&w.app, &w.a2, "upcoming").await.is_empty());
     restored(&w.app, &id).await;
@@ -480,7 +441,7 @@ async fn later_approver_cannot_act_before_their_turn() {
     reject(&w.app, &w.a2, &id)
         .await
         .expect_error(StatusCode::CONFLICT, "not_current_approver");
-    let current = detail(&w.app, &w.a2.token, &id).await;
+    let current = w.app.document(&w.a2.token, &id).await;
     assert_eq!(current["steps"][0]["status"], "pending");
     assert_eq!(current["steps"][1]["status"], "waiting");
     assert_eq!(current["my_turn"], false);
@@ -519,7 +480,7 @@ async fn drafter_and_reference_cannot_approve_or_reject() {
 async fn admin_off_the_line_can_read_with_an_audit_trail_but_not_decide() {
     let w = world().await;
     let id = submitted(&w, &[&w.a1]).await;
-    let seen = detail(&w.app, &w.owner, &id).await;
+    let seen = w.app.document(&w.owner, &id).await;
     assert_eq!(seen["status"], "in_progress");
     act(&w.app, &w.owner, &id, "approve", json!({}))
         .await
@@ -539,7 +500,7 @@ async fn admin_off_the_line_can_read_with_an_audit_trail_but_not_decide() {
     assert_eq!(event_kinds(&w.app, &id).await, ["submitted"]);
 
     // 당사자의 열람은 감사 로그를 남기지 않는다.
-    detail(&w.app, &w.a1.token, &id).await;
+    w.app.document(&w.a1.token, &id).await;
     let mut conn = w.app.state.read().await.expect("read");
     let filter = AuditFilter {
         action: Some("approval.admin_view".into()),
@@ -593,7 +554,9 @@ async fn approved_document_cannot_be_rejected_or_withdrawn() {
         ["submitted", "approved", "completed"]
     );
     assert_eq!(
-        notification_count(&w.app, w.drafter.id, "approval.rejected").await,
+        w.app
+            .notification_count(w.drafter.id, "approval.rejected")
+            .await,
         0
     );
 }
@@ -612,7 +575,7 @@ async fn withdrawal_is_too_late_once_someone_has_acted() {
         .expect_error(StatusCode::CONFLICT, "not_current_approver");
     assert_eq!(event_kinds(&w.app, &id).await, ["submitted", "approved"]);
     assert_eq!(
-        detail(&w.app, &w.drafter.token, &id).await["status"],
+        w.app.document(&w.drafter.token, &id).await["status"],
         "in_progress"
     );
 }
@@ -627,7 +590,9 @@ async fn withdrawn_document_cannot_be_approved() {
     assert_eq!(withdrawn["status"], "withdrawn");
     assert_eq!(withdrawn["steps"][0]["status"], "waiting");
     assert_eq!(
-        notification_count(&w.app, w.a1.id, "approval.withdrawn").await,
+        w.app
+            .notification_count(w.a1.id, "approval.withdrawn")
+            .await,
         1
     );
     approve(&w.app, &w.a1, &id)
@@ -660,10 +625,7 @@ async fn repeated_approval_changes_nothing() {
     .expect(StatusCode::OK);
     assert_eq!(again, first, "두 번째 요청은 현재 상태를 그대로 돌려준다");
     assert_eq!(event_kinds(&w.app, &id).await, ["submitted", "approved"]);
-    assert_eq!(
-        notification_count(&w.app, w.a2.id, "approval.todo").await,
-        1
-    );
+    assert_eq!(w.app.notification_count(w.a2.id, "approval.todo").await, 1);
 
     // 최종 승인 뒤의 반복도 같다.
     let done = approve(&w.app, &w.a2, &id).await.expect(StatusCode::OK);
@@ -680,7 +642,9 @@ async fn repeated_approval_changes_nothing() {
         ["submitted", "approved", "approved", "completed"]
     );
     assert_eq!(
-        notification_count(&w.app, w.drafter.id, "approval.approved").await,
+        w.app
+            .notification_count(w.drafter.id, "approval.approved")
+            .await,
         1
     );
 }
@@ -711,7 +675,9 @@ async fn repeated_rejection_keeps_the_first_reason() {
     assert_eq!(again["steps"][0]["comment"], "근거 부족");
     assert_eq!(event_kinds(&w.app, &id).await, ["submitted", "rejected"]);
     assert_eq!(
-        notification_count(&w.app, w.drafter.id, "approval.rejected").await,
+        w.app
+            .notification_count(w.drafter.id, "approval.rejected")
+            .await,
         1
     );
 }
@@ -721,16 +687,13 @@ async fn repeated_withdrawal_and_submission_change_nothing() {
     let w = world().await;
     let id = submitted(&w, &[&w.a1]).await;
     // 이미 상신한 문서를 다시 상신.
-    let current = detail(&w.app, &w.drafter.token, &id).await;
+    let current = w.app.document(&w.drafter.token, &id).await;
     let resubmitted = act(&w.app, &w.drafter.token, &id, "submit", json!({}))
         .await
         .expect(StatusCode::OK);
     assert_eq!(resubmitted, current);
     assert_eq!(event_kinds(&w.app, &id).await, ["submitted"]);
-    assert_eq!(
-        notification_count(&w.app, w.a1.id, "approval.todo").await,
-        1
-    );
+    assert_eq!(w.app.notification_count(w.a1.id, "approval.todo").await, 1);
 
     let first = withdraw(&w.app, &w.drafter, &id)
         .await
@@ -742,7 +705,9 @@ async fn repeated_withdrawal_and_submission_change_nothing() {
     assert_eq!(again, first);
     assert_eq!(event_kinds(&w.app, &id).await, ["submitted", "withdrawn"]);
     assert_eq!(
-        notification_count(&w.app, w.a1.id, "approval.withdrawn").await,
+        w.app
+            .notification_count(w.a1.id, "approval.withdrawn")
+            .await,
         1
     );
 }
@@ -767,10 +732,7 @@ async fn idempotency_key_replays_the_first_creation() {
     let replay = send(body.clone()).await.expect(StatusCode::CREATED);
     assert_eq!(replay, first);
     assert_eq!(box_ids(&w.app, &w.drafter, "drafted").await.len(), 1);
-    assert_eq!(
-        notification_count(&w.app, w.a1.id, "approval.todo").await,
-        1
-    );
+    assert_eq!(w.app.notification_count(w.a1.id, "approval.todo").await, 1);
 
     let different = draft(
         &w.form,
@@ -814,10 +776,7 @@ async fn parallel_approvals_by_the_same_approver_apply_once() {
         assert_eq!(task.await.expect("join"), StatusCode::OK);
     }
     assert_eq!(event_kinds(&w.app, &id).await, ["submitted", "approved"]);
-    assert_eq!(
-        notification_count(&w.app, w.a2.id, "approval.todo").await,
-        1
-    );
+    assert_eq!(w.app.notification_count(w.a2.id, "approval.todo").await, 1);
     let document = restored(&w.app, &id).await;
     assert_eq!(document.acted_count(), 1);
     assert_eq!(document.current_approver(), Some(w.a2.id));
@@ -956,7 +915,7 @@ async fn failing_linked_effect_rolls_back_the_whole_transition() {
     // 권한 검사에서 걸리지 않고 연결 효과까지 가도록, 결재자를 관리자로 둔다.
     promote_to_admin(&w.app, w.a1.id).await;
     let id = orphan_leave_document(&w).await;
-    let before = detail(&w.app, &w.a1.token, &id).await;
+    let before = w.app.document(&w.a1.token, &id).await;
 
     approve(&w.app, &w.a1, &id)
         .await
@@ -968,17 +927,19 @@ async fn failing_linked_effect_rolls_back_the_whole_transition() {
         .await
         .expect_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error");
 
-    let after = detail(&w.app, &w.a1.token, &id).await;
+    let after = w.app.document(&w.a1.token, &id).await;
     assert_eq!(after, before, "문서가 전혀 바뀌지 않았다");
     assert_eq!(after["status"], "in_progress");
     assert_eq!(after["steps"][0]["status"], "pending");
     assert_eq!(after["steps"][0]["acted_at"], Value::Null);
     assert!(event_kinds(&w.app, &id).await.is_empty());
     for kind in ["approval.approved", "approval.rejected"] {
-        assert_eq!(notification_count(&w.app, w.drafter.id, kind).await, 0);
+        assert_eq!(w.app.notification_count(w.drafter.id, kind).await, 0);
     }
     assert_eq!(
-        notification_count(&w.app, w.a1.id, "approval.withdrawn").await,
+        w.app
+            .notification_count(w.a1.id, "approval.withdrawn")
+            .await,
         0
     );
     assert_eq!(box_ids(&w.app, &w.a1, "todo").await, vec![id.clone()]);
@@ -1013,7 +974,7 @@ async fn unknown_or_inactive_people_cannot_be_put_on_the_line() {
         .expect_error(StatusCode::NOT_FOUND, "not_found");
 
     for status in [MemberStatus::Suspended, MemberStatus::Retired] {
-        set_status(&w.app, w.a2.id, status).await;
+        w.app.set_status(w.a2.id, status).await;
         let as_approver = draft(
             &w.form,
             "제목",
@@ -1036,10 +997,7 @@ async fn unknown_or_inactive_people_cannot_be_put_on_the_line() {
             .expect_error(StatusCode::CONFLICT, "member_inactive");
     }
     assert!(box_ids(&w.app, &w.drafter, "drafted").await.is_empty());
-    assert_eq!(
-        notification_count(&w.app, w.a1.id, "approval.todo").await,
-        0
-    );
+    assert_eq!(w.app.notification_count(w.a1.id, "approval.todo").await, 0);
 }
 
 #[tokio::test]
@@ -1047,11 +1005,11 @@ async fn draft_cannot_be_submitted_after_an_approver_left() {
     let w = world().await;
     let body = draft(&w.form, "제목", vec![step(&w.a1, "approve")], &[], false);
     let id = id_of(&create(&w.app, &w.drafter, &body).await);
-    set_status(&w.app, w.a1.id, MemberStatus::Retired).await;
+    w.app.set_status(w.a1.id, MemberStatus::Retired).await;
     act(&w.app, &w.drafter.token, &id, "submit", json!({}))
         .await
         .expect_error(StatusCode::CONFLICT, "member_inactive");
-    let current = detail(&w.app, &w.drafter.token, &id).await;
+    let current = w.app.document(&w.drafter.token, &id).await;
     assert_eq!(current["status"], "draft");
     assert_eq!(current["doc_no"], Value::Null);
     assert!(event_kinds(&w.app, &id).await.is_empty());
@@ -1059,7 +1017,7 @@ async fn draft_cannot_be_submitted_after_an_approver_left() {
     // 번호는 실패한 상신에 쓰이지 않았다.
     let next = submitted(&w, &[&w.a2]).await;
     assert_eq!(
-        detail(&w.app, &w.drafter.token, &next).await["doc_no"],
+        w.app.document(&w.drafter.token, &next).await["doc_no"],
         "2026-000001"
     );
 }
@@ -1104,10 +1062,7 @@ async fn draft_is_private_to_the_drafter_until_submitted() {
         .await
         .expect(StatusCode::OK);
     assert_eq!(all["items"], json!([]));
-    assert_eq!(
-        notification_count(&w.app, w.a1.id, "approval.todo").await,
-        0
-    );
+    assert_eq!(w.app.notification_count(w.a1.id, "approval.todo").await, 0);
     approve(&w.app, &w.a1, &id)
         .await
         .expect_error(StatusCode::NOT_FOUND, "not_found");
@@ -1129,7 +1084,7 @@ async fn draft_is_private_to_the_drafter_until_submitted() {
         .expect(StatusCode::OK);
     assert_eq!(sent["status"], "in_progress");
     assert_eq!(sent["doc_no"], "2026-000001");
-    assert_eq!(detail(&w.app, &w.a1.token, &id).await["my_turn"], true);
+    assert_eq!(w.app.document(&w.a1.token, &id).await["my_turn"], true);
     assert_eq!(box_ids(&w.app, &w.reader, "reference").await, vec![id]);
 }
 
@@ -1199,7 +1154,7 @@ async fn draft_can_be_edited_with_version_check_and_deleted_by_the_drafter_only(
         .send()
         .await
         .expect_error(StatusCode::BAD_REQUEST, "validation_failed");
-    assert_eq!(detail(&w.app, &w.drafter.token, &id).await, edited);
+    assert_eq!(w.app.document(&w.drafter.token, &id).await, edited);
 
     w.app
         .delete(&path)
@@ -1227,7 +1182,7 @@ async fn submitted_document_cannot_be_edited_or_deleted() {
     let w = world().await;
     let id = submitted(&w, &[&w.a1]).await;
     let path = format!("/approval/documents/{id}");
-    let before = detail(&w.app, &w.drafter.token, &id).await;
+    let before = w.app.document(&w.drafter.token, &id).await;
     let edit = json!({
         "version": before["version"], "title": "바꿈", "body": "바꿈",
         "steps": [step(&w.a2, "approve")], "references": [],
@@ -1259,7 +1214,7 @@ async fn submitted_document_cannot_be_edited_or_deleted() {
         .send()
         .await
         .expect_error(StatusCode::FORBIDDEN, "forbidden");
-    assert_eq!(detail(&w.app, &w.drafter.token, &id).await, before);
+    assert_eq!(w.app.document(&w.drafter.token, &id).await, before);
 }
 
 // ── 참조 ─────────────────────────────────────────────────────────────────
@@ -1276,17 +1231,17 @@ async fn reference_read_time_is_recorded_once() {
     );
     let id = id_of(&create(&w.app, &w.drafter, &body).await);
     // 다른 당사자가 열어도 참조자의 열람으로 기록되지 않는다.
-    let seen_by_drafter = detail(&w.app, &w.drafter.token, &id).await;
+    let seen_by_drafter = w.app.document(&w.drafter.token, &id).await;
     assert_eq!(seen_by_drafter["references"][0]["read_at"], Value::Null);
     assert_eq!(seen_by_drafter["references"][0]["name"], "reader 님");
 
     w.app.advance(Duration::minutes(10));
-    let first = detail(&w.app, &w.reader.token, &id).await;
+    let first = w.app.document(&w.reader.token, &id).await;
     let read_at = first["references"][0]["read_at"].clone();
     assert_eq!(read_at, json!(w.app.state.now()));
 
     w.app.advance(Duration::minutes(10));
-    let second = detail(&w.app, &w.reader.token, &id).await;
+    let second = w.app.document(&w.reader.token, &id).await;
     assert_eq!(second["references"][0]["read_at"], read_at);
     let counts = w
         .app
@@ -1408,7 +1363,7 @@ async fn document_number_year_follows_company_local_time() {
     w.drafter.token = w.app.login("drafter", MEMBER_PASSWORD).await;
     let last = submitted(&w, &[&w.a1]).await;
     assert_eq!(
-        detail(&w.app, &w.drafter.token, &last).await["doc_no"],
+        w.app.document(&w.drafter.token, &last).await["doc_no"],
         "2026-000001"
     );
     // UTC로는 아직 2026년이지만 회사 시간으로는 2027-01-01 00:30.
@@ -1416,11 +1371,11 @@ async fn document_number_year_follows_company_local_time() {
     let first = submitted(&w, &[&w.a1]).await;
     let second = submitted(&w, &[&w.a1]).await;
     assert_eq!(
-        detail(&w.app, &w.drafter.token, &first).await["doc_no"],
+        w.app.document(&w.drafter.token, &first).await["doc_no"],
         "2027-000001"
     );
     assert_eq!(
-        detail(&w.app, &w.drafter.token, &second).await["doc_no"],
+        w.app.document(&w.drafter.token, &second).await["doc_no"],
         "2027-000002"
     );
 }
@@ -1478,14 +1433,14 @@ async fn line_suggestion_walks_up_the_department_tree() {
     assert_eq!(suggest(&loner).await, Vec::<String>::new());
 
     // 재직 중이 아닌 조직장은 건너뛴다.
-    set_status(&app, director.id, MemberStatus::Suspended).await;
+    app.set_status(director.id, MemberStatus::Suspended).await;
     assert_eq!(suggest(&staff).await, ["lead 님", "ceo 님"]);
 
     // 최대 3명.
     let group = app.add_department("그룹", None, None).await;
     let chair = app.add_member("chair", Role::Member, Some(group)).await;
     app.set_department_head(group, Some(chair.id)).await;
-    set_status(&app, director.id, MemberStatus::Active).await;
+    app.set_status(director.id, MemberStatus::Active).await;
     let mut tx = app.state.db.begin_write().await.expect("begin");
     let mut top = pango_db::org::find_department(&mut tx, company)
         .await
@@ -1703,7 +1658,7 @@ async fn draft_of_a_deactivated_form_cannot_be_submitted() {
         .await
         .expect_error(StatusCode::CONFLICT, "form_inactive");
     assert_eq!(
-        detail(&w.app, &w.drafter.token, &id).await["status"],
+        w.app.document(&w.drafter.token, &id).await["status"],
         "draft"
     );
 }
@@ -2003,15 +1958,6 @@ async fn admin_reject(app: &TestApp, token: &str, id: &str) -> TestResponse {
         .await
 }
 
-async fn audit_entries(app: &TestApp, action: &str) -> Vec<audit::AuditEntry> {
-    let mut conn = app.state.read().await.expect("read");
-    let filter = AuditFilter {
-        action: Some(action.into()),
-        ..AuditFilter::default()
-    };
-    audit::list(&mut conn, &filter, 200).await.expect("audit").0
-}
-
 /// 한 문서의 상태·이력과 그 문서에 딸린 알림·감사 로그의 줄 수. 거부된 요청이 아무것도
 /// 바꾸지 않았는지 비교한다. 관리자의 열람(`approval.admin_view`)은 세지 않는다.
 async fn footprint(app: &TestApp, id: &str) -> (Document, Vec<&'static str>, i64, i64) {
@@ -2046,7 +1992,7 @@ async fn admin_reject_ends_a_document_stranded_on_a_deactivated_approver() {
     let body = draft(&w.form, "지출 품의", steps, &[&w.reader], true);
     let id = id_of(&create(&w.app, &w.drafter, &body).await);
     approve(&w.app, &w.a1, &id).await.expect(StatusCode::OK);
-    set_status(&w.app, w.a2.id, MemberStatus::Suspended).await;
+    w.app.set_status(w.a2.id, MemberStatus::Suspended).await;
 
     // 기존 길은 모두 막혀 있다.
     withdraw(&w.app, &w.drafter, &id)
@@ -2099,18 +2045,19 @@ async fn admin_reject_ends_a_document_stranded_on_a_deactivated_approver() {
 
     // 기안자에게 반려를, 건너뛴 결재자에게 할 일이 사라졌음을 알린다. 다음 결재자는 모른다.
     assert_eq!(
-        notification_count(&w.app, w.drafter.id, "approval.rejected").await,
+        w.app
+            .notification_count(w.drafter.id, "approval.rejected")
+            .await,
         1
     );
     assert_eq!(
-        notification_count(&w.app, w.a2.id, "approval.admin_rejected").await,
+        w.app
+            .notification_count(w.a2.id, "approval.admin_rejected")
+            .await,
         1
     );
-    assert_eq!(
-        notification_count(&w.app, w.a3.id, "approval.todo").await,
-        0
-    );
-    let audits = audit_entries(&w.app, "approval.admin_reject").await;
+    assert_eq!(w.app.notification_count(w.a3.id, "approval.todo").await, 0);
+    let audits = w.app.audit_entries("approval.admin_reject").await;
     assert_eq!(audits.len(), 1);
     assert_eq!(audits[0].actor_id, Some(w.app.owner_id));
     assert_eq!(audits[0].target_id.as_deref(), Some(id.as_str()));
@@ -2142,7 +2089,7 @@ async fn admin_reject_ends_a_document_stranded_on_a_deactivated_approver() {
     assert_eq!(footprint(&w.app, &id).await, before);
 
     // 복직한 결재자의 뒤늦은 승인, 기안자의 회수는 거부된다.
-    set_status(&w.app, w.a2.id, MemberStatus::Active).await;
+    w.app.set_status(w.a2.id, MemberStatus::Active).await;
     let a2 = w.app.login("second", MEMBER_PASSWORD).await;
     act(&w.app, &a2, &id, "approve", json!({}))
         .await
@@ -2166,7 +2113,9 @@ async fn admin_reject_works_whoever_the_pending_approver_is() {
     assert_eq!(closed["steps"][1]["status"], "waiting");
     assert_eq!(event_kinds(&w.app, &id).await, ["submitted", "rejected"]);
     assert_eq!(
-        notification_count(&w.app, w.a1.id, "approval.admin_rejected").await,
+        w.app
+            .notification_count(w.a1.id, "approval.admin_rejected")
+            .await,
         1
     );
     approve(&w.app, &w.a1, &id)
@@ -2180,7 +2129,7 @@ async fn admin_reject_works_whoever_the_pending_approver_is() {
         .await
         .expect(StatusCode::OK);
     assert_eq!(closed["steps"][0]["status"], "rejected");
-    let audits = audit_entries(&w.app, "approval.admin_reject").await;
+    let audits = w.app.audit_entries("approval.admin_reject").await;
     assert_eq!(audits.len(), 2);
     assert!(audits.iter().any(|a| a.actor_id == Some(w.a2.id)));
 }
@@ -2283,10 +2232,7 @@ async fn admin_reject_is_refused_for_wrong_actors_and_wrong_states() {
             .expect_error(StatusCode::CONFLICT, "document_already_closed");
         assert_eq!(footprint(&w.app, closed).await, closed_before);
     }
-    assert_eq!(
-        audit_entries(&w.app, "approval.admin_reject").await.len(),
-        1
-    );
+    assert_eq!(w.app.audit_entries("approval.admin_reject").await.len(), 1);
 }
 
 /// 차례인 결재자의 승인과 관리자의 대리 반려가 동시에 오면 하나만 반영된다.
@@ -2339,7 +2285,7 @@ async fn admin_reject_racing_with_the_final_approval_has_exactly_one_winner() {
         .expect("list");
     drop(conn);
     assert_eq!(
-        audit_entries(&w.app, "approval.admin_reject").await.len(),
+        w.app.audit_entries("approval.admin_reject").await.len(),
         rejected_documents.len()
     );
     assert!(!outcomes.is_empty());

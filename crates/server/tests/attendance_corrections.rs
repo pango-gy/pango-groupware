@@ -9,20 +9,11 @@ use http::StatusCode;
 use pango_core::authz::Role;
 use pango_core::id::MemberId;
 use pango_core::member::MemberStatus;
-use pango_db::audit::{self, AuditFilter};
-use pango_db::{attendance_corrections, members, notifications};
-use pango_server::testing::{TestApp, TestMember, TestResponse};
+use pango_db::{attendance_corrections, members};
+use pango_server::testing::{kst, millis, TestApp, TestMember, TestResponse};
 use serde_json::{json, Value};
 
 // ── 도우미 ──────────────────────────────────────────────────────────────
-
-fn kst(local: &str) -> String {
-    format!("{local}+09:00")
-}
-
-fn millis(local: &str) -> i64 {
-    pango_server::testing::ts(&kst(local)).as_millis()
-}
 
 /// 개발팀(팀장 lead, 팀원 kim·lee), 관리자 admin1, 최고 관리자 owner.
 struct World {
@@ -149,62 +140,12 @@ async fn status_of(app: &TestApp, who: &TestMember, id: &str) -> String {
         .to_owned()
 }
 
-async fn document(app: &TestApp, token: &str, id: &str) -> Value {
-    app.get(&format!("/approval/documents/{id}"))
-        .bearer(token)
-        .send()
-        .await
-        .expect(StatusCode::OK)
-}
-
-async fn day(app: &TestApp, token: &str, date: &str) -> Value {
-    let records = app
-        .get(&format!("/attendance/records?month={}", &date[..7]))
-        .bearer(token)
-        .send()
-        .await
-        .expect(StatusCode::OK);
-    records["days"]
-        .as_array()
-        .expect("days")
-        .iter()
-        .find(|d| d["date"] == date)
-        .unwrap_or_else(|| panic!("no entry for {date}"))
-        .clone()
-}
-
 async fn summary(app: &TestApp, token: &str, month: &str) -> Value {
     app.get(&format!("/attendance/summary?month={month}"))
         .bearer(token)
         .send()
         .await
         .expect(StatusCode::OK)
-}
-
-async fn events(app: &TestApp, token: &str, record_id: &str) -> Vec<Value> {
-    app.get(&format!("/attendance/records/{record_id}/events"))
-        .bearer(token)
-        .send()
-        .await
-        .expect(StatusCode::OK)
-        .as_array()
-        .expect("events")
-        .clone()
-}
-
-/// DB를 직접 센다(API를 거치지 않고 실제로 남은 것을 확인한다).
-async fn count(app: &TestApp, sql: &str) -> i64 {
-    let mut conn = app.state.db.read().await.expect("conn");
-    sqlx::query_scalar(sql)
-        .fetch_one(&mut *conn)
-        .await
-        .expect("count")
-}
-
-async fn execute(app: &TestApp, sql: &str) {
-    let mut tx = app.state.db.begin_write().await.expect("begin");
-    sqlx::query(sql).execute(&mut *tx).await.expect("execute");
-    tx.commit().await.expect("commit");
 }
 
 async fn stored(
@@ -218,23 +159,6 @@ async fn stored(
         .0
 }
 
-async fn notification_count(app: &TestApp, member: MemberId, kind: &str) -> usize {
-    let mut conn = app.state.db.read().await.expect("conn");
-    let (items, _) = notifications::list(&mut conn, member, false, None, 200)
-        .await
-        .expect("notifications");
-    items.iter().filter(|n| n.kind == kind).count()
-}
-
-async fn audit_entries(app: &TestApp, action: &str) -> Vec<audit::AuditEntry> {
-    let mut conn = app.state.db.read().await.expect("conn");
-    let filter = AuditFilter {
-        action: Some(action.to_owned()),
-        ..AuditFilter::default()
-    };
-    audit::list(&mut conn, &filter, 200).await.expect("audit").0
-}
-
 const RECORDS: &str = "SELECT COUNT(*) FROM attendance_records";
 const CORRECTION_EVENTS: &str = "SELECT COUNT(*) FROM attendance_events WHERE kind = 'correction'";
 const CORRECTIONS: &str = "SELECT COUNT(*) FROM attendance_corrections";
@@ -243,7 +167,7 @@ const DOCUMENTS: &str =
 
 /// 승인이 실패한 뒤 아무것도 바뀌지 않았는지: 문서는 진행 중, 단계는 대기, 요청은 결재 중.
 async fn assert_still_pending(w: &World, id: &str, doc: &str) {
-    let detail = document(&w.app, &w.lead.token, doc).await;
+    let detail = w.app.document(&w.lead.token, doc).await;
     assert_eq!(detail["status"], "in_progress");
     assert_eq!(detail["steps"][0]["status"], "pending");
     assert_eq!(detail["my_turn"], true);
@@ -253,16 +177,22 @@ async fn assert_still_pending(w: &World, id: &str, doc: &str) {
         "상신 이력만 남아 있어야 한다"
     );
     assert_eq!(status_of(&w.app, &w.kim, id).await, "pending");
-    assert_eq!(count(&w.app, CORRECTION_EVENTS).await, 0);
+    assert_eq!(w.app.count(CORRECTION_EVENTS).await, 0);
     assert_eq!(
-        notification_count(&w.app, w.kim.id, "attendance.corrected").await,
+        w.app
+            .notification_count(w.kim.id, "attendance.corrected")
+            .await,
         0
     );
     assert_eq!(
-        notification_count(&w.app, w.kim.id, "approval.approved").await,
+        w.app
+            .notification_count(w.kim.id, "approval.approved")
+            .await,
         0
     );
-    assert!(audit_entries(&w.app, "attendance.correction")
+    assert!(w
+        .app
+        .audit_entries("attendance.correction")
         .await
         .is_empty());
 }
@@ -288,7 +218,7 @@ async fn approved_correction_creates_a_record_for_a_day_without_one() {
     let doc = created["document_id"].as_str().expect("document");
 
     // 결재 문서: 시스템 양식, 추천 결재선(팀장), 구조화된 내용.
-    let detail = document(&w.app, &w.lead.token, doc).await;
+    let detail = w.app.document(&w.lead.token, doc).await;
     assert_eq!(detail["kind"], "attendance_correction");
     assert_eq!(detail["status"], "in_progress");
     assert_eq!(detail["title"], "근태 정정 요청 (2026-03-02)");
@@ -305,14 +235,14 @@ async fn approved_correction_creates_a_record_for_a_day_without_one() {
     assert_eq!(detail["payload"]["work_type"], "office");
     assert_eq!(detail["payload"]["current"], Value::Null);
     assert_eq!(
-        notification_count(&w.app, w.lead.id, "approval.todo").await,
+        w.app.notification_count(w.lead.id, "approval.todo").await,
         1
     );
 
     // 승인 전에는 기록이 없다.
-    assert_eq!(count(&w.app, RECORDS).await, 0);
+    assert_eq!(w.app.count(RECORDS).await, 0);
     assert_eq!(
-        day(&w.app, &w.kim.token, "2026-03-02").await["evaluation"]["status"],
+        w.app.attendance_day(&w.kim.token, "2026-03-02").await["evaluation"]["status"],
         "absent"
     );
 
@@ -322,7 +252,7 @@ async fn approved_correction_creates_a_record_for_a_day_without_one() {
         .expect(StatusCode::OK);
     assert_eq!(approved["status"], "approved");
 
-    let entry = day(&w.app, &w.kim.token, "2026-03-02").await;
+    let entry = w.app.attendance_day(&w.kim.token, "2026-03-02").await;
     assert_eq!(entry["record"]["member_id"], w.kim.id.to_string());
     assert_eq!(
         entry["record"]["clock_in_at"],
@@ -337,7 +267,7 @@ async fn approved_correction_creates_a_record_for_a_day_without_one() {
     assert_eq!(entry["evaluation"]["worked_minutes"], 480);
 
     let record_id = entry["record"]["id"].as_str().expect("record id");
-    let history = events(&w.app, &w.kim.token, record_id).await;
+    let history = w.app.attendance_events(&w.kim.token, record_id).await;
     assert_eq!(history.len(), 1);
     assert_eq!(history[0]["kind"], "correction");
     assert_eq!(history[0]["before"], Value::Null);
@@ -356,18 +286,22 @@ async fn approved_correction_creates_a_record_for_a_day_without_one() {
         millis("2026-03-03T11:00:00")
     );
     assert_eq!(
-        notification_count(&w.app, w.kim.id, "attendance.corrected").await,
+        w.app
+            .notification_count(w.kim.id, "attendance.corrected")
+            .await,
         1
     );
     assert_eq!(
-        notification_count(&w.app, w.kim.id, "approval.approved").await,
+        w.app
+            .notification_count(w.kim.id, "approval.approved")
+            .await,
         1
     );
-    let audited = audit_entries(&w.app, "attendance.correction").await;
+    let audited = w.app.audit_entries("attendance.correction").await;
     assert_eq!(audited.len(), 1);
     assert_eq!(audited[0].actor_id, Some(w.lead.id));
     assert_eq!(audited[0].target_id.as_deref(), Some(record_id));
-    let requested = audit_entries(&w.app, "attendance.correction_request").await;
+    let requested = w.app.audit_entries("attendance.correction_request").await;
     assert_eq!(requested.len(), 1);
     assert_eq!(requested[0].actor_id, Some(w.kim.id));
 }
@@ -379,7 +313,7 @@ async fn approved_correction_updates_an_existing_record_and_keeps_history() {
     let (id, doc) = requested(&w.app, &w.kim, &full_day("2026-03-02")).await;
 
     // 문서에는 요청 당시의 기록이 함께 실린다.
-    let detail = document(&w.app, &w.lead.token, &doc).await;
+    let detail = w.app.document(&w.lead.token, &doc).await;
     assert_eq!(detail["payload"]["current"]["id"], record_id);
     assert_eq!(
         detail["payload"]["current"]["clock_in_at"],
@@ -392,16 +326,16 @@ async fn approved_correction_updates_an_existing_record_and_keeps_history() {
         .expect(StatusCode::OK);
     assert_eq!(status_of(&w.app, &w.kim, &id).await, "approved");
 
-    let entry = day(&w.app, &w.kim.token, "2026-03-02").await;
+    let entry = w.app.attendance_day(&w.kim.token, "2026-03-02").await;
     assert_eq!(entry["record"]["id"], record_id, "같은 기록을 고친다");
     assert_eq!(entry["record"]["version"], 2);
     assert_eq!(
         entry["record"]["clock_in_at"],
         millis("2026-03-02T09:00:00")
     );
-    assert_eq!(count(&w.app, RECORDS).await, 1);
+    assert_eq!(w.app.count(RECORDS).await, 1);
 
-    let history = events(&w.app, &w.kim.token, record_id).await;
+    let history = w.app.attendance_events(&w.kim.token, record_id).await;
     let kinds: Vec<&str> = history
         .iter()
         .map(|e| e["kind"].as_str().expect("kind"))
@@ -422,7 +356,7 @@ async fn approved_correction_updates_an_existing_record_and_keeps_history() {
 async fn corrected_day_is_reflected_in_records_and_summary() {
     let (w, _) = world_with_late_record().await;
     // 정정 전: 09:40 출근(지각 40분), 퇴근 없음.
-    let before = day(&w.app, &w.kim.token, "2026-03-02").await;
+    let before = w.app.attendance_day(&w.kim.token, "2026-03-02").await;
     assert_eq!(before["evaluation"]["late_minutes"], 40);
     assert_eq!(before["evaluation"]["worked_minutes"], 0);
     let before = summary(&w.app, &w.kim.token, "2026-03").await;
@@ -441,7 +375,7 @@ async fn corrected_day_is_reflected_in_records_and_summary() {
         .await
         .expect(StatusCode::OK);
 
-    let after = day(&w.app, &w.kim.token, "2026-03-02").await;
+    let after = w.app.attendance_day(&w.kim.token, "2026-03-02").await;
     assert_eq!(after["record"]["work_type"], "remote");
     assert_eq!(after["evaluation"]["status"], "normal");
     assert_eq!(after["evaluation"]["late_minutes"], 0);
@@ -498,16 +432,20 @@ async fn rejected_withdrawn_and_canceled_requests_leave_the_record_untouched() {
     assert_eq!(response["status"], "canceled");
     assert_eq!(response["decided_at"], millis("2026-03-03T10:00:00"));
     assert_eq!(
-        document(&w.app, &w.kim.token, &doc).await["status"],
+        w.app.document(&w.kim.token, &doc).await["status"],
         "withdrawn"
     );
     assert_eq!(
-        notification_count(&w.app, w.lead.id, "approval.withdrawn").await,
+        w.app
+            .notification_count(w.lead.id, "approval.withdrawn")
+            .await,
         2
     );
 
     // 취소는 자연 멱등이다: 다시 보내도 성공하고 아무것도 더 남기지 않는다.
-    let audits = audit_entries(&w.app, "attendance.correction_cancel")
+    let audits = w
+        .app
+        .audit_entries("attendance.correction_cancel")
         .await
         .len();
     assert_eq!(audits, 1);
@@ -516,31 +454,41 @@ async fn rejected_withdrawn_and_canceled_requests_leave_the_record_untouched() {
         .expect(StatusCode::OK);
     assert_eq!(again, response);
     assert_eq!(
-        audit_entries(&w.app, "attendance.correction_cancel")
+        w.app
+            .audit_entries("attendance.correction_cancel")
             .await
             .len(),
         audits
     );
     assert_eq!(
-        notification_count(&w.app, w.lead.id, "approval.withdrawn").await,
+        w.app
+            .notification_count(w.lead.id, "approval.withdrawn")
+            .await,
         2
     );
 
     // 기록은 그대로다.
-    let entry = day(&w.app, &w.kim.token, "2026-03-02").await;
+    let entry = w.app.attendance_day(&w.kim.token, "2026-03-02").await;
     assert_eq!(entry["record"]["version"], 1);
     assert_eq!(
         entry["record"]["clock_in_at"],
         millis("2026-03-02T09:40:00")
     );
     assert_eq!(entry["record"]["clock_out_at"], Value::Null);
-    assert_eq!(events(&w.app, &w.kim.token, record_id).await.len(), 1);
-    assert_eq!(count(&w.app, CORRECTION_EVENTS).await, 0);
     assert_eq!(
-        notification_count(&w.app, w.kim.id, "attendance.corrected").await,
+        w.app.attendance_events(&w.kim.token, record_id).await.len(),
+        1
+    );
+    assert_eq!(w.app.count(CORRECTION_EVENTS).await, 0);
+    assert_eq!(
+        w.app
+            .notification_count(w.kim.id, "attendance.corrected")
+            .await,
         0
     );
-    assert!(audit_entries(&w.app, "attendance.correction")
+    assert!(w
+        .app
+        .audit_entries("attendance.correction")
         .await
         .is_empty());
     assert_eq!(stored(&w.app, w.kim.id).await.len(), 3);
@@ -559,10 +507,10 @@ async fn duplicate_pending_request_for_the_same_day_is_a_conflict_until_it_is_cl
     request(&w.app, &w.kim, &other_times)
         .await
         .expect_error(StatusCode::CONFLICT, "already_exists");
-    assert_eq!(count(&w.app, CORRECTIONS).await, 1);
-    assert_eq!(count(&w.app, DOCUMENTS).await, 1, "문서도 남지 않는다");
+    assert_eq!(w.app.count(CORRECTIONS).await, 1);
+    assert_eq!(w.app.count(DOCUMENTS).await, 1, "문서도 남지 않는다");
     assert_eq!(
-        notification_count(&w.app, w.lead.id, "approval.todo").await,
+        w.app.notification_count(w.lead.id, "approval.todo").await,
         1
     );
 
@@ -600,10 +548,10 @@ async fn idempotency_key_replay_returns_the_same_request() {
     let first = send(request_body.clone()).await.expect(StatusCode::CREATED);
     let second = send(request_body.clone()).await.expect(StatusCode::CREATED);
     assert_eq!(first, second, "저장해 둔 첫 응답을 그대로 돌려준다");
-    assert_eq!(count(&w.app, CORRECTIONS).await, 1);
-    assert_eq!(count(&w.app, DOCUMENTS).await, 1);
+    assert_eq!(w.app.count(CORRECTIONS).await, 1);
+    assert_eq!(w.app.count(DOCUMENTS).await, 1);
     assert_eq!(
-        notification_count(&w.app, w.lead.id, "approval.todo").await,
+        w.app.notification_count(w.lead.id, "approval.todo").await,
         1
     );
 
@@ -611,7 +559,7 @@ async fn idempotency_key_replay_returns_the_same_request() {
     send(full_day("2026-02-27"))
         .await
         .expect_error(StatusCode::UNPROCESSABLE_ENTITY, "idempotency_key_reused");
-    assert_eq!(count(&w.app, CORRECTIONS).await, 1);
+    assert_eq!(w.app.count(CORRECTIONS).await, 1);
 
     // 키가 없는 재전송은 새 요청이고, 결재 중인 요청과 부딪힌다.
     request(&w.app, &w.kim, &request_body)
@@ -640,21 +588,20 @@ async fn concurrent_duplicate_submissions_create_exactly_one_pending_request() {
     assert_eq!(created, 1, "정확히 한 건만 성공한다");
     let corrections = stored(&w.app, w.kim.id).await;
     assert_eq!(corrections.len(), 1);
-    assert_eq!(count(&w.app, DOCUMENTS).await, 1);
+    assert_eq!(w.app.count(DOCUMENTS).await, 1);
     assert_eq!(
-        count(
-            &w.app,
-            "SELECT COUNT(*) FROM approval_steps WHERE status = 'pending'"
-        )
-        .await,
+        w.app
+            .count("SELECT COUNT(*) FROM approval_steps WHERE status = 'pending'")
+            .await,
         1
     );
     assert_eq!(
-        notification_count(&w.app, w.lead.id, "approval.todo").await,
+        w.app.notification_count(w.lead.id, "approval.todo").await,
         1
     );
     assert_eq!(
-        audit_entries(&w.app, "attendance.correction_request")
+        w.app
+            .audit_entries("attendance.correction_request")
             .await
             .len(),
         1
@@ -680,20 +627,19 @@ async fn double_approve_writes_one_event_row() {
         .expect(StatusCode::OK);
 
     assert_eq!(status_of(&w.app, &w.kim, &id).await, "approved");
-    assert_eq!(count(&w.app, RECORDS).await, 1);
-    assert_eq!(count(&w.app, CORRECTION_EVENTS).await, 1);
+    assert_eq!(w.app.count(RECORDS).await, 1);
+    assert_eq!(w.app.count(CORRECTION_EVENTS).await, 1);
     assert_eq!(
-        day(&w.app, &w.kim.token, "2026-03-02").await["record"]["version"],
+        w.app.attendance_day(&w.kim.token, "2026-03-02").await["record"]["version"],
         1
     );
     assert_eq!(
-        notification_count(&w.app, w.kim.id, "attendance.corrected").await,
+        w.app
+            .notification_count(w.kim.id, "attendance.corrected")
+            .await,
         1
     );
-    assert_eq!(
-        audit_entries(&w.app, "attendance.correction").await.len(),
-        1
-    );
+    assert_eq!(w.app.audit_entries("attendance.correction").await.len(), 1);
 }
 
 // ── 부분 실패(롤백) ─────────────────────────────────────────────────────
@@ -726,7 +672,7 @@ async fn approval_fails_and_rolls_back_when_the_record_changed_since_the_request
         .await
         .expect_error(StatusCode::CONFLICT, "version_conflict");
     assert_still_pending(&w, &id, &doc).await;
-    let entry = day(&w.app, &w.kim.token, "2026-03-02").await;
+    let entry = w.app.attendance_day(&w.kim.token, "2026-03-02").await;
     assert_eq!(entry["record"], edited, "관리자가 고친 값 그대로");
 
     // 결재자는 반려로 끝낼 수 있고, 요청자는 새 기록을 보고 다시 요청할 수 있다.
@@ -738,7 +684,7 @@ async fn approval_fails_and_rolls_back_when_the_record_changed_since_the_request
     decide(&w.app, &w.lead.token, &doc, "approve")
         .await
         .expect(StatusCode::OK);
-    let entry = day(&w.app, &w.kim.token, "2026-03-02").await;
+    let entry = w.app.attendance_day(&w.kim.token, "2026-03-02").await;
     assert_eq!(entry["record"]["version"], 3);
     assert_eq!(
         entry["record"]["clock_out_at"],
@@ -767,9 +713,9 @@ async fn approval_fails_when_a_record_appeared_for_a_day_that_had_none() {
         .await
         .expect_error(StatusCode::CONFLICT, "version_conflict");
     assert_still_pending(&w, &id, &doc).await;
-    assert_eq!(count(&w.app, RECORDS).await, 1);
+    assert_eq!(w.app.count(RECORDS).await, 1);
     assert_eq!(
-        day(&w.app, &w.kim.token, "2026-03-02").await["record"]["clock_in_at"],
+        w.app.attendance_day(&w.kim.token, "2026-03-02").await["record"]["clock_in_at"],
         millis("2026-03-02T10:00:00")
     );
 }
@@ -780,37 +726,33 @@ async fn approval_revalidates_the_requested_times_and_rolls_back_on_failure() {
     let (id, doc) = requested(&w.app, &w.kim, &full_day("2026-03-02")).await;
     // 요청할 때는 맞았던 값이 승인 시점에는 규칙에 어긋난다(저장된 값이 DB에서 직접 바뀌었다).
     // 출근 시각이 더는 그 근무일에 속하지 않는다.
-    execute(
-        &w.app,
-        &format!(
+    w.app
+        .execute(&format!(
             "UPDATE attendance_corrections SET clock_in_at = {}, clock_out_at = {}",
             millis("2026-03-01T09:00:00"),
             millis("2026-03-01T18:00:00")
-        ),
-    )
-    .await;
+        ))
+        .await;
 
     let response = decide(&w.app, &w.lead.token, &doc, "approve").await;
     assert_eq!(response.body["error"]["field"], "work_date");
     response.expect_error(StatusCode::BAD_REQUEST, "validation_failed");
     assert_still_pending(&w, &id, &doc).await;
-    assert_eq!(count(&w.app, RECORDS).await, 0);
+    assert_eq!(w.app.count(RECORDS).await, 0);
 
     // 길이가 24시간을 넘는 값도 마찬가지다.
-    execute(
-        &w.app,
-        &format!(
+    w.app
+        .execute(&format!(
             "UPDATE attendance_corrections SET clock_in_at = {}, clock_out_at = {}",
             millis("2026-03-02T09:00:00"),
             millis("2026-03-03T09:00:01")
-        ),
-    )
-    .await;
+        ))
+        .await;
     let response = decide(&w.app, &w.lead.token, &doc, "approve").await;
     assert_eq!(response.body["error"]["field"], "clock_out_at");
     response.expect_error(StatusCode::BAD_REQUEST, "validation_failed");
     assert_still_pending(&w, &id, &doc).await;
-    assert_eq!(count(&w.app, RECORDS).await, 0);
+    assert_eq!(w.app.count(RECORDS).await, 0);
 
     // 반려로 끝낼 수 있다.
     decide(&w.app, &w.lead.token, &doc, "reject")
@@ -824,18 +766,18 @@ async fn failure_in_the_middle_of_the_effect_rolls_back_the_whole_approval() {
     let (w, _) = world_with_late_record().await;
     let (id, doc) = requested(&w.app, &w.kim, &full_day("2026-03-02")).await;
     // 기록을 고친 다음 단계(이력 추가)가 실패하게 만든다.
-    execute(
-        &w.app,
-        "CREATE TRIGGER fail_correction_event BEFORE INSERT ON attendance_events
+    w.app
+        .execute(
+            "CREATE TRIGGER fail_correction_event BEFORE INSERT ON attendance_events
          WHEN NEW.kind = 'correction'
          BEGIN SELECT RAISE(ABORT, 'injected failure'); END",
-    )
-    .await;
+        )
+        .await;
 
     let response = decide(&w.app, &w.lead.token, &doc, "approve").await;
     assert_eq!(response.status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_still_pending(&w, &id, &doc).await;
-    let entry = day(&w.app, &w.kim.token, "2026-03-02").await;
+    let entry = w.app.attendance_day(&w.kim.token, "2026-03-02").await;
     assert_eq!(entry["record"]["version"], 1, "기록 수정도 되돌려졌다");
     assert_eq!(
         entry["record"]["clock_in_at"],
@@ -843,12 +785,12 @@ async fn failure_in_the_middle_of_the_effect_rolls_back_the_whole_approval() {
     );
 
     // 장애가 사라지면 같은 승인이 그대로 성공한다.
-    execute(&w.app, "DROP TRIGGER fail_correction_event").await;
+    w.app.execute("DROP TRIGGER fail_correction_event").await;
     decide(&w.app, &w.lead.token, &doc, "approve")
         .await
         .expect(StatusCode::OK);
     assert_eq!(status_of(&w.app, &w.kim, &id).await, "approved");
-    assert_eq!(count(&w.app, CORRECTION_EVENTS).await, 1);
+    assert_eq!(w.app.count(CORRECTION_EVENTS).await, 1);
 }
 
 // ── 권한 ────────────────────────────────────────────────────────────────
@@ -898,7 +840,7 @@ async fn colleagues_cannot_see_or_cancel_and_only_the_line_can_decide() {
 
     // 아무것도 바뀌지 않았다.
     assert_still_pending(&w, &id, &doc).await;
-    assert_eq!(count(&w.app, RECORDS).await, 0);
+    assert_eq!(w.app.count(RECORDS).await, 0);
 
     // 없는 요청·형식이 틀린 ID.
     let unknown = pango_core::id::AttendanceCorrectionId::new();
@@ -946,8 +888,8 @@ async fn approval_line_rules_apply_to_corrections() {
     let response = request(&w.app, &token, &full_day("2026-03-02")).await;
     assert_eq!(response.body["error"]["field"], "steps");
     response.expect_error(StatusCode::BAD_REQUEST, "validation_failed");
-    assert_eq!(count(&w.app, CORRECTIONS).await, 0);
-    assert_eq!(count(&w.app, DOCUMENTS).await, 0);
+    assert_eq!(w.app.count(CORRECTIONS).await, 0);
+    assert_eq!(w.app.count(DOCUMENTS).await, 0);
 
     // 직접 지정한 2단계 결재선과 참조자.
     let mut two_steps = with_steps(json!([
@@ -957,7 +899,9 @@ async fn approval_line_rules_apply_to_corrections() {
     two_steps["references"] = json!([w.lee.id]);
     let (id, doc) = requested(&w.app, &w.kim, &two_steps).await;
     assert_eq!(
-        notification_count(&w.app, w.lee.id, "approval.reference").await,
+        w.app
+            .notification_count(w.lee.id, "approval.reference")
+            .await,
         1
     );
 
@@ -966,7 +910,7 @@ async fn approval_line_rules_apply_to_corrections() {
         .await
         .expect(StatusCode::OK);
     assert_eq!(status_of(&w.app, &w.kim, &id).await, "pending");
-    assert_eq!(count(&w.app, RECORDS).await, 0);
+    assert_eq!(w.app.count(RECORDS).await, 0);
     // 누군가 결재한 뒤에는 취소(회수)할 수 없다.
     cancel(&w.app, &w.kim.token, &id)
         .await
@@ -978,9 +922,9 @@ async fn approval_line_rules_apply_to_corrections() {
         .await
         .expect(StatusCode::OK);
     assert_eq!(status_of(&w.app, &w.kim, &id).await, "approved");
-    let entry = day(&w.app, &w.kim.token, "2026-03-02").await;
+    let entry = w.app.attendance_day(&w.kim.token, "2026-03-02").await;
     let record_id = entry["record"]["id"].as_str().expect("record");
-    let history = events(&w.app, &w.kim.token, record_id).await;
+    let history = w.app.attendance_events(&w.kim.token, record_id).await;
     assert_eq!(history[0]["actor_id"], w.admin.id.to_string());
 }
 
@@ -1004,7 +948,7 @@ async fn cancel_after_a_decision_is_a_conflict() {
         .expect_error(StatusCode::CONFLICT, "document_already_closed");
     assert_eq!(status_of(&w.app, &w.kim, &approved).await, "approved");
     assert_eq!(
-        day(&w.app, &w.kim.token, "2026-03-02").await["evaluation"]["status"],
+        w.app.attendance_day(&w.kim.token, "2026-03-02").await["evaluation"]["status"],
         "normal",
         "정정된 기록은 그대로다"
     );
@@ -1017,9 +961,10 @@ async fn cancel_after_a_decision_is_a_conflict() {
         .await
         .expect_error(StatusCode::CONFLICT, "document_already_closed");
     assert_eq!(status_of(&w.app, &w.kim, &rejected).await, "rejected");
-    assert_eq!(count(&w.app, RECORDS).await, 1);
+    assert_eq!(w.app.count(RECORDS).await, 1);
     assert_eq!(
-        audit_entries(&w.app, "attendance.correction_cancel")
+        w.app
+            .audit_entries("attendance.correction_cancel")
             .await
             .len(),
         0
@@ -1039,10 +984,12 @@ async fn decisions_after_cancel_are_conflicts_and_change_nothing() {
             .expect_error(StatusCode::CONFLICT, "document_already_closed");
     }
     assert_eq!(status_of(&w.app, &w.kim, &id).await, "canceled");
-    assert_eq!(count(&w.app, RECORDS).await, 0);
-    assert_eq!(count(&w.app, CORRECTION_EVENTS).await, 0);
+    assert_eq!(w.app.count(RECORDS).await, 0);
+    assert_eq!(w.app.count(CORRECTION_EVENTS).await, 0);
     assert_eq!(
-        notification_count(&w.app, w.kim.id, "attendance.corrected").await,
+        w.app
+            .notification_count(w.kim.id, "attendance.corrected")
+            .await,
         0
     );
 }
@@ -1084,7 +1031,7 @@ async fn work_date_window_is_31_days_back_and_never_the_future() {
         &body("2026-03-03", "2026-03-03T09:00:00", None),
     )
     .await;
-    assert_eq!(count(&w.app, CORRECTIONS).await, 2);
+    assert_eq!(w.app.count(CORRECTIONS).await, 2);
 
     // 근무일 전환(05:00) 전인 새벽에는 "오늘"이 아직 전날이다.
     w.app.set_time(&kst("2026-03-04T04:59:00"));
@@ -1161,8 +1108,8 @@ async fn requested_times_follow_the_edit_rules() {
         "work_date",
     )
     .await;
-    assert_eq!(count(&w.app, CORRECTIONS).await, 0);
-    assert_eq!(count(&w.app, DOCUMENTS).await, 0);
+    assert_eq!(w.app.count(CORRECTIONS).await, 0);
+    assert_eq!(w.app.count(DOCUMENTS).await, 0);
 
     // 경계 안쪽: 정확히 24시간, 근무일 전환 시각 정각 출근, 5분 뒤 시각.
     requested(
@@ -1269,11 +1216,11 @@ async fn malformed_requests_create_nothing() {
     ]);
     assert_invalid(&w, &with("steps", twice), "steps").await;
 
-    assert_eq!(count(&w.app, CORRECTIONS).await, 0);
-    assert_eq!(count(&w.app, DOCUMENTS).await, 0);
-    assert_eq!(count(&w.app, RECORDS).await, 0);
+    assert_eq!(w.app.count(CORRECTIONS).await, 0);
+    assert_eq!(w.app.count(DOCUMENTS).await, 0);
+    assert_eq!(w.app.count(RECORDS).await, 0);
     assert_eq!(
-        notification_count(&w.app, w.lead.id, "approval.todo").await,
+        w.app.notification_count(w.lead.id, "approval.todo").await,
         0
     );
 
@@ -1283,7 +1230,7 @@ async fn malformed_requests_create_nothing() {
         .await
         .expect(StatusCode::CREATED);
     assert_eq!(created["reason"], hostile);
-    assert_eq!(count(&w.app, RECORDS).await, 0);
+    assert_eq!(w.app.count(RECORDS).await, 0);
 
     // 목록 쿼리.
     list(&w.app, &w.kim.token, "?member_id=abc")
@@ -1316,7 +1263,7 @@ async fn unauthenticated_requests_are_rejected() {
         .await
         .expect_error(StatusCode::UNAUTHORIZED, "unauthenticated");
     assert_eq!(status_of(&w.app, &w.kim, &id).await, "pending");
-    assert_eq!(count(&w.app, CORRECTIONS).await, 1);
+    assert_eq!(w.app.count(CORRECTIONS).await, 1);
 }
 
 // ── 엣지 ────────────────────────────────────────────────────────────────
@@ -1364,14 +1311,12 @@ async fn suspended_requesters_pending_request_can_still_be_decided() {
     };
     assert_eq!(status(&rejected), "rejected");
     assert_eq!(status(&approved), "approved");
-    assert_eq!(count(&w.app, RECORDS).await, 1);
-    assert_eq!(count(&w.app, CORRECTION_EVENTS).await, 1);
+    assert_eq!(w.app.count(RECORDS).await, 1);
+    assert_eq!(w.app.count(CORRECTION_EVENTS).await, 1);
     assert_eq!(
-        count(
-            &w.app,
-            "SELECT COUNT(*) FROM approval_documents WHERE status = 'in_progress'"
-        )
-        .await,
+        w.app
+            .count("SELECT COUNT(*) FROM approval_documents WHERE status = 'in_progress'")
+            .await,
         0
     );
 }
@@ -1389,13 +1334,13 @@ async fn night_shift_correction_belongs_to_the_previous_work_date() {
     decide(&w.app, &w.lead.token, &doc, "approve")
         .await
         .expect(StatusCode::OK);
-    let entry = day(&w.app, &w.kim.token, "2026-03-02").await;
+    let entry = w.app.attendance_day(&w.kim.token, "2026-03-02").await;
     assert_eq!(
         entry["record"]["clock_out_at"],
         millis("2026-03-03T04:00:00")
     );
     assert_eq!(
-        day(&w.app, &w.kim.token, "2026-03-03").await["record"],
+        w.app.attendance_day(&w.kim.token, "2026-03-03").await["record"],
         Value::Null
     );
     // 같은 퇴근 시각을 03-03의 출근으로 적으면 근무일이 맞지 않는다.
@@ -1467,7 +1412,7 @@ async fn admin_reject_closes_a_stranded_correction_so_the_day_can_be_refiled() {
         .await
         .expect("update"));
     tx.commit().await.expect("commit");
-    let record_before = day(&w.app, &w.kim.token, "2026-03-02").await;
+    let record_before = w.app.attendance_day(&w.kim.token, "2026-03-02").await;
 
     // 막혀 있던 길: 본인 취소, 관리자의 일반 반려, 같은 날짜 재요청.
     cancel(&w.app, &w.kim.token, &id)
@@ -1506,9 +1451,12 @@ async fn admin_reject_closes_a_stranded_correction_so_the_day_can_be_refiled() {
     assert_eq!(closed["status"], "rejected");
     assert_eq!(status_of(&w.app, &w.kim, &id).await, "rejected");
     // 기록은 건드리지 않는다.
-    assert_eq!(day(&w.app, &w.kim.token, "2026-03-02").await, record_before);
-    assert_eq!(count(&w.app, CORRECTION_EVENTS).await, 0);
-    let audits = audit_entries(&w.app, "approval.admin_reject").await;
+    assert_eq!(
+        w.app.attendance_day(&w.kim.token, "2026-03-02").await,
+        record_before
+    );
+    assert_eq!(w.app.count(CORRECTION_EVENTS).await, 0);
+    let audits = w.app.audit_entries("approval.admin_reject").await;
     assert_eq!(audits.len(), 1);
     assert_eq!(audits[0].actor_id, Some(w.admin.id));
     assert_eq!(
@@ -1516,15 +1464,14 @@ async fn admin_reject_closes_a_stranded_correction_so_the_day_can_be_refiled() {
         "attendance_correction"
     );
     assert_eq!(
-        notification_count(&w.app, w.kim.id, "approval.rejected").await,
+        w.app
+            .notification_count(w.kim.id, "approval.rejected")
+            .await,
         1
     );
     // 반복은 아무것도 바꾸지 않는다.
     reject().await;
-    assert_eq!(
-        audit_entries(&w.app, "approval.admin_reject").await.len(),
-        1
-    );
+    assert_eq!(w.app.audit_entries("approval.admin_reject").await.len(), 1);
     assert_eq!(stored(&w.app, w.kim.id).await.len(), 1);
 
     // 이제 같은 날짜를 다시 올려 승인받을 수 있다.
@@ -1534,5 +1481,5 @@ async fn admin_reject_closes_a_stranded_correction_so_the_day_can_be_refiled() {
         .await
         .expect(StatusCode::OK);
     assert_eq!(status_of(&w.app, &w.kim, &second).await, "approved");
-    assert_eq!(count(&w.app, CORRECTION_EVENTS).await, 1);
+    assert_eq!(w.app.count(CORRECTION_EVENTS).await, 1);
 }

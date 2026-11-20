@@ -17,9 +17,8 @@ use pango_api::leave::{
 use pango_api::notice::NoticeInput;
 use pango_api::Versioned;
 use pango_core::authz::Role;
-use pango_core::id::{DepartmentId, MemberId};
+use pango_core::id::DepartmentId;
 use pango_core::member::MemberStatus;
-use pango_db::leave as ledger;
 use pango_server::service::{approval, attendance, leave, notices, settings, AuthContext};
 use pango_server::testing::{denial, ts, TestApp, TestMember};
 use pango_server::ServiceResult;
@@ -439,16 +438,6 @@ fn validation_field<T>(result: &ServiceResult<T>) -> Option<&'static str> {
     }
 }
 
-async fn grant_keys(app: &TestApp, member: MemberId) -> Vec<String> {
-    let mut conn = app.state.db.read().await.expect("read");
-    ledger::list_ledger(&mut conn, member)
-        .await
-        .expect("ledger")
-        .into_iter()
-        .filter_map(|record| record.grant_key)
-        .collect()
-}
-
 /// 인증 뒤에 부서가 바뀌고 입사일이 정정된 구성원의 휴가 신청은, 낡은 맥락의 소속(옛 팀장의
 /// 관할)과 입사일(옛 연차)이 아니라 지금의 값으로 판정된다.
 #[tokio::test]
@@ -485,10 +474,7 @@ async fn leave_request_uses_the_members_current_department_and_hire_date() {
     let created = leave::create_request(&t.app.state, &ctx, &request(by_owner), None)
         .await
         .expect("request");
-    assert_eq!(
-        grant_keys(&t.app, t.kim.id).await,
-        ["monthly:1", "monthly:2"]
-    );
+    assert_eq!(t.app.grant_keys(t.kim.id).await, ["monthly:1", "monthly:2"]);
     let document = t
         .app
         .get(&format!("/approval/documents/{}", created.document_id))

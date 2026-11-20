@@ -38,18 +38,6 @@ async fn stored_holidays(app: &TestApp) -> Vec<Holiday> {
     all
 }
 
-async fn audit_actions(app: &TestApp, prefix: &str) -> Vec<String> {
-    let mut conn = app.state.db.read().await.expect("conn");
-    let (entries, _) = audit::list(&mut conn, &AuditFilter::default(), 200)
-        .await
-        .expect("audit");
-    entries
-        .into_iter()
-        .map(|e| e.action)
-        .filter(|a| a.starts_with(prefix))
-        .collect()
-}
-
 async fn admin_settings(app: &TestApp, token: &str) -> Value {
     app.get("/admin/settings")
         .bearer(token)
@@ -253,7 +241,7 @@ async fn invalid_combinations_are_rejected_and_change_nothing() {
         1,
         "거부된 요청은 아무것도 바꾸지 않는다"
     );
-    assert!(audit_actions(&app, "settings.").await.is_empty());
+    assert!(app.audit_actions("settings.").await.is_empty());
 
     // 경계값(전환 = 근무 시작, 유예 120분, 모든 요일, 반반차 = 근무 구간 - 1분)은 받는다.
     let boundary = edited(
@@ -343,7 +331,7 @@ async fn concurrent_updates_with_same_version_have_exactly_one_winner() {
         .iter()
         .all(|s| *s == StatusCode::OK || *s == StatusCode::CONFLICT));
     assert_eq!(stored_settings(&app).await.version, 2);
-    assert_eq!(audit_actions(&app, "settings.update").await.len(), 1);
+    assert_eq!(app.audit_actions("settings.update").await.len(), 1);
 }
 
 // ── 공휴일 ──────────────────────────────────────────────────────────────
@@ -386,7 +374,7 @@ async fn holiday_upsert_is_idempotent_and_renames() {
         json!([{ "date": "2026-03-01", "name": "3·1절" }])
     );
     assert_eq!(
-        audit_actions(&app, "holiday.").await,
+        app.audit_actions("holiday.").await,
         vec!["holiday.upsert", "holiday.upsert"],
         "바뀐 것이 없는 재요청은 기록하지 않는다"
     );
@@ -416,7 +404,7 @@ async fn holiday_delete_is_idempotent() {
         .expect(StatusCode::OK);
     assert!(stored_holidays(&app).await.is_empty());
     assert_eq!(
-        audit_actions(&app, "holiday.").await,
+        app.audit_actions("holiday.").await,
         vec!["holiday.delete", "holiday.upsert"]
     );
 }
@@ -460,15 +448,11 @@ async fn holiday_import_is_all_or_nothing() {
     }
 
     // 검증은 통과했지만 저장 도중(50번째 항목)에 DB가 실패해도 전부 롤백된다.
-    let mut tx = app.state.db.begin_write().await.expect("begin");
-    sqlx::query(
+    app.execute(
         "CREATE TRIGGER fail_holiday BEFORE INSERT ON holidays
          WHEN NEW.date = '2026-02-19' BEGIN SELECT RAISE(ABORT, 'boom'); END",
     )
-    .execute(&mut *tx)
-    .await
-    .expect("trigger");
-    tx.commit().await.expect("commit");
+    .await;
     app.post("/admin/holidays/import")
         .bearer(&owner)
         .json(&json!({ "items": import_items(100) }))
@@ -479,12 +463,7 @@ async fn holiday_import_is_all_or_nothing() {
         stored_holidays(&app).await.is_empty(),
         "부분 실패도 전부 롤백"
     );
-    let mut tx = app.state.db.begin_write().await.expect("begin");
-    sqlx::query("DROP TRIGGER fail_holiday")
-        .execute(&mut *tx)
-        .await
-        .expect("drop");
-    tx.commit().await.expect("commit");
+    app.execute("DROP TRIGGER fail_holiday").await;
 
     let ok = app
         .post("/admin/holidays/import")
@@ -495,10 +474,7 @@ async fn holiday_import_is_all_or_nothing() {
         .expect(StatusCode::OK);
     assert_eq!(ok["imported"], 100);
     assert_eq!(stored_holidays(&app).await.len(), 100);
-    assert_eq!(
-        audit_actions(&app, "holiday.").await,
-        vec!["holiday.import"]
-    );
+    assert_eq!(app.audit_actions("holiday.").await, vec!["holiday.import"]);
 }
 
 #[tokio::test]

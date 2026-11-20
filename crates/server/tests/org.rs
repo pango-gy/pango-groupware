@@ -7,48 +7,11 @@ use pango_core::authz::Role;
 use pango_core::id::{DepartmentId, MemberId, PositionId};
 use pango_core::member::MemberStatus;
 use pango_core::org::MAX_DEPTH;
-use pango_db::audit::{self, AuditEntry, AuditFilter};
+use pango_db::audit::{self, AuditFilter};
 use pango_db::members;
 use pango_db::org::{self, Department};
-use pango_server::testing::{TestApp, TestMember};
+use pango_server::testing::{id_of, org_world, OrgWorld, TestApp};
 use serde_json::{json, Value};
-
-struct World {
-    app: TestApp,
-    owner: String,
-    admin: TestMember,
-    manager: TestMember,
-    member: TestMember,
-    dept: DepartmentId,
-}
-
-/// 최고 관리자, 관리자, 조직장(부서 head), 일반 구성원이 있는 회사.
-async fn world() -> World {
-    let app = TestApp::new().await;
-    let owner = app.login_owner().await;
-    let dept = app.add_department("개발팀", None, None).await;
-    let admin = app.add_member("admin", Role::Admin, None).await;
-    let manager = app.add_member("manager", Role::Member, Some(dept)).await;
-    let member = app.add_member("member", Role::Member, Some(dept)).await;
-    app.set_department_head(dept, Some(manager.id)).await;
-    World {
-        app,
-        owner,
-        admin,
-        manager,
-        member,
-        dept,
-    }
-}
-
-async fn audit_entries(app: &TestApp, action: &str) -> Vec<AuditEntry> {
-    let filter = AuditFilter {
-        action: Some(action.to_owned()),
-        ..Default::default()
-    };
-    let mut conn = app.state.read().await.expect("read");
-    audit::list(&mut conn, &filter, 200).await.expect("audit").0
-}
 
 async fn audit_total(app: &TestApp) -> usize {
     let mut conn = app.state.read().await.expect("read");
@@ -85,29 +48,17 @@ async fn create_department(app: &TestApp, token: &str, body: Value) -> Value {
         .expect(StatusCode::CREATED)
 }
 
-fn id_of(value: &Value) -> String {
-    value["id"].as_str().expect("id").to_owned()
-}
-
-async fn set_status(app: &TestApp, id: MemberId, status: MemberStatus) {
-    let mut tx = app.state.db.begin_write().await.expect("begin");
-    let mut member = members::find(&mut tx, id).await.expect("find").expect("m");
-    member.status = status;
-    assert!(members::update(&mut tx, &member, app.state.now())
-        .await
-        .expect("update"));
-    tx.commit().await.expect("commit");
-}
-
 // ── 조회 ────────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn departments_show_active_direct_member_count_and_head_name() {
-    let w = world().await;
+    let w = org_world().await;
     let child = w.app.add_department("백엔드", Some(w.dept), None).await;
     w.app.add_member("child1", Role::Member, Some(child)).await;
     let suspended = w.app.add_member("paused", Role::Member, Some(w.dept)).await;
-    set_status(&w.app, suspended.id, MemberStatus::Suspended).await;
+    w.app
+        .set_status(suspended.id, MemberStatus::Suspended)
+        .await;
 
     let list = w
         .app
@@ -149,7 +100,7 @@ async fn org_lists_require_authentication() {
 
 #[tokio::test]
 async fn archived_departments_are_not_listed() {
-    let w = world().await;
+    let w = org_world().await;
     let empty = w.app.add_department("해체팀", None, None).await;
     w.app
         .delete(&format!("/admin/departments/{empty}?version=1"))
@@ -175,7 +126,7 @@ async fn archived_departments_are_not_listed() {
 
 #[tokio::test]
 async fn department_admin_routes_are_forbidden_to_members_and_managers() {
-    let w = world().await;
+    let w = org_world().await;
     let before = org_snapshot(&w.app).await;
     let path = format!("/admin/departments/{}", w.dept);
     for token in [&w.member.token, &w.manager.token] {
@@ -219,7 +170,7 @@ async fn department_admin_routes_are_forbidden_to_members_and_managers() {
 
 #[tokio::test]
 async fn admins_and_owner_manage_departments_with_audit() {
-    let w = world().await;
+    let w = org_world().await;
     for (token, name) in [(&w.admin.token, "영업팀"), (&w.owner, "인사팀")] {
         let created = create_department(
             &w.app,
@@ -257,18 +208,18 @@ async fn admins_and_owner_manage_departments_with_audit() {
             .await
             .expect(StatusCode::OK);
     }
-    assert_eq!(audit_entries(&w.app, "department.create").await.len(), 2);
-    let updates = audit_entries(&w.app, "department.update").await;
+    assert_eq!(w.app.audit_entries("department.create").await.len(), 2);
+    let updates = w.app.audit_entries("department.update").await;
     assert_eq!(updates.len(), 2);
     let detail = updates[0].detail.as_ref().expect("detail");
     assert!(detail["changed"].get("name").is_some(), "{detail}");
     assert!(detail["changed"].get("parent_id").is_some(), "{detail}");
-    assert_eq!(audit_entries(&w.app, "department.archive").await.len(), 2);
+    assert_eq!(w.app.audit_entries("department.archive").await.len(), 2);
 }
 
 #[tokio::test]
 async fn new_department_head_is_a_manager_immediately() {
-    let w = world().await;
+    let w = org_world().await;
     let created = create_department(
         &w.app,
         &w.owner,
@@ -290,7 +241,7 @@ async fn new_department_head_is_a_manager_immediately() {
 
 #[tokio::test]
 async fn department_input_is_validated_without_side_effects() {
-    let w = world().await;
+    let w = org_world().await;
     let before = org_snapshot(&w.app).await;
     let huge = "가".repeat(10_000);
     let cases: Vec<(Value, StatusCode, &str)> = vec![
@@ -410,7 +361,7 @@ async fn department_input_is_validated_without_side_effects() {
 
 #[tokio::test]
 async fn sort_order_boundaries_are_accepted() {
-    let w = world().await;
+    let w = org_world().await;
     for sort_order in [-1_000_000, 0, 1_000_000] {
         let created = create_department(
             &w.app,
@@ -424,7 +375,7 @@ async fn sort_order_boundaries_are_accepted() {
 
 #[tokio::test]
 async fn markup_in_names_is_stored_as_plain_text() {
-    let w = world().await;
+    let w = org_world().await;
     for name in ["<script>alert(1)</script>", "'; DROP TABLE departments;--"] {
         let created = create_department(&w.app, &w.owner, json!({ "name": name })).await;
         assert_eq!(created["name"], name);
@@ -433,11 +384,13 @@ async fn markup_in_names_is_stored_as_plain_text() {
 
 #[tokio::test]
 async fn department_head_must_be_an_active_member() {
-    let w = world().await;
+    let w = org_world().await;
     let retired = w.app.add_member("retired", Role::Member, None).await;
-    set_status(&w.app, retired.id, MemberStatus::Retired).await;
+    w.app.set_status(retired.id, MemberStatus::Retired).await;
     let suspended = w.app.add_member("suspended", Role::Member, None).await;
-    set_status(&w.app, suspended.id, MemberStatus::Suspended).await;
+    w.app
+        .set_status(suspended.id, MemberStatus::Suspended)
+        .await;
     let before = org_snapshot(&w.app).await;
     for head in [retired.id, suspended.id] {
         w.app
@@ -460,7 +413,7 @@ async fn department_head_must_be_an_active_member() {
 
 #[tokio::test]
 async fn archived_or_unknown_parent_is_not_found() {
-    let w = world().await;
+    let w = org_world().await;
     let gone = w.app.add_department("해체팀", None, None).await;
     w.app
         .delete(&format!("/admin/departments/{gone}?version=1"))
@@ -508,7 +461,7 @@ async fn chain(app: &TestApp, token: &str, len: usize) -> Vec<String> {
 
 #[tokio::test]
 async fn depth_limit_is_exact() {
-    let w = world().await;
+    let w = org_world().await;
     let ids = chain(&w.app, &w.owner, MAX_DEPTH).await;
     assert_eq!(ids.len(), MAX_DEPTH, "정확히 최대 깊이까지는 만들 수 있다");
     let before = org_snapshot(&w.app).await;
@@ -524,7 +477,7 @@ async fn depth_limit_is_exact() {
 
 #[tokio::test]
 async fn moving_a_subtree_respects_depth_and_cycles() {
-    let w = world().await;
+    let w = org_world().await;
     let ids = chain(&w.app, &w.owner, MAX_DEPTH - 1).await;
     // 높이 2인 서브트리: dept ─ child
     let child = w.app.add_department("하위", Some(w.dept), None).await;
@@ -572,7 +525,7 @@ async fn moving_a_subtree_respects_depth_and_cycles() {
 
 #[tokio::test]
 async fn stale_department_version_is_rejected() {
-    let w = world().await;
+    let w = org_world().await;
     let before = department_row(&w.app, w.dept).await;
     for version in [1, 3, -1, i64::MAX] {
         w.app
@@ -596,13 +549,13 @@ async fn stale_department_version_is_rejected() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_department_edits_with_same_version_have_one_winner() {
-    let World {
+    let OrgWorld {
         app,
         owner,
         manager,
         dept,
         ..
-    } = world().await;
+    } = org_world().await;
     let app = Arc::new(app);
     let tasks: Vec<_> = ["가 이름", "나 이름"]
         .into_iter()
@@ -632,12 +585,12 @@ async fn concurrent_department_edits_with_same_version_have_one_winner() {
     let row = department_row(&app, dept).await;
     assert_eq!(row.version, 3);
     assert_eq!(row.name, winner.body["name"].as_str().expect("name"));
-    assert_eq!(audit_entries(&app, "department.update").await.len(), 1);
+    assert_eq!(app.audit_entries("department.update").await.len(), 1);
 }
 
 #[tokio::test]
 async fn unchanged_patch_is_a_no_op() {
-    let w = world().await;
+    let w = org_world().await;
     let audits = audit_total(&w.app).await;
     let same = w
         .app
@@ -655,7 +608,7 @@ async fn unchanged_patch_is_a_no_op() {
 
 #[tokio::test]
 async fn archive_is_refused_while_members_or_children_remain() {
-    let w = world().await;
+    let w = org_world().await;
     let before = org_snapshot(&w.app).await;
     let archive = |id: DepartmentId, version: i64| {
         w.app
@@ -674,13 +627,13 @@ async fn archive_is_refused_while_members_or_children_remain() {
         .app
         .add_member("paused", Role::Member, Some(paused_dept))
         .await;
-    set_status(&w.app, paused.id, MemberStatus::Suspended).await;
+    w.app.set_status(paused.id, MemberStatus::Suspended).await;
     archive(paused_dept, 1)
         .await
         .expect_error(StatusCode::CONFLICT, "department_not_empty");
 
     // 퇴사자만 남으면 보관할 수 있다.
-    set_status(&w.app, paused.id, MemberStatus::Retired).await;
+    w.app.set_status(paused.id, MemberStatus::Retired).await;
     archive(paused_dept, 1).await.expect(StatusCode::OK);
 
     // 보관되지 않은 하위 부서가 있으면 거부.
@@ -708,7 +661,7 @@ async fn archive_is_refused_while_members_or_children_remain() {
 
 #[tokio::test]
 async fn archive_requires_a_numeric_version_and_valid_id() {
-    let w = world().await;
+    let w = org_world().await;
     let empty = w.app.add_department("빈 팀", None, None).await;
     let before = org_snapshot(&w.app).await;
     for query in ["", "?version=", "?version=abc", "?version=1.0", "?ver=1"] {
@@ -747,7 +700,7 @@ async fn archive_requires_a_numeric_version_and_valid_id() {
 
 #[tokio::test]
 async fn department_create_honours_idempotency_key() {
-    let w = world().await;
+    let w = org_world().await;
     let send = |name: &str| {
         w.app
             .post("/admin/departments")
@@ -762,7 +715,7 @@ async fn department_create_honours_idempotency_key() {
     send("다른 팀")
         .await
         .expect_error(StatusCode::UNPROCESSABLE_ENTITY, "idempotency_key_reused");
-    assert_eq!(audit_entries(&w.app, "department.create").await.len(), 1);
+    assert_eq!(w.app.audit_entries("department.create").await.len(), 1);
 }
 
 // ── 직책 ─────────────────────────────────────────────────────────────────
@@ -778,7 +731,7 @@ async fn create_position(app: &TestApp, token: &str, name: &str, level: i64) -> 
 
 #[tokio::test]
 async fn positions_are_listed_by_level_for_everyone() {
-    let w = world().await;
+    let w = org_world().await;
     create_position(&w.app, &w.owner, "사원", 10).await;
     create_position(&w.app, &w.admin.token, "팀장", 50).await;
     let list = w
@@ -800,7 +753,7 @@ async fn positions_are_listed_by_level_for_everyone() {
 
 #[tokio::test]
 async fn position_admin_routes_are_forbidden_to_non_admins() {
-    let w = world().await;
+    let w = org_world().await;
     let position = create_position(&w.app, &w.owner, "사원", 10).await;
     let id = id_of(&position);
     let before = org_snapshot(&w.app).await;
@@ -831,7 +784,7 @@ async fn position_admin_routes_are_forbidden_to_non_admins() {
 
 #[tokio::test]
 async fn position_level_boundaries_and_types() {
-    let w = world().await;
+    let w = org_world().await;
     create_position(&w.app, &w.owner, "최하", 0).await;
     create_position(&w.app, &w.owner, "최상", 1000).await;
     let before = org_snapshot(&w.app).await;
@@ -886,7 +839,7 @@ async fn position_level_boundaries_and_types() {
 
 #[tokio::test]
 async fn duplicate_active_position_name_conflicts() {
-    let w = world().await;
+    let w = org_world().await;
     let lead = create_position(&w.app, &w.owner, "팀장", 50).await;
     let staff = create_position(&w.app, &w.owner, "사원", 10).await;
     let before = org_snapshot(&w.app).await;
@@ -914,13 +867,13 @@ async fn duplicate_active_position_name_conflicts() {
         .await
         .expect(StatusCode::OK);
     create_position(&w.app, &w.owner, "팀장", 60).await;
-    assert_eq!(audit_entries(&w.app, "position.create").await.len(), 3);
-    assert_eq!(audit_entries(&w.app, "position.archive").await.len(), 1);
+    assert_eq!(w.app.audit_entries("position.create").await.len(), 3);
+    assert_eq!(w.app.audit_entries("position.archive").await.len(), 1);
 }
 
 #[tokio::test]
 async fn position_in_use_cannot_be_archived_until_holders_retire() {
-    let w = world().await;
+    let w = org_world().await;
     let position = create_position(&w.app, &w.owner, "주임", 20).await;
     let id: PositionId = id_of(&position).parse().expect("id");
     let mut tx = w.app.state.db.begin_write().await.expect("begin");
@@ -936,7 +889,7 @@ async fn position_in_use_cannot_be_archived_until_holders_retire() {
 
     let path = format!("/admin/positions/{id}?version=1");
     for status in [MemberStatus::Active, MemberStatus::Suspended] {
-        set_status(&w.app, w.member.id, status).await;
+        w.app.set_status(w.member.id, status).await;
         w.app
             .delete(&path)
             .bearer(&w.owner)
@@ -944,7 +897,7 @@ async fn position_in_use_cannot_be_archived_until_holders_retire() {
             .await
             .expect_error(StatusCode::CONFLICT, "in_use");
     }
-    set_status(&w.app, w.member.id, MemberStatus::Retired).await;
+    w.app.set_status(w.member.id, MemberStatus::Retired).await;
     w.app
         .delete(&path)
         .bearer(&w.owner)
@@ -963,7 +916,7 @@ async fn position_in_use_cannot_be_archived_until_holders_retire() {
 
 #[tokio::test]
 async fn position_update_versioning_and_audit() {
-    let w = world().await;
+    let w = org_world().await;
     let position = create_position(&w.app, &w.owner, "대리", 30).await;
     let path = format!("/admin/positions/{}", id_of(&position));
     let updated = w
@@ -990,7 +943,7 @@ async fn position_update_versioning_and_audit() {
         .send()
         .await
         .expect_error(StatusCode::NOT_FOUND, "not_found");
-    let audits = audit_entries(&w.app, "position.update").await;
+    let audits = w.app.audit_entries("position.update").await;
     assert_eq!(audits.len(), 1);
     let detail = audits[0].detail.as_ref().expect("detail");
     assert_eq!(

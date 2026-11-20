@@ -6,11 +6,10 @@ use std::sync::Arc;
 use chrono::Duration;
 use http::StatusCode;
 use pango_core::authz::Role;
-use pango_core::id::{DepartmentId, MemberId, NoticeId};
+use pango_core::id::{DepartmentId, NoticeId};
 use pango_core::member::MemberStatus;
 use pango_db::notices::{self, NoticeFilter, NoticeListItem};
-use pango_db::notifications::{self, Notification};
-use pango_db::{members, org};
+use pango_db::org;
 use pango_server::testing::{TestApp, TestMember};
 use serde_json::{json, Value};
 
@@ -74,32 +73,11 @@ async fn stored_notices(app: &TestApp) -> Vec<NoticeListItem> {
         .0
 }
 
-async fn notifications_of(app: &TestApp, member_id: MemberId) -> Vec<Notification> {
-    let mut conn = app.state.db.read().await.expect("conn");
-    notifications::list(&mut conn, member_id, false, None, 200)
-        .await
-        .expect("list")
-        .0
-}
-
 async fn read_rows(app: &TestApp, notice_id: NoticeId) -> Vec<notices::NoticeRead> {
     let mut conn = app.state.db.read().await.expect("conn");
     notices::list_reads(&mut conn, notice_id)
         .await
         .expect("reads")
-}
-
-async fn set_status(app: &TestApp, member_id: MemberId, status: MemberStatus) {
-    let mut tx = app.state.db.begin_write().await.expect("begin");
-    let mut member = members::find(&mut tx, member_id)
-        .await
-        .expect("find")
-        .expect("member");
-    member.status = status;
-    assert!(members::update(&mut tx, &member, app.state.now())
-        .await
-        .expect("update"));
-    tx.commit().await.expect("commit");
 }
 
 async fn archive_department(app: &TestApp, department_id: DepartmentId) {
@@ -536,7 +514,7 @@ async fn read_report_lists_readers_and_active_non_readers() {
         .expect(StatusCode::OK);
     let extra = app.add_member("team2", Role::Member, Some(o.team)).await;
     let retired = app.add_member("team3", Role::Member, Some(o.team)).await;
-    set_status(&app, retired.id, MemberStatus::Retired).await;
+    app.set_status(retired.id, MemberStatus::Retired).await;
 
     let report = app
         .get(&format!("/admin/notices/{id}/reads"))
@@ -580,11 +558,11 @@ async fn creating_notifies_each_audience_member_exactly_once() {
     let app = TestApp::new().await;
     let o = org(&app).await;
     let suspended = app.add_member("team9", Role::Member, Some(o.team)).await;
-    set_status(&app, suspended.id, MemberStatus::Suspended).await;
+    app.set_status(suspended.id, MemberStatus::Suspended).await;
     let id = id_of(&create(&app, &o.admin.token, &to_department("팀 공지", o.team)).await);
 
     for member in [&o.team_member, &o.part_member] {
-        let list = notifications_of(&app, member.id).await;
+        let list = app.notifications_of(member.id).await;
         assert_eq!(list.len(), 1, "{}", member.login_id);
         assert_eq!(list[0].kind, "notice.new");
         assert_eq!(
@@ -600,7 +578,7 @@ async fn creating_notifies_each_audience_member_exactly_once() {
         &o.admin,
     ] {
         assert!(
-            notifications_of(&app, member.id).await.is_empty(),
+            app.notifications_of(member.id).await.is_empty(),
             "{}: 대상 밖·비활성·작성자는 알림 없음",
             member.login_id
         );
@@ -615,13 +593,13 @@ async fn creating_notifies_each_audience_member_exactly_once() {
         .send()
         .await
         .expect(StatusCode::OK);
-    assert_eq!(notifications_of(&app, o.team_member.id).await.len(), 1);
+    assert_eq!(app.notifications_of(o.team_member.id).await.len(), 1);
 
     let to_everyone = create(&app, &o.admin.token, &to_all("전체 공지")).await;
-    assert_eq!(notifications_of(&app, o.homeless.id).await.len(), 1);
-    assert_eq!(notifications_of(&app, app.owner_id).await.len(), 1);
-    assert!(notifications_of(&app, o.admin.id).await.is_empty());
-    assert_eq!(notifications_of(&app, o.team_member.id).await.len(), 2);
+    assert_eq!(app.notifications_of(o.homeless.id).await.len(), 1);
+    assert_eq!(app.notifications_of(app.owner_id).await.len(), 1);
+    assert!(app.notifications_of(o.admin.id).await.is_empty());
+    assert_eq!(app.notifications_of(o.team_member.id).await.len(), 2);
     let _ = to_everyone;
 }
 
@@ -649,7 +627,7 @@ async fn idempotency_key_replay_creates_one_notice_and_one_notification_each() {
         .expect_error(StatusCode::UNPROCESSABLE_ENTITY, "idempotency_key_reused");
 
     assert_eq!(stored_notices(&app).await.len(), 1);
-    assert_eq!(notifications_of(&app, o.team_member.id).await.len(), 1);
+    assert_eq!(app.notifications_of(o.team_member.id).await.len(), 1);
 }
 
 #[tokio::test]
@@ -657,16 +635,12 @@ async fn failure_during_fan_out_rolls_back_the_whole_notice() {
     let app = TestApp::new().await;
     let o = org(&app).await;
     // 이름순으로 중간에 오는 구성원에게 알림을 만들 때 DB가 실패하게 한다.
-    let mut tx = app.state.db.begin_write().await.expect("begin");
-    sqlx::query(&format!(
+    app.execute(&format!(
         "CREATE TRIGGER fail_notify BEFORE INSERT ON notifications
          WHEN NEW.member_id = '{}' BEGIN SELECT RAISE(ABORT, 'boom'); END",
         o.part_member.id
     ))
-    .execute(&mut *tx)
-    .await
-    .expect("trigger");
-    tx.commit().await.expect("commit");
+    .await;
 
     app.post("/admin/notices")
         .bearer(&o.owner)
@@ -677,7 +651,7 @@ async fn failure_during_fan_out_rolls_back_the_whole_notice() {
     assert!(stored_notices(&app).await.is_empty());
     for member in [&o.admin, &o.hq_member, &o.team_member, &o.homeless] {
         assert!(
-            notifications_of(&app, member.id).await.is_empty(),
+            app.notifications_of(member.id).await.is_empty(),
             "{}: 먼저 만든 알림도 롤백",
             member.login_id
         );
@@ -982,7 +956,7 @@ async fn malformed_notice_input_is_rejected_without_side_effects() {
         .expect_error(StatusCode::BAD_REQUEST, "malformed_request");
 
     assert!(stored_notices(&app).await.is_empty());
-    assert!(notifications_of(&app, o.team_member.id).await.is_empty());
+    assert!(app.notifications_of(o.team_member.id).await.is_empty());
 }
 
 #[tokio::test]
@@ -1060,7 +1034,8 @@ async fn malformed_or_unknown_ids_are_not_found() {
 
 /// 그 구성원이 가진 `notice.new` 알림의 (제목, 읽음 여부).
 async fn notice_alerts(app: &TestApp, member: &TestMember) -> Vec<(String, bool)> {
-    let mut alerts: Vec<(String, bool)> = notifications_of(app, member.id)
+    let mut alerts: Vec<(String, bool)> = app
+        .notifications_of(member.id)
         .await
         .into_iter()
         .filter(|n| n.kind == "notice.new")

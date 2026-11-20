@@ -33,10 +33,11 @@ getrandom.workspace = true
 clap.workspace = true
 rust-embed = { version = "8", features = ["interpolate-folder-path"] }
 tempfile = { workspace = true, optional = true }
+sqlx = { workspace = true, optional = true }
 
 [features]
 # 통합 테스트용 도우미(TestApp).
-testing = ["pango-db/testing", "dep:tempfile"]
+testing = ["pango-db/testing", "dep:tempfile", "dep:sqlx"]
 
 [dev-dependencies]
 pango-server = { path = ".", features = ["testing"] }

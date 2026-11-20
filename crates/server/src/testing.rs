@@ -11,7 +11,10 @@ use pango_core::id::{DepartmentId, MemberId};
 use pango_core::member::MemberStatus;
 use pango_core::password::PlainPassword;
 use pango_core::time::{ManualClock, Timestamp};
+use pango_db::audit::{self, AuditEntry, AuditFilter};
+use pango_db::leave;
 use pango_db::members::{self, Member};
+use pango_db::notifications::{self, Notification};
 use pango_db::org::{self, Department};
 use pango_db::testing::TestDb;
 use serde_json::Value;
@@ -45,6 +48,21 @@ pub fn ts(rfc3339: &str) -> Timestamp {
             .expect("rfc3339")
             .with_timezone(&chrono::Utc),
     )
+}
+
+/// 회사 시간대(KST)의 현지 시각 `2026-03-02T09:00:00`을 RFC 3339 표기로.
+pub fn kst(local: &str) -> String {
+    format!("{local}+09:00")
+}
+
+/// KST 현지 시각의 밀리초 타임스탬프(요청 본문의 시각 값).
+pub fn millis(local: &str) -> i64 {
+    ts(&kst(local)).as_millis()
+}
+
+/// 응답 본문의 `id`.
+pub fn id_of(body: &Value) -> String {
+    body["id"].as_str().expect("id").to_owned()
 }
 
 /// 테스트용 서버. 실제 SQLite 파일과 수동 시계를 쓴다.
@@ -375,6 +393,150 @@ impl TestApp {
             .await
             .expect("update"));
         tx.commit().await.expect("commit");
+    }
+
+    /// 구성원의 상태(정지·퇴사 등)를 DB에서 직접 바꾼다.
+    pub async fn set_status(&self, id: MemberId, status: MemberStatus) {
+        self.alter_member(id, |member| member.status = status).await;
+    }
+
+    /// 로그인을 시도하고 상태 코드만 돌려준다(실패를 확인할 때).
+    pub async fn try_login(&self, login_id: &str, password: &str) -> StatusCode {
+        let body = serde_json::json!({
+            "login_id": login_id, "password": password, "token_in_body": true
+        });
+        self.post("/auth/login").json(&body).send().await.status
+    }
+
+    /// 결재 문서 상세(`GET /approval/documents/{id}`, 200이어야 한다).
+    pub async fn document(&self, token: &str, id: &str) -> Value {
+        self.get(&format!("/approval/documents/{id}"))
+            .bearer(token)
+            .send()
+            .await
+            .expect(StatusCode::OK)
+    }
+
+    /// 근태 기록 하나의 변경 이력(`GET /attendance/records/{id}/events`, 200이어야 한다).
+    pub async fn attendance_events(&self, token: &str, record_id: &str) -> Vec<Value> {
+        self.get(&format!("/attendance/records/{record_id}/events"))
+            .bearer(token)
+            .send()
+            .await
+            .expect(StatusCode::OK)
+            .as_array()
+            .expect("events")
+            .clone()
+    }
+
+    /// 월별 근태 조회에서 `date`(`YYYY-MM-DD`) 하루의 항목.
+    pub async fn attendance_day(&self, token: &str, date: &str) -> Value {
+        let records = self
+            .get(&format!("/attendance/records?month={}", &date[..7]))
+            .bearer(token)
+            .send()
+            .await
+            .expect(StatusCode::OK);
+        records["days"]
+            .as_array()
+            .expect("days")
+            .iter()
+            .find(|d| d["date"] == date)
+            .unwrap_or_else(|| panic!("no entry for {date}"))
+            .clone()
+    }
+
+    /// `action`인 감사 로그(최신순, 최대 200줄).
+    pub async fn audit_entries(&self, action: &str) -> Vec<AuditEntry> {
+        let filter = AuditFilter {
+            action: Some(action.to_owned()),
+            ..AuditFilter::default()
+        };
+        let mut conn = self.state.read().await.expect("read");
+        audit::list(&mut conn, &filter, 200).await.expect("audit").0
+    }
+
+    /// `prefix`로 시작하는 감사 로그 동작 이름(최신순, 최대 200줄). 빈 문자열이면 전부.
+    pub async fn audit_actions(&self, prefix: &str) -> Vec<String> {
+        let mut conn = self.state.read().await.expect("read");
+        let (entries, _) = audit::list(&mut conn, &AuditFilter::default(), 200)
+            .await
+            .expect("audit");
+        entries
+            .into_iter()
+            .map(|e| e.action)
+            .filter(|a| a.starts_with(prefix))
+            .collect()
+    }
+
+    /// 구성원이 받은 알림(최신순, 최대 200개).
+    pub async fn notifications_of(&self, member: MemberId) -> Vec<Notification> {
+        let mut conn = self.state.read().await.expect("read");
+        notifications::list(&mut conn, member, false, None, 200)
+            .await
+            .expect("notifications")
+            .0
+    }
+
+    /// 구성원이 받은 `kind` 알림의 수.
+    pub async fn notification_count(&self, member: MemberId, kind: &str) -> usize {
+        let items = self.notifications_of(member).await;
+        items.iter().filter(|n| n.kind == kind).count()
+    }
+
+    /// 구성원 원장의 자동 부여 키(기록순).
+    pub async fn grant_keys(&self, member: MemberId) -> Vec<String> {
+        let mut conn = self.state.read().await.expect("read");
+        leave::list_ledger(&mut conn, member)
+            .await
+            .expect("ledger")
+            .into_iter()
+            .filter_map(|record| record.grant_key)
+            .collect()
+    }
+
+    /// DB를 직접 센다(API를 거치지 않고 실제로 남은 것을 확인한다). `sql`은 정수 하나를 돌려준다.
+    pub async fn count(&self, sql: &str) -> i64 {
+        let mut conn = self.state.read().await.expect("read");
+        sqlx::query_scalar(sql)
+            .fetch_one(&mut *conn)
+            .await
+            .expect("count")
+    }
+
+    /// 테스트 DB에 직접 SQL을 실행한다(장애 주입용 트리거 등).
+    pub async fn execute(&self, sql: &str) {
+        let mut tx = self.state.db.begin_write().await.expect("begin");
+        sqlx::query(sql).execute(&mut *tx).await.expect("execute");
+        tx.commit().await.expect("commit");
+    }
+}
+
+/// 최고 관리자, 관리자, 조직장(개발팀 head), 개발팀 구성원이 있는 회사.
+pub struct OrgWorld {
+    pub app: TestApp,
+    pub owner: String,
+    pub admin: TestMember,
+    pub manager: TestMember,
+    pub member: TestMember,
+    pub dept: DepartmentId,
+}
+
+pub async fn org_world() -> OrgWorld {
+    let app = TestApp::new().await;
+    let owner = app.login_owner().await;
+    let dept = app.add_department("개발팀", None, None).await;
+    let admin = app.add_member("admin", Role::Admin, None).await;
+    let manager = app.add_member("manager", Role::Member, Some(dept)).await;
+    let member = app.add_member("member", Role::Member, Some(dept)).await;
+    app.set_department_head(dept, Some(manager.id)).await;
+    OrgWorld {
+        app,
+        owner,
+        admin,
+        manager,
+        member,
+        dept,
     }
 }
 

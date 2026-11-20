@@ -32,14 +32,6 @@ async fn notify(app: &TestApp, member_id: MemberId, title: &str) -> Notification
     notification.id
 }
 
-async fn stored(app: &TestApp, member_id: MemberId) -> Vec<Notification> {
-    let mut conn = app.state.db.read().await.expect("conn");
-    notifications::list(&mut conn, member_id, false, None, 200)
-        .await
-        .expect("list")
-        .0
-}
-
 fn titles(page: &Value) -> Vec<String> {
     page["items"]
         .as_array()
@@ -120,7 +112,7 @@ async fn marking_read_is_idempotent_and_keeps_first_time() {
             .expect(StatusCode::OK);
         app.advance(Duration::minutes(5));
     }
-    let list = stored(&app, alice.id).await;
+    let list = app.notifications_of(alice.id).await;
     assert_eq!(list[0].read_at, Some(first_time));
     assert_eq!(unread_count(&app, &alice).await, 0);
 }
@@ -147,7 +139,7 @@ async fn cannot_read_or_mark_another_members_notification() {
             .expect_error(StatusCode::NOT_FOUND, "not_found");
     }
     assert_eq!(
-        stored(&app, bob.id).await[0].read_at,
+        app.notifications_of(bob.id).await[0].read_at,
         None,
         "남의 알림은 그대로"
     );
@@ -190,7 +182,7 @@ async fn read_all_affects_only_own_unread() {
     assert_eq!(again["updated"], 0);
     assert_eq!(unread_count(&app, &alice).await, 0);
     assert_eq!(unread_count(&app, &bob).await, 1);
-    assert_eq!(stored(&app, bob.id).await[0].read_at, None);
+    assert_eq!(app.notifications_of(bob.id).await[0].read_at, None);
 }
 
 #[tokio::test]

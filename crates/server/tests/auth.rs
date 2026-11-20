@@ -13,14 +13,6 @@ fn credentials(login_id: &str, password: &str) -> Value {
     json!({ "login_id": login_id, "password": password, "token_in_body": true })
 }
 
-async fn try_login(app: &TestApp, login_id: &str, password: &str) -> StatusCode {
-    app.post("/auth/login")
-        .json(&credentials(login_id, password))
-        .send()
-        .await
-        .status
-}
-
 fn session_cookie(response: &pango_server::testing::TestResponse) -> String {
     let set_cookie = response.headers["set-cookie"]
         .to_str()
@@ -96,10 +88,7 @@ async fn login_returns_token_and_profile() {
 #[tokio::test]
 async fn login_id_is_case_insensitive() {
     let app = TestApp::new().await;
-    assert_eq!(
-        try_login(&app, "OWNER", OWNER_PASSWORD).await,
-        StatusCode::OK
-    );
+    assert_eq!(app.try_login("OWNER", OWNER_PASSWORD).await, StatusCode::OK);
 }
 
 // ── 실패는 구분되지 않는다 ───────────────────────────────────────────────
@@ -169,7 +158,7 @@ async fn account_locks_after_repeated_failures_even_for_correct_password() {
     let app = TestApp::new().await;
     for _ in 0..5 {
         assert_eq!(
-            try_login(&app, OWNER_LOGIN, "wrong-password-123").await,
+            app.try_login(OWNER_LOGIN, "wrong-password-123").await,
             StatusCode::UNAUTHORIZED
         );
     }
@@ -183,19 +172,19 @@ async fn account_locks_after_repeated_failures_even_for_correct_password() {
 
     // 다른 계정은 영향받지 않는다.
     assert_eq!(
-        try_login(&app, "someone-else", "x").await,
+        app.try_login("someone-else", "x").await,
         StatusCode::UNAUTHORIZED
     );
 
     // 창이 끝나기 직전까지는 잠겨 있고, 끝나면 풀린다.
     app.advance(Duration::minutes(15) - Duration::milliseconds(1));
     assert_eq!(
-        try_login(&app, OWNER_LOGIN, OWNER_PASSWORD).await,
+        app.try_login(OWNER_LOGIN, OWNER_PASSWORD).await,
         StatusCode::TOO_MANY_REQUESTS
     );
     app.advance(Duration::milliseconds(1));
     assert_eq!(
-        try_login(&app, OWNER_LOGIN, OWNER_PASSWORD).await,
+        app.try_login(OWNER_LOGIN, OWNER_PASSWORD).await,
         StatusCode::OK
     );
 }
@@ -204,19 +193,19 @@ async fn account_locks_after_repeated_failures_even_for_correct_password() {
 async fn lockout_boundary_is_exactly_the_limit() {
     let app = TestApp::new().await;
     for _ in 0..4 {
-        try_login(&app, OWNER_LOGIN, "wrong-password-123").await;
+        app.try_login(OWNER_LOGIN, "wrong-password-123").await;
     }
     assert_eq!(
-        try_login(&app, OWNER_LOGIN, OWNER_PASSWORD).await,
+        app.try_login(OWNER_LOGIN, OWNER_PASSWORD).await,
         StatusCode::OK,
         "4회 실패까지는 허용"
     );
     // 성공하면 실패 횟수가 초기화된다.
     for _ in 0..4 {
-        try_login(&app, OWNER_LOGIN, "wrong-password-123").await;
+        app.try_login(OWNER_LOGIN, "wrong-password-123").await;
     }
     assert_eq!(
-        try_login(&app, OWNER_LOGIN, OWNER_PASSWORD).await,
+        app.try_login(OWNER_LOGIN, OWNER_PASSWORD).await,
         StatusCode::OK
     );
 }
@@ -227,8 +216,8 @@ async fn unknown_accounts_lock_the_same_way_so_existence_is_not_revealed() {
     let mut known = Vec::new();
     let mut unknown = Vec::new();
     for _ in 0..7 {
-        known.push(try_login(&app, OWNER_LOGIN, "wrong-password-123").await);
-        unknown.push(try_login(&app, "ghost", "wrong-password-123").await);
+        known.push(app.try_login(OWNER_LOGIN, "wrong-password-123").await);
+        unknown.push(app.try_login("ghost", "wrong-password-123").await);
     }
     assert_eq!(known, unknown);
     assert_eq!(known[5], StatusCode::TOO_MANY_REQUESTS);
@@ -679,11 +668,11 @@ async fn changing_password_revokes_other_sessions_and_old_password() {
         .await
         .expect_error(StatusCode::UNAUTHORIZED, "unauthenticated");
     assert_eq!(
-        try_login(&app, OWNER_LOGIN, OWNER_PASSWORD).await,
+        app.try_login(OWNER_LOGIN, OWNER_PASSWORD).await,
         StatusCode::UNAUTHORIZED
     );
     assert_eq!(
-        try_login(&app, OWNER_LOGIN, new_password).await,
+        app.try_login(OWNER_LOGIN, new_password).await,
         StatusCode::OK
     );
 }
@@ -719,7 +708,7 @@ async fn password_change_validations() {
 
     // 실패한 시도는 아무것도 바꾸지 않았다.
     assert_eq!(
-        try_login(&app, OWNER_LOGIN, OWNER_PASSWORD).await,
+        app.try_login(OWNER_LOGIN, OWNER_PASSWORD).await,
         StatusCode::OK
     );
 }
@@ -745,7 +734,7 @@ async fn current_password_guessing_is_rate_limited() {
     // 한도를 넘으면 맞는 비밀번호도 거부된다.
     assert_eq!(guess(OWNER_PASSWORD).await, StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(
-        try_login(&app, OWNER_LOGIN, OWNER_PASSWORD).await,
+        app.try_login(OWNER_LOGIN, OWNER_PASSWORD).await,
         StatusCode::OK,
         "변경되지 않았다"
     );
@@ -760,7 +749,7 @@ async fn parallel_guesses_cannot_exceed_the_lockout_limit() {
     let tasks: Vec<_> = (0..30)
         .map(|_| {
             let app = app.clone();
-            tokio::spawn(async move { try_login(&app, OWNER_LOGIN, "wrong-password-123").await })
+            tokio::spawn(async move { app.try_login(OWNER_LOGIN, "wrong-password-123").await })
         })
         .collect();
     let mut verified = 0;
@@ -848,7 +837,7 @@ async fn initialization_runs_once() {
         .expect("must fail");
     assert_eq!(error.code(), "already_exists");
     assert_eq!(
-        try_login(&app, "second", "valid-password-123").await,
+        app.try_login("second", "valid-password-123").await,
         StatusCode::UNAUTHORIZED
     );
 }
@@ -895,7 +884,7 @@ async fn initialization_validates_input_without_side_effects() {
 async fn uninitialized_server_rejects_logins() {
     let app = TestApp::uninitialized(Config::for_tests()).await;
     assert_eq!(
-        try_login(&app, OWNER_LOGIN, OWNER_PASSWORD).await,
+        app.try_login(OWNER_LOGIN, OWNER_PASSWORD).await,
         StatusCode::UNAUTHORIZED
     );
 }
