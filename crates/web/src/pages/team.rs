@@ -221,7 +221,7 @@ mod logic {
     use pango_core::id::MemberId;
 
     use crate::api::ApiResult;
-    use crate::pages::attendance::logic::{RecordCells, Tile, EMPTY};
+    use crate::pages::attendance::logic::{clock_span, RecordCells, Tile};
     use crate::ui::Tone;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -289,11 +289,7 @@ mod logic {
 
     /// 구성원 줄의 보조 정보: 부서(있으면), 출퇴근 시각.
     pub fn member_meta(department: Option<&str>, cells: &RecordCells) -> Vec<String> {
-        let times = if cells.clock_in == EMPTY {
-            "출근 기록 없음".to_owned()
-        } else {
-            format!("{} – {}", cells.clock_in, cells.clock_out)
-        };
+        let times = clock_span(cells).unwrap_or_else(|| "출근 기록 없음".to_owned());
         department
             .map(str::trim)
             .filter(|name| !name.is_empty())
@@ -362,6 +358,7 @@ mod logic {
         use super::*;
         use crate::api::ApiError;
         use crate::pages::attendance::logic::fixtures::{date, evaluation, record};
+        use crate::pages::attendance::logic::EMPTY;
         use pango_api::attendance::TeamAttendanceEntry;
 
         fn entry(status: DayStatus, clocked: bool) -> TeamAttendanceEntry {
@@ -463,7 +460,7 @@ mod logic {
             );
             assert_eq!(
                 member_meta(Some("개발팀"), &cells("09:02", EMPTY)),
-                vec!["개발팀", "09:02 – -"]
+                vec!["개발팀", "09:02 출근"]
             );
             assert_eq!(
                 member_meta(Some(" "), &cells("09:02", "18:10")),

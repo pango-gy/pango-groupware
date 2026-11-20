@@ -126,6 +126,10 @@ pub struct AuditEntryDto {
     pub action: String,
     pub target_type: String,
     pub target_id: Option<String>,
+    /// 대상을 사람이 알아볼 이름(구성원 이름, 부서명, 공지 제목, 문서 제목 등).
+    /// 이름을 정할 수 없는 대상(로그인 기기 등)이나 지워진 대상은 `None`.
+    #[serde(default)]
+    pub target_name: Option<String>,
     pub detail: Option<serde_json::Value>,
     pub ip: Option<String>,
 }

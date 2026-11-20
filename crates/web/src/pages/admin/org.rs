@@ -346,7 +346,7 @@ pub fn AdminOrg() -> Element {
                                                 "수정"
                                             }
                                             button {
-                                                class: "btn btn-danger btn-sm",
+                                                class: "btn btn-grey btn-sm",
                                                 r#type: "button",
                                                 "aria-label": "{row.department.name} 삭제",
                                                 onclick: {
@@ -390,7 +390,7 @@ pub fn AdminOrg() -> Element {
                                                 "수정"
                                             }
                                             button {
-                                                class: "btn btn-danger btn-sm",
+                                                class: "btn btn-grey btn-sm",
                                                 r#type: "button",
                                                 "aria-label": "{position.name} 삭제",
                                                 onclick: {

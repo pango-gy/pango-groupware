@@ -287,10 +287,11 @@ pub mod logic {
         }
     }
 
-    /// 대상의 종류와 (있으면) ID. 화면은 둘을 간격을 둔 별도 요소로 그린다.
+    /// 대상의 종류와 (있으면) 이름. 내부 ID는 사람이 읽을 정보가 아니므로 보여 주지 않는다
+    /// (필요하면 상세 보기의 원본에 있다). 화면은 둘을 간격을 둔 별도 요소로 그린다.
     pub fn target_parts(entry: &AuditEntryDto) -> Vec<String> {
         std::iter::once(text::audit_target_label(&entry.target_type))
-            .chain(entry.target_id.clone())
+            .chain(entry.target_name.clone())
             .collect()
     }
 
@@ -379,6 +380,7 @@ pub mod logic {
                 action: "notice.create".into(),
                 target_type: "notice".into(),
                 target_id: Some("abc".into()),
+                target_name: None,
                 detail,
                 ip: None,
             }
@@ -413,7 +415,10 @@ pub mod logic {
             assert_eq!(actor_text(&e), "알 수 없는 구성원");
             e.actor_name = Some("홍길동".into());
             assert_eq!(actor_text(&e), "홍길동");
-            assert_eq!(target_parts(&e), vec!["공지", "abc"]);
+            assert_eq!(target_parts(&e), vec!["공지"], "내부 ID는 보여 주지 않는다");
+            e.target_name = Some("워크숍 안내".into());
+            assert_eq!(target_parts(&e), vec!["공지", "워크숍 안내"]);
+            e.target_name = None;
             e.target_id = None;
             e.target_type = "custom".into();
             assert_eq!(target_parts(&e), vec!["custom"]);

@@ -367,7 +367,8 @@ pub fn MonthAttendance(
                                             Badge { tone: row.cells.tone, "{row.cells.status}" }
                                         }
                                         if own {
-                                            td { class: "num",
+                                            // 모든 줄에 버튼을 늘어놓지 않고, 줄에 마우스를 올리거나 초점이 들어올 때만 보인다.
+                                            td { class: "num row-hover-action",
                                                 if logic::can_request_correction(row.date, current_day) {
                                                     Button {
                                                         kind: ButtonKind::Grey,
@@ -873,6 +874,17 @@ pub(crate) mod logic {
         }
     }
 
+    /// 출퇴근 시각을 한 줄로: "09:02 – 18:10", 퇴근 전이면 "09:02 출근", 기록이 없으면 `None`.
+    pub fn clock_span(cells: &RecordCells) -> Option<String> {
+        if cells.clock_in == EMPTY {
+            None
+        } else if cells.clock_out == EMPTY {
+            Some(format!("{} 출근", cells.clock_in))
+        } else {
+            Some(format!("{} – {}", cells.clock_in, cells.clock_out))
+        }
+    }
+
     /// 하루 막대를 글로 옮긴 한 줄(화면 낭독기용).
     pub fn bar_summary(hours: &str, cells: &RecordCells) -> String {
         if cells.clock_in == EMPTY {
@@ -1009,9 +1021,7 @@ pub(crate) mod logic {
     /// 모바일 날짜 줄의 보조 정보: (공휴일 이름), (기록이 있으면) 출퇴근 시각, (퇴근했으면) 근무시간.
     pub fn day_meta(row: &DayRow) -> Vec<String> {
         let mut items: Vec<String> = row.note.iter().cloned().collect();
-        if row.cells.clock_in != EMPTY {
-            items.push(format!("{} – {}", row.cells.clock_in, row.cells.clock_out));
-        }
+        items.extend(clock_span(&row.cells));
         if row.cells.worked != EMPTY {
             items.push(row.cells.worked.clone());
         }

@@ -268,3 +268,41 @@ async fn entries_never_contain_passwords_or_tokens() {
         );
     }
 }
+
+#[tokio::test]
+async fn targets_are_shown_by_name_not_internal_id() {
+    let app = TestApp::new().await;
+    let owner = app.login_owner().await;
+    let department = app
+        .post("/admin/departments")
+        .bearer(&owner)
+        .json(&json!({ "name": "개발팀" }))
+        .send()
+        .await
+        .expect(StatusCode::CREATED);
+    holiday_at(&app, &owner, "2026-05-05").await;
+    let member = app.add_member("hong", Role::Member, None).await;
+    app.post(&format!("/admin/members/{}/reset-password", member.id))
+        .bearer(&owner)
+        .json(&json!({}))
+        .send()
+        .await
+        .expect(StatusCode::OK);
+
+    let page = audit_page(&app, &owner, "").await;
+    let name_of = |action: &str| {
+        page["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .find(|e| e["action"] == action)
+            .unwrap_or_else(|| panic!("{action} missing"))["target_name"]
+            .clone()
+    };
+    assert_eq!(name_of("department.create"), "개발팀");
+    assert_eq!(name_of("holiday.upsert"), "2026-05-05");
+    assert_eq!(name_of("member.password_reset"), "hong 님");
+    // 이름이 없는 대상(로그인 기기)은 비어 있다.
+    assert_eq!(name_of("auth.login"), Value::Null);
+    assert!(department["id"].is_string());
+}

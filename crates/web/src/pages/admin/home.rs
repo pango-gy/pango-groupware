@@ -234,7 +234,7 @@ mod logic {
             },
             PendingItem {
                 tile: Tile::count("진행 중 결재", pending.approval_documents, "건", Tone::Info),
-                hint: "휴가·정정 문서 포함",
+                hint: "휴가·정정 포함",
                 to: Route::AdminApprovalForms {},
                 tab: None,
             },

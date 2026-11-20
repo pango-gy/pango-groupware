@@ -424,7 +424,7 @@ fn HolidaysCard() -> Element {
                                         "이름 변경"
                                     }
                                     Button {
-                                        kind: ButtonKind::Danger,
+                                        kind: ButtonKind::Grey,
                                         small: true,
                                         onclick: {
                                             let holiday = holiday.clone();
