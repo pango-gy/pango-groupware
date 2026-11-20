@@ -1,6 +1,6 @@
 //! 표시용 변환(시각, 날짜, 시간 길이). 순수 함수만 둔다.
 
-use chrono::{Datelike, NaiveDate, Timelike, Weekday};
+use chrono::{Datelike, LocalResult, NaiveDate, NaiveDateTime, TimeZone, Timelike, Utc, Weekday};
 use chrono_tz::Tz;
 use pango_core::time::Timestamp;
 
@@ -78,6 +78,64 @@ pub fn leave_days(quarters: i32) -> String {
     )
 }
 
+/// 회사 시간대의 달력 날짜.
+pub fn local_date(at: Timestamp, tz: Tz) -> NaiveDate {
+    at.to_utc().with_timezone(&tz).date_naive()
+}
+
+/// `since`부터 `now`까지 지난 분. 시계가 어긋나 음수가 되면 0.
+pub fn elapsed_minutes(since: Timestamp, now: Timestamp) -> u32 {
+    u32::try_from(now.since(since).num_minutes().max(0)).unwrap_or(u32::MAX)
+}
+
+/// `<input type="datetime-local">` 값(`YYYY-MM-DDTHH:MM`, 회사 시간대 벽시계).
+pub fn local_input(at: Timestamp, tz: Tz) -> String {
+    at.to_utc()
+        .with_timezone(&tz)
+        .format("%Y-%m-%dT%H:%M")
+        .to_string()
+}
+
+/// `datetime-local` 값을 해석하지 못한 이유.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalInputError {
+    Empty,
+    Invalid,
+    /// 서머타임 전환으로 회사 시간대에 존재하지 않는 시각.
+    Nonexistent,
+}
+
+/// [`local_input`]의 역. 회사 시간대의 벽시계 시각으로 해석한다.
+///
+/// 서머타임으로 두 번 오는 시각은 먼저 오는 쪽(서버 `instant_at`과 같은 규칙)을 고른다.
+/// 존재하지 않는 시각은 서버처럼 뒤로 밀지 않고 거부한다. 근태 기록은 감사 대상이라
+/// 입력한 값과 다른 시각이 조용히 저장되면 안 된다.
+pub fn parse_local_input(raw: &str, tz: Tz) -> Result<Timestamp, LocalInputError> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err(LocalInputError::Empty);
+    }
+    let bytes = raw.as_bytes();
+    let shape_ok = bytes.len() == 16
+        && bytes.iter().enumerate().all(|(index, byte)| match index {
+            4 | 7 => *byte == b'-',
+            10 => *byte == b'T',
+            13 => *byte == b':',
+            _ => byte.is_ascii_digit(),
+        });
+    if !shape_ok {
+        return Err(LocalInputError::Invalid);
+    }
+    let naive = NaiveDateTime::parse_from_str(raw, "%Y-%m-%dT%H:%M")
+        .map_err(|_| LocalInputError::Invalid)?;
+    match tz.from_local_datetime(&naive) {
+        LocalResult::Single(at) | LocalResult::Ambiguous(at, _) => {
+            Ok(Timestamp::from_utc(at.with_timezone(&Utc)))
+        }
+        LocalResult::None => Err(LocalInputError::Nonexistent),
+    }
+}
+
 /// 이름의 첫 글자(아바타용).
 pub fn initial(name: &str) -> String {
     name.trim()
@@ -135,6 +193,87 @@ mod tests {
         assert_eq!(date_md("2026-03-02".parse().expect("date")), "3월 2일 (월)");
         assert_eq!(leave_days(6), "1.5일");
         assert_eq!(leave_days(-1), "-0.25일");
+    }
+
+    #[test]
+    fn local_input_round_trips_in_company_zone() {
+        let seoul = zone("Asia/Seoul");
+        let at = ts("2026-03-02T00:05:00Z");
+        assert_eq!(local_input(at, seoul), "2026-03-02T09:05");
+        assert_eq!(parse_local_input("2026-03-02T09:05", seoul), Ok(at));
+        assert_eq!(parse_local_input(" 2026-03-02T09:05 ", seoul), Ok(at));
+        // 초는 버린다(입력은 분 단위).
+        assert_eq!(
+            local_input(ts("2026-03-01T15:00:59Z"), seoul),
+            "2026-03-02T00:00"
+        );
+        assert_eq!(
+            local_date(ts("2026-03-01T15:00:00Z"), seoul),
+            d("2026-03-02")
+        );
+    }
+
+    fn d(value: &str) -> NaiveDate {
+        value.parse().expect("date")
+    }
+
+    #[test]
+    fn local_input_handles_dst_gap_and_overlap() {
+        let new_york = zone("America/New_York");
+        // 2026-03-08 02:00 → 03:00 (EST→EDT): 02:30은 없다.
+        assert_eq!(
+            parse_local_input("2026-03-08T02:30", new_york),
+            Err(LocalInputError::Nonexistent)
+        );
+        assert_eq!(
+            parse_local_input("2026-03-08T03:00", new_york),
+            Ok(ts("2026-03-08T07:00:00Z"))
+        );
+        // 2026-11-01 01:30은 두 번 온다. 먼저 오는 EDT(UTC-4)를 고른다.
+        assert_eq!(
+            parse_local_input("2026-11-01T01:30", new_york),
+            Ok(ts("2026-11-01T05:30:00Z"))
+        );
+        // 두 번째(EST) 01:30도 표시는 같은 벽시계 값이다.
+        assert_eq!(
+            local_input(ts("2026-11-01T06:30:00Z"), new_york),
+            "2026-11-01T01:30"
+        );
+    }
+
+    #[test]
+    fn local_input_rejects_malformed_values() {
+        let seoul = zone("Asia/Seoul");
+        assert_eq!(parse_local_input("", seoul), Err(LocalInputError::Empty));
+        assert_eq!(parse_local_input("   ", seoul), Err(LocalInputError::Empty));
+        for raw in [
+            "2026-3-2T09:05",
+            "2026-03-02 09:05",
+            "2026-03-02T9:05",
+            "2026-03-02T09:05:00",
+            "2026-03-02T09:05Z",
+            "2026-02-30T09:00",
+            "2026-13-01T09:00",
+            "2026-03-02T24:00",
+            "2026-03-02T23:60",
+            "+2026-03-02T09:0",
+            "２０２６-03-02T09:05",
+            "abcd-ef-ghTij:kl",
+        ] {
+            assert_eq!(
+                parse_local_input(raw, seoul),
+                Err(LocalInputError::Invalid),
+                "{raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn elapsed_minutes_never_goes_negative() {
+        let start = ts("2026-03-02T00:00:00Z");
+        assert_eq!(elapsed_minutes(start, ts("2026-03-02T00:00:59Z")), 0);
+        assert_eq!(elapsed_minutes(start, ts("2026-03-02T03:12:00Z")), 192);
+        assert_eq!(elapsed_minutes(start, ts("2026-03-01T23:00:00Z")), 0);
     }
 
     #[test]

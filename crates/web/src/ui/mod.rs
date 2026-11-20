@@ -484,3 +484,20 @@ pub fn MonthCalendar(
         }
     }
 }
+
+/// 목록 끝의 "더 보기". 다음 페이지가 없으면 아무것도 그리지 않는다.
+#[component]
+pub fn LoadMore(
+    has_more: bool,
+    #[props(default)] busy: bool,
+    onclick: EventHandler<MouseEvent>,
+) -> Element {
+    if !has_more {
+        return rsx! {};
+    }
+    rsx! {
+        div { class: "load-more",
+            Button { kind: ButtonKind::Secondary, busy, onclick: move |event| onclick.call(event), "더 보기" }
+        }
+    }
+}
