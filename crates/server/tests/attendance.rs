@@ -2049,3 +2049,77 @@ async fn admin_cannot_create_or_edit_their_own_record_but_the_owner_can() {
     assert!(owner_self.contains(&"attendance.create"));
     assert!(owner_self.contains(&"attendance.edit"));
 }
+
+// ── 내보내기와 쓰기 연결 ─────────────────────────────────────────────────
+
+/// 내보내기의 본문은 읽기 전용 연결에서 만든다(쓰기 연결이 필요한 것은 감사 로그 한 줄뿐).
+/// 하나뿐인 쓰기 연결을 다른 작업이 쥐고 있어도 본문 계산은 끝나고, HTTP 응답과 내용이 같다.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn csv_export_body_is_computed_on_a_read_only_connection() {
+    let app = TestApp::new().await;
+    let org = org(&app).await;
+    for member in [&org.alice, &org.bob, &org.carol] {
+        clock_in(&app, &member.token).await.expect(StatusCode::OK);
+    }
+    app.set_time(&kst("2026-03-02T18:00:00"));
+    clock_out(&app, &org.alice.token)
+        .await
+        .expect(StatusCode::OK);
+    let range = DateRange::new(
+        "2026-03-01".parse().expect("d"),
+        "2026-03-31".parse().expect("d"),
+    )
+    .expect("range");
+
+    let held = app.state.db.begin_write().await.expect("begin");
+    let mut read_only = app.state.db.read().await.expect("read");
+    let exported = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        pango_server::service::attendance::export_body_tx(&mut read_only, range, app.state.now()),
+    )
+    .await
+    .expect("the body must not need the write connection")
+    .expect("export");
+    drop(read_only);
+    drop(held);
+    assert_eq!(exported.rows, 3);
+
+    let response = app
+        .get("/admin/attendance/export.csv?from=2026-03-01&to=2026-03-31")
+        .bearer(&org.admin.token)
+        .send()
+        .await;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(response.body.as_str().expect("csv"), exported.file.body);
+    assert_eq!(
+        exported.file.filename,
+        "attendance-2026-03-01-2026-03-31.csv"
+    );
+}
+
+/// 감사 로그를 남기지 못하면 내보낸 내용을 돌려주지 않는다.
+#[tokio::test]
+async fn csv_export_fails_when_it_cannot_be_audited() {
+    let app = TestApp::new().await;
+    let org = org(&app).await;
+    clock_in(&app, &org.alice.token)
+        .await
+        .expect(StatusCode::OK);
+    execute(
+        &app,
+        "CREATE TRIGGER fail_export_audit BEFORE INSERT ON audit_log
+         WHEN NEW.action = 'attendance.export'
+         BEGIN SELECT RAISE(ABORT, 'injected failure'); END",
+    )
+    .await;
+    let response = app
+        .get("/admin/attendance/export.csv?from=2026-03-01&to=2026-03-31")
+        .bearer(&org.admin.token)
+        .send()
+        .await;
+    assert_eq!(response.status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(!response.body.to_string().contains("alice"));
+    assert!(!audit_actions(&app)
+        .await
+        .contains(&"attendance.export".to_owned()));
+}

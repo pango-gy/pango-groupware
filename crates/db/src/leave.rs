@@ -557,6 +557,33 @@ pub async fn list_ledger(conn: &mut Conn, member_id: MemberId) -> DbResult<Vec<L
     .collect()
 }
 
+/// 한 번에 묶어 조회하는 구성원 수. SQLite의 바인드 변수 한도보다 충분히 작게 둔다.
+const MEMBER_CHUNK: usize = 500;
+
+/// 여러 구성원의 원장을 구성원 수와 무관한 횟수의 조회로 읽는다(구성원별로는 기록 순서).
+/// 전원의 잔여를 한꺼번에 계산할 때 구성원마다 조회하지 않으려고 둔다.
+pub async fn list_ledger_for_members(
+    conn: &mut Conn,
+    member_ids: &[MemberId],
+) -> DbResult<Vec<LedgerRecord>> {
+    let mut records = Vec::new();
+    for chunk in member_ids.chunks(MEMBER_CHUNK) {
+        let placeholders = vec!["?"; chunk.len()].join(", ");
+        let sql = format!(
+            "SELECT {LEDGER_COLUMNS} FROM leave_ledger
+             WHERE member_id IN ({placeholders}) ORDER BY rowid"
+        );
+        let mut query = sqlx::query_as::<_, LedgerRow>(&sql);
+        for id in chunk {
+            query = query.bind(id.to_string());
+        }
+        for row in query.fetch_all(&mut *conn).await? {
+            records.push(LedgerRecord::try_from(row)?);
+        }
+    }
+    Ok(records)
+}
+
 /// 신청에 딸린 사용(예약) 기록. 차감하지 않는 종류의 신청에는 없다.
 pub async fn find_use(
     conn: &mut Conn,

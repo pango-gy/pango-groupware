@@ -7,7 +7,6 @@
 //! 문서가 되고, 문서가 종료될 때 결재가 [`on_correction_document_closed_tx`]를 불러 기록을
 //! 고치거나(최종 승인) 요청을 끝낸다(반려·회수). 휴가 신청과 같은 구조다.
 
-use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 
 use chrono::{Days, NaiveDate};
@@ -195,16 +194,25 @@ impl Evaluator {
     }
 }
 
-/// 여러 구성원의 휴가를 한 번씩만 읽어 둔다.
+/// 여러 구성원의 휴가를 구성원 수와 무관한 횟수의 조회로 읽어 둔다.
+///
+/// 기간 안의 승인된 휴가를 전부 한 번에 읽어 `member_ids`의 것만 남긴다. 구성원마다
+/// [`leave_units_by_date`]를 부른 것과 결과가 같다(같은 규칙을 한 번에 적용할 뿐이다).
 async fn leaves_for(
     conn: &mut Conn,
     member_ids: Vec<MemberId>,
     range: DateRange,
 ) -> ServiceResult<HashMap<MemberId, BTreeMap<NaiveDate, LeaveUnit>>> {
-    let mut leaves = HashMap::new();
-    for member_id in member_ids {
-        if let Entry::Vacant(slot) = leaves.entry(member_id) {
-            slot.insert(leave_units_by_date(conn, member_id, range).await?);
+    let mut leaves: HashMap<MemberId, BTreeMap<NaiveDate, LeaveUnit>> = member_ids
+        .into_iter()
+        .map(|member_id| (member_id, BTreeMap::new()))
+        .collect();
+    if leaves.is_empty() {
+        return Ok(leaves);
+    }
+    for ((member_id, date), unit) in super::leave::units_in_range(conn, range).await? {
+        if let Some(days) = leaves.get_mut(&member_id) {
+            days.insert(date, unit);
         }
     }
     Ok(leaves)
@@ -1291,9 +1299,57 @@ fn csv_line(
     );
 }
 
-/// 기간의 모든 기록을 CSV로 내보낸다. 엑셀이 한글을 깨뜨리지 않도록 UTF-8 BOM을 붙인다.
+/// 내보내기의 읽기 단계가 만든 것: 파일과 그 안의 기록 수.
+pub struct ExportBody {
+    pub file: CsvFile,
+    pub rows: usize,
+}
+
+/// 기간의 모든 기록으로 CSV 본문을 만든다. **읽기만** 하므로 읽기 전용 연결에서 부른다.
+/// 엑셀이 한글을 깨뜨리지 않도록 UTF-8 BOM을 붙인다.
 ///
-/// 개인 기록을 대량으로 꺼내는 동작이므로 감사 로그를 남긴다(그래서 읽기지만 쓰기 트랜잭션이다).
+/// 조회 횟수는 기록·구성원 수와 무관하다: 기록, 휴가, 기록 주인, 설정, 달력을 한 번씩 읽는다.
+pub async fn export_body_tx(
+    conn: &mut Conn,
+    range: DateRange,
+    now: Timestamp,
+) -> ServiceResult<ExportBody> {
+    let filter = RecordFilter {
+        range,
+        member_id: None,
+        departments: None,
+    };
+    let rows = attendance::list_for_export(conn, &filter).await?;
+    let leaves = leaves_for(conn, member_ids_of(&rows), range).await?;
+    let owners = record_owners(conn, member_ids_of(&rows)).await?;
+    let company = Company::load(conn).await?;
+    let evaluator = Evaluator::new(conn, company, range, now).await?;
+    let mut body = String::from("\u{feff}");
+    push_csv_row(&mut body, CSV_HEADER);
+    for row in &rows {
+        let leave = leave_on(&leaves, row.record.member_id, row.record.work_date);
+        let owner = owner_of(&owners, row.record.member_id)?;
+        csv_line(&mut body, &evaluator, owner, row, leave);
+    }
+    let (from, to) = (
+        range.start().format("%Y-%m-%d"),
+        range.end().format("%Y-%m-%d"),
+    );
+    Ok(ExportBody {
+        file: CsvFile {
+            filename: format!("attendance-{from}-{to}.csv"),
+            body,
+        },
+        rows: rows.len(),
+    })
+}
+
+/// 기간의 모든 기록을 CSV로 내보낸다.
+///
+/// 본문은 읽기 연결의 한 시점 데이터로 만든다([`export_body_tx`]). 하나뿐인 쓰기 연결을 쥔 채
+/// 만들면 큰 내보내기 동안 모든 쓰기(출근 포함)가 멈추기 때문이다. 쓰기 트랜잭션은 감사 로그
+/// 한 줄을 남길 때만 연다. 개인 기록을 대량으로 꺼내는 동작이므로, 감사 로그를 남기지 못하면
+/// 만든 본문도 돌려주지 않는다.
 pub async fn export_csv(
     state: &AppState,
     ctx: &AuthContext,
@@ -1302,29 +1358,13 @@ pub async fn export_csv(
     authz::require_admin(&ctx.actor)?;
     let range = parse_range(&query.from, &query.to)?;
     let now = state.now();
+    let exported = {
+        let mut snapshot = state.read_snapshot().await?;
+        export_body_tx(&mut snapshot, range, now).await?
+    };
     state
         .write(async |conn: &mut Conn| {
-            let filter = RecordFilter {
-                range,
-                member_id: None,
-                departments: None,
-            };
-            let rows = attendance::list_for_export(conn, &filter).await?;
-            let leaves = leaves_for(conn, member_ids_of(&rows), range).await?;
-            let owners = record_owners(conn, member_ids_of(&rows)).await?;
-            let company = Company::load(conn).await?;
-            let evaluator = Evaluator::new(conn, company, range, now).await?;
-            let mut body = String::from("\u{feff}");
-            push_csv_row(&mut body, CSV_HEADER);
-            for row in &rows {
-                let leave = leave_on(&leaves, row.record.member_id, row.record.work_date);
-                let owner = owner_of(&owners, row.record.member_id)?;
-                csv_line(&mut body, &evaluator, owner, row, leave);
-            }
-            let (from, to) = (
-                range.start().format("%Y-%m-%d"),
-                range.end().format("%Y-%m-%d"),
-            );
+            require_current_admin(conn, ctx).await?;
             audit(
                 conn,
                 now,
@@ -1333,18 +1373,15 @@ pub async fn export_csv(
                     target_type: "attendance_record",
                     target_id: None,
                     detail: Some(serde_json::json!({
-                        "from": from.to_string(),
-                        "to": to.to_string(),
-                        "rows": rows.len(),
+                        "from": range.start().format("%Y-%m-%d").to_string(),
+                        "to": range.end().format("%Y-%m-%d").to_string(),
+                        "rows": exported.rows,
                     })),
                     ctx: Some(ctx),
                 },
             )
-            .await?;
-            Ok(CsvFile {
-                filename: format!("attendance-{from}-{to}.csv"),
-                body,
-            })
+            .await
         })
-        .await
+        .await?;
+    Ok(exported.file)
 }

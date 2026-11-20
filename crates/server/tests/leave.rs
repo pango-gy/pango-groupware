@@ -2571,3 +2571,77 @@ async fn request_crossing_an_anniversary_passes_when_both_sides_are_covered() {
     .expect(StatusCode::CREATED);
     assert_ledger_invariants(&w.app, &lee).await;
 }
+
+// ── 긴 읽기와 쓰기 연결 ───────────────────────────────────────────────────
+
+async fn admin_balances(app: &TestApp, token: &str) -> Value {
+    app.get("/admin/leave/balances")
+        .bearer(token)
+        .send()
+        .await
+        .expect(StatusCode::OK)
+}
+
+/// 전원 잔여 조회는 읽기 연결에서 계산한다. 하나뿐인 쓰기 연결을 다른 작업이 쥐고 있어도
+/// (넣을 부여가 없는 한) 기다리지 않고, 반대로 이 조회가 다른 쓰기를 세워 두지도 않는다.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn admin_balances_reads_without_the_write_connection() {
+    let w = world().await;
+    requested(&w, &w.kim, "2026-03-10", "2026-03-11").await;
+    // 오늘까지의 부여는 모두 들어가 있다.
+    let expected = admin_balances(&w.app, &w.owner).await;
+    assert_eq!(expected.as_array().expect("rows").len(), 3);
+    let ledger_rows = stored_ledger(&w.app, w.kim.id).await.len();
+
+    let held = w.app.state.db.begin_write().await.expect("begin");
+    let waited = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        admin_balances(&w.app, &w.owner),
+    )
+    .await
+    .expect("balances must not wait for the write connection");
+    assert_eq!(waited, expected);
+    drop(held);
+    assert_eq!(stored_ledger(&w.app, w.kim.id).await.len(), ledger_rows);
+}
+
+/// 넣어야 할 부여가 생긴 날에는 그 구성원의 부여만 넣고, 결과는 본인 조회와 같다.
+#[tokio::test]
+async fn admin_balances_still_applies_grants_that_became_due() {
+    let w = world().await;
+    let before = admin_balances(&w.app, &w.owner).await;
+    assert_eq!(audit_count(&w.app, "leave.accrual_run").await, 0);
+    // 1년 뒤: kim·lead의 3주년 연차(16일)와 대표의 1주년 연차가 생긴다.
+    w.app.set_time("2027-03-02T00:00:00Z");
+    let owner = w.app.login_owner().await;
+    let after = admin_balances(&w.app, &owner).await;
+    let remaining_of = |rows: &Value, name: &str| -> i64 {
+        rows.as_array()
+            .expect("rows")
+            .iter()
+            .find(|row| row["member_name"] == name)
+            .expect("row")["balance"]["remaining"]
+            .as_i64()
+            .expect("remaining")
+    };
+    assert_eq!(remaining_of(&before, "kim 님"), FULL);
+    assert_eq!(remaining_of(&after, "kim 님"), 64);
+    assert_eq!(remaining_of(&after, "lead 님"), 64);
+    assert_eq!(remaining_of(&after, "대표"), 60);
+    // 원장에 실제로 들어갔고, 본인이 보는 잔여와 같다.
+    let kim = w.app.login("kim", MEMBER_PASSWORD).await;
+    assert_eq!(
+        balance_of(&w.app, &kim).await.balance.remaining.quarters(),
+        64
+    );
+    let keys: Vec<String> = stored_ledger(&w.app, w.kim.id)
+        .await
+        .into_iter()
+        .filter_map(|record| record.grant_key)
+        .collect();
+    assert_eq!(keys.len(), 14);
+    assert!(keys.contains(&"annual:3".to_owned()));
+    // 다시 조회해도 같은 답이고 더 들어가지 않는다.
+    assert_eq!(admin_balances(&w.app, &owner).await, after);
+    assert_eq!(stored_ledger(&w.app, w.kim.id).await.len(), 14);
+}

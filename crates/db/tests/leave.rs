@@ -718,3 +718,110 @@ async fn ledger_is_append_only_and_checks_each_kind() {
         1
     );
 }
+
+// ── 여러 구성원의 원장·읽기 스냅숏 ───────────────────────────────────────
+
+#[tokio::test]
+async fn ledger_for_members_matches_per_member_reads() {
+    let f = fixture().await;
+    let third = add_member(&f.test, "lee").await;
+    let adjust = |on: &str| LedgerEntryKind::Adjust {
+        effective_on: date(on),
+    };
+    let mut tx = f.test.begin_write().await.expect("begin");
+    // 구성원별 줄이 서로 섞여 들어간다.
+    for (member, key, on) in [
+        (f.member, "annual:1", "2026-03-02"),
+        (f.approver, "annual:1", "2026-03-03"),
+        (f.member, "annual:2", "2026-03-04"),
+    ] {
+        leave::insert_ledger(&mut tx, &annual_grant(member, key))
+            .await
+            .expect("grant");
+        leave::insert_ledger(&mut tx, &ledger_row(member, adjust(on), 4))
+            .await
+            .expect("adjust");
+    }
+    tx.commit().await.expect("commit");
+
+    let mut conn = f.test.read().await.expect("read");
+    let of = |records: &[LedgerRecord], member: MemberId| -> Vec<LedgerRecord> {
+        records
+            .iter()
+            .filter(|record| record.member_id == member)
+            .cloned()
+            .collect()
+    };
+    let both = leave::list_ledger_for_members(&mut conn, &[f.member, f.approver, third])
+        .await
+        .expect("batch");
+    assert_eq!(both.len(), 6);
+    for member in [f.member, f.approver, third] {
+        assert_eq!(
+            of(&both, member),
+            leave::list_ledger(&mut conn, member).await.expect("one"),
+            "구성원별로는 기록 순서 그대로"
+        );
+    }
+    // 고른 구성원의 것만, 없는 구성원·빈 목록은 빈 결과.
+    let only = leave::list_ledger_for_members(&mut conn, &[f.approver])
+        .await
+        .expect("batch");
+    assert_eq!(only, of(&both, f.approver));
+    for ids in [vec![], vec![MemberId::new()]] {
+        assert!(leave::list_ledger_for_members(&mut conn, &ids)
+            .await
+            .expect("batch")
+            .is_empty());
+    }
+    // 묶음 크기를 넘는 목록도 한 번씩만 돌려준다.
+    let mut many: Vec<MemberId> = (0..1_200).map(|_| MemberId::new()).collect();
+    many.insert(7, f.member);
+    many.push(f.approver);
+    let chunked = leave::list_ledger_for_members(&mut conn, &many)
+        .await
+        .expect("batch");
+    assert_eq!(chunked.len(), 6);
+    assert_eq!(of(&chunked, f.member), of(&both, f.member));
+}
+
+/// 읽기 스냅숏은 시작한 시점의 데이터를 끝까지 본다. 쓰기 연결을 쓰지 않으므로 그동안 다른
+/// 쓰기가 커밋될 수 있고, 그 변경은 스냅숏에 섞이지 않는다.
+#[tokio::test]
+async fn read_snapshot_is_stable_and_does_not_block_writers() {
+    let f = fixture().await;
+    let mut snapshot = f.test.read_snapshot().await.expect("snapshot");
+    assert!(leave::list_ledger(&mut snapshot, f.member)
+        .await
+        .expect("ledger")
+        .is_empty());
+
+    let mut tx = f.test.begin_write().await.expect("writer is free");
+    leave::insert_ledger(&mut tx, &annual_grant(f.member, "annual:1"))
+        .await
+        .expect("grant");
+    tx.commit().await.expect("commit");
+
+    assert!(
+        leave::list_ledger(&mut snapshot, f.member)
+            .await
+            .expect("ledger")
+            .is_empty(),
+        "스냅숏은 그사이의 커밋을 보지 않는다"
+    );
+    // 읽기 전용이다.
+    assert!(
+        leave::insert_ledger(&mut snapshot, &annual_grant(f.member, "annual:2"))
+            .await
+            .is_err()
+    );
+    drop(snapshot);
+    let mut conn = f.test.read().await.expect("read");
+    assert_eq!(
+        leave::list_ledger(&mut conn, f.member)
+            .await
+            .expect("ledger")
+            .len(),
+        1
+    );
+}

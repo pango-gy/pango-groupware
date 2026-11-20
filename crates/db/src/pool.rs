@@ -12,6 +12,8 @@ use crate::error::DbResult;
 pub type Conn = sqlx::SqliteConnection;
 pub type WriteTx = sqlx::Transaction<'static, sqlx::Sqlite>;
 pub type ReadConn = sqlx::pool::PoolConnection<sqlx::Sqlite>;
+/// 읽기 연결 위의 읽기 전용 트랜잭션. 버리면 끝난다(쓴 것이 없으므로 롤백과 같다).
+pub type ReadSnapshot = sqlx::Transaction<'static, sqlx::Sqlite>;
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
@@ -72,6 +74,14 @@ impl Db {
     /// 읽기 전용 연결 하나를 빌린다.
     pub async fn read(&self) -> DbResult<ReadConn> {
         Ok(self.reader.acquire().await?)
+    }
+
+    /// 읽기 전용 트랜잭션을 시작한다. 그 안의 모든 조회는 **같은 시점**의 데이터를 본다(WAL).
+    ///
+    /// 조회 여러 번으로 한 결과를 만드는 긴 읽기(내보내기, 전원 집계)에 쓴다. 쓰기 연결을
+    /// 쓰지 않으므로 다른 쓰기를 세워 두지 않으면서, 조회 사이에 커밋된 변경이 섞이지 않는다.
+    pub async fn read_snapshot(&self) -> DbResult<ReadSnapshot> {
+        Ok(self.reader.begin().await?)
     }
 
     /// 쓰기 트랜잭션을 시작한다. 커밋하지 않고 버리면 롤백된다.

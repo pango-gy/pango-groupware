@@ -576,6 +576,15 @@ async fn approved_units(
     Ok(units)
 }
 
+/// 기간 안 **전원**의 (구성원, 날짜)별 휴가 단위. 여러 구성원의 근태를 한꺼번에 판정할 때
+/// 구성원마다 조회하지 않으려고 둔다(신청 조회 한 번, 달력 조회 한 번).
+pub async fn units_in_range(
+    conn: &mut Conn,
+    range: DateRange,
+) -> ServiceResult<BTreeMap<(MemberId, NaiveDate), LeaveUnit>> {
+    approved_units(conn, None, range).await
+}
+
 /// 한 구성원의 기간 안 날짜별 휴가 단위(근태 계산용).
 pub async fn units_by_date(
     conn: &mut Conn,
@@ -1012,41 +1021,103 @@ pub async fn admin_cancel_request(
 
 // ───────────── 관리 ─────────────
 
+/// 원장에 아직 없는 자동 부여가 있는지(읽기만 한다).
+fn accrual_is_behind(member: &Member, ledger: &[LedgerRecord], today: NaiveDate) -> bool {
+    rules::accrual_grants(member.hired_on, member.retired_on, today)
+        .iter()
+        .any(|grant| {
+            ledger
+                .iter()
+                .all(|record| record.grant_key.as_deref() != Some(grant.grant_key.as_str()))
+        })
+}
+
 /// 재직 구성원 전원의 오늘 기준 잔여.
+///
+/// 구성원 수만큼 계산하는 긴 읽기이므로 **읽기 연결**에서 한다. 하나뿐인 쓰기 연결을 쥔 채
+/// 계산하면 그동안 모든 쓰기(출근, 결재)가 멈춘다. 구성원·부서·원장은 구성원 수와 무관한
+/// 횟수의 조회로 한 시점의 것을 읽는다.
+///
+/// 쓰기 트랜잭션은 오늘까지 생겼어야 할 자동 부여가 원장에 없는 구성원이 있을 때만, 그
+/// 구성원들의 부여를 넣기 위해 연다. 하루 한 번 도는 정리 작업이 부여를 넣어 두므로 보통은
+/// 열리지 않는다. 결과는 부여를 먼저 반영한 본인 조회([`balance`])와 같다.
 pub async fn admin_balances(
     state: &AppState,
     ctx: &AuthContext,
 ) -> ServiceResult<Vec<MemberBalance>> {
     authz::require_admin(&ctx.actor)?;
     let now = state.now();
-    state
-        .write(async |conn: &mut Conn| {
-            let today = Company::load(conn).await?.today(now);
-            let departments: BTreeMap<_, _> = org::list_departments(conn)
-                .await?
-                .into_iter()
-                .map(|department| (department.id, department.name))
-                .collect();
-            let filter = MemberFilter {
-                statuses: vec![MemberStatus::Active],
-                ..MemberFilter::default()
-            };
-            let mut rows = Vec::new();
-            for member in members::list(conn, &filter).await? {
-                let balance = balance_tx(conn, &member, today, now).await?.balance;
-                rows.push(MemberBalance {
-                    member_id: member.id,
-                    department_name: member
-                        .department_id
-                        .and_then(|id| departments.get(&id).cloned()),
-                    member_name: member.name,
-                    hired_on: member.hired_on,
-                    balance,
-                });
-            }
-            Ok(rows)
+    let (today, departments, mut people, mut ledgers) = {
+        let mut snapshot = state.read_snapshot().await?;
+        let conn: &mut Conn = &mut snapshot;
+        let today = Company::load(conn).await?.today(now);
+        let departments: BTreeMap<_, _> = org::list_departments(conn)
+            .await?
+            .into_iter()
+            .map(|department| (department.id, department.name))
+            .collect();
+        let filter = MemberFilter {
+            statuses: vec![MemberStatus::Active],
+            ..MemberFilter::default()
+        };
+        let people = members::list(conn, &filter).await?;
+        let ids: Vec<MemberId> = people.iter().map(|member| member.id).collect();
+        let mut ledgers: BTreeMap<MemberId, Vec<LedgerRecord>> = BTreeMap::new();
+        for record in leave::list_ledger_for_members(conn, &ids).await? {
+            ledgers.entry(record.member_id).or_default().push(record);
+        }
+        (today, departments, people, ledgers)
+    };
+
+    let behind: Vec<MemberId> = people
+        .iter()
+        .filter(|member| {
+            let ledger = ledgers.get(&member.id).map_or(&[][..], Vec::as_slice);
+            accrual_is_behind(member, ledger, today)
         })
-        .await
+        .map(|member| member.id)
+        .collect();
+    if !behind.is_empty() {
+        let refreshed = state
+            .write(async |conn: &mut Conn| {
+                require_current_admin(conn, ctx).await?;
+                let mut refreshed = Vec::with_capacity(behind.len());
+                for id in &behind {
+                    // 읽은 뒤에 입사일이 정정됐을 수 있으므로 지금의 값으로 부여한다.
+                    let member = found(members::find(conn, *id).await?)?;
+                    ensure_accrued_tx(conn, &member, today, now).await?;
+                    let ledger = leave::list_ledger(conn, *id).await?;
+                    refreshed.push((member, ledger));
+                }
+                Ok(refreshed)
+            })
+            .await?;
+        for (member, ledger) in refreshed {
+            ledgers.insert(member.id, ledger);
+            if let Some(slot) = people.iter_mut().find(|slot| slot.id == member.id) {
+                *slot = member;
+            }
+        }
+    }
+
+    people
+        .into_iter()
+        .map(|member| {
+            let entries: Vec<LedgerEntry> = ledgers
+                .get(&member.id)
+                .map(|ledger| ledger.iter().map(|record| record.entry).collect())
+                .unwrap_or_default();
+            Ok(MemberBalance {
+                member_id: member.id,
+                department_name: member
+                    .department_id
+                    .and_then(|id| departments.get(&id).cloned()),
+                member_name: member.name,
+                hired_on: member.hired_on,
+                balance: Balance::compute(&entries, today)?,
+            })
+        })
+        .collect()
 }
 
 /// 수동 조정. 양수는 그날부터 유효한 부여, 음수는 그날의 사용으로 계산된다.

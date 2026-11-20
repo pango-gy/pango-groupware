@@ -19,7 +19,7 @@ use pango_db::members::{self, Member};
 use pango_db::notifications::Notification;
 use pango_db::sessions::SessionVia;
 use pango_db::settings::CompanySettings;
-use pango_db::{audit, notifications, org, settings, Conn, ReadConn};
+use pango_db::{audit, notifications, org, settings, Conn, ReadConn, ReadSnapshot};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
@@ -59,6 +59,12 @@ pub struct Idempotency {
 impl AppState {
     pub async fn read(&self) -> ServiceResult<ReadConn> {
         Ok(self.db.read().await?)
+    }
+
+    /// 읽기 전용 트랜잭션. 조회 여러 번으로 한 결과를 만드는 긴 읽기를 **쓰기 연결 없이**,
+    /// 한 시점의 데이터로 계산할 때 쓴다(내보내기, 전원 잔여).
+    pub async fn read_snapshot(&self) -> ServiceResult<ReadSnapshot> {
+        Ok(self.db.read_snapshot().await?)
     }
 
     /// 쓰기 트랜잭션 안에서 `op`를 실행한다. `op`가 실패하면 전부 롤백된다.
