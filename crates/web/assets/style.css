@@ -1077,12 +1077,12 @@ body:has(.action-bar) .toasts { bottom: calc(24px + var(--action-bar-h) + env(sa
 .cal-company { --c: var(--cal-company); --c-strong: var(--cal-company-strong); --c-weak: var(--cal-company-weak); }
 .cal-holiday { --c: var(--red); }
 .cal-leave { --c: var(--cal-leave); }
-.cal-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 16px; align-items: start; }
+.cal-layout { display: grid; grid-template-columns: 248px minmax(0, 1fr); gap: 16px; align-items: start; }
 /* 달력은 넓을수록 일정 제목이 덜 잘리므로 본문 최대 폭 제한을 풀고, 화면 높이를 채운다. */
 .content:has(.cal-layout) { max-width: none; }
 .cal-side {
   position: sticky; top: 16px; max-height: calc(100dvh - 32px); overflow-y: auto;
-  display: flex; flex-direction: column; gap: 20px; padding: 20px 16px;
+  display: flex; flex-direction: column; gap: 20px; padding: 20px 14px;
 }
 .cal-main { min-width: 0; }
 .cal-toolbar { display: flex; align-items: center; gap: 8px 16px; flex-wrap: wrap; margin-bottom: 16px; }
@@ -1096,10 +1096,12 @@ body:has(.action-bar) .toasts { bottom: calc(24px + var(--action-bar-h) + env(sa
 /* 작은 달력과 캘린더 목록 */
 .cal-mini .month-switcher { justify-content: space-between; margin-bottom: 4px; }
 .cal-mini .month-label { min-width: 0; font-size: 14px; }
-.calendar-mini .calendar-weekday { padding: 2px 0; font-size: 11px; }
-.calendar-mini .calendar-cell { min-height: 0; padding: 1px 0; border-top: 0; align-items: center; }
+.calendar-mini .calendar-weekday { padding: 4px 0 6px; font-size: 11px; }
+/* 날짜 원(26px) 사이에 가로 2px 이상, 세로 6px 여백을 둔다. 빽빽하면 오늘 표시가 옆 숫자에 붙어 보인다. */
+.calendar-mini .calendar-cell { min-height: 0; padding: 3px 0; border-top: 0; align-items: center; }
 .cal-mini-day {
-  width: 28px; height: 28px; border: 0; border-radius: 50%; background: none; cursor: pointer;
+  width: 26px; height: 26px; padding: 0; border: 0; border-radius: 50%; background: none; cursor: pointer;
+  white-space: nowrap;
   font-size: 12px; color: var(--grey-800); font-feature-settings: "tnum";
 }
 .cal-mini-day { position: relative; }
@@ -1109,8 +1111,8 @@ body:has(.action-bar) .toasts { bottom: calc(24px + var(--action-bar-h) + env(sa
 .calendar-cell-outside .cal-mini-day { color: var(--grey-400); }
 /* 주 보기에서 보고 있는 주: 칸 사이를 이어 한 줄 띠로 보인다. */
 .calendar-mini .calendar-cell:has(.cal-mini-in-week) { background: var(--grey-100); }
-.calendar-mini .calendar-row > .calendar-cell:has(.cal-mini-in-week):first-child { border-radius: 14px 0 0 14px; }
-.calendar-mini .calendar-row > .calendar-cell:has(.cal-mini-in-week):last-child { border-radius: 0 14px 14px 0; }
+.calendar-mini .calendar-row > .calendar-cell:has(.cal-mini-in-week):first-child { border-radius: 16px 0 0 16px; }
+.calendar-mini .calendar-row > .calendar-cell:has(.cal-mini-in-week):last-child { border-radius: 0 16px 16px 0; }
 .cal-mini-in-week:hover { background: var(--grey-200); }
 /* 일정이 있는 날은 숫자 아래 작은 점. */
 .cal-mini-busy::after {
