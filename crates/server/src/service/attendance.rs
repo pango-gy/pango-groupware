@@ -61,13 +61,13 @@ const CSV_HEADER: [&str; 9] = [
 /// 휴가 기능과 연결되는 지점: 구성원이 기간 안의 어느 날 어떤 단위의 휴가를 쓰는지.
 ///
 /// 근태 판정(지각·조퇴 기준 조정, 종일 휴가의 `on_leave`)은 **모두** 이 함수를 거친다.
-/// 휴가 기능이 들어오기 전까지는 휴가가 없으므로 빈 결과를 돌려준다.
+/// 승인된 휴가만 반영한다.
 async fn leave_units_by_date(
-    _conn: &mut Conn,
-    _member_id: MemberId,
-    _range: DateRange,
+    conn: &mut Conn,
+    member_id: MemberId,
+    range: DateRange,
 ) -> ServiceResult<BTreeMap<NaiveDate, LeaveUnit>> {
-    Ok(BTreeMap::new())
+    super::leave::units_by_date(conn, member_id, range).await
 }
 
 fn record_dto(record: &AttendanceRecord) -> AttendanceRecordDto {
