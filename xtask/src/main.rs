@@ -45,6 +45,20 @@ fn content_version(paths: &[PathBuf]) -> AnyResult<String> {
     Ok(format!("{:016x}", hasher.finish()))
 }
 
+fn copy_dir(from: &Path, to: &Path) -> AnyResult<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
+}
+
 fn build_web(dev: bool) -> AnyResult<()> {
     let root = root();
     let profile = if dev { "dev" } else { "wasm-release" };
@@ -88,6 +102,8 @@ fn build_web(dev: bool) -> AnyResult<()> {
 
     let web = root.join("crates/web");
     std::fs::copy(web.join("assets/style.css"), assets.join("style.css"))?;
+    // 서체 파일은 이름에 내용이 바뀌는 일이 없어(버전 고정) 그대로 복사한다.
+    copy_dir(&web.join("assets/fonts"), &assets.join("fonts"))?;
 
     let version = content_version(&[
         assets.join("app.js"),

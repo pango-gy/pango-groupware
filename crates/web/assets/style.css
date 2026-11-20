@@ -30,7 +30,7 @@
   --topbar-h: 54px;
   /* 화면 아래에 붙는 동작 줄(.action-bar)의 높이. 토스트를 그 위로 올릴 때 쓴다. */
   --action-bar-h: 66px;
-  --font: -apple-system, BlinkMacSystemFont, "Pretendard", "Apple SD Gothic Neo", "Noto Sans KR",
+  --font: "Pretendard Variable", "Pretendard", -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Noto Sans KR",
     "Malgun Gothic", "Segoe UI", Roboto, sans-serif;
   color-scheme: light dark;
 }

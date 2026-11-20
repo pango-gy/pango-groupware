@@ -22,6 +22,8 @@ fn content_type(path: &str) -> &'static str {
         Some("svg") => "image/svg+xml",
         Some("png") => "image/png",
         Some("ico") => "image/x-icon",
+        Some("woff2") => "font/woff2",
+        Some("txt") => "text/plain; charset=utf-8",
         Some("json" | "webmanifest") => "application/json",
         _ => "application/octet-stream",
     }
@@ -39,6 +41,19 @@ fn file_response(path: &str, cache: &'static str) -> Option<Response> {
     Some((headers, file.data.into_owned()).into_response())
 }
 
+/// 자산의 캐시 정책. 내용 해시(`?v=`)가 붙었거나, 버전이 경로에 들어 있는 서체
+/// (`fonts/<이름>-<버전>/`)는 바뀌지 않으므로 오래 캐시한다.
+fn cache_policy(uri: &Uri) -> &'static str {
+    let path = uri.path().trim_start_matches('/');
+    let versioned = uri.query().is_some_and(|query| query.starts_with("v="))
+        || path.starts_with("assets/fonts/");
+    if versioned {
+        IMMUTABLE
+    } else {
+        REVALIDATE
+    }
+}
+
 /// API가 아닌 모든 요청을 처리한다.
 ///
 /// - `/assets/…`: 해당 파일. 없으면 404.
@@ -49,8 +64,7 @@ pub async fn serve(method: Method, uri: Uri) -> Response {
     }
     let path = uri.path().trim_start_matches('/');
     if path.starts_with("assets/") {
-        let versioned = uri.query().is_some_and(|query| query.starts_with("v="));
-        let cache = if versioned { IMMUTABLE } else { REVALIDATE };
+        let cache = cache_policy(&uri);
         // 상위 경로 표기는 번들 밖을 가리키려는 시도이므로 없는 파일로 취급한다.
         let safe = !path
             .split('/')
@@ -128,6 +142,25 @@ mod tests {
     async fn non_read_methods_are_rejected() {
         let response = serve(Method::POST, Uri::from_static("/login")).await;
         assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[test]
+    fn font_files_are_cached_long_term() {
+        assert_eq!(content_type("assets/fonts/x-1.0/a.woff2"), "font/woff2");
+        assert_eq!(
+            cache_policy(&Uri::from_static(
+                "/assets/fonts/pretendard-1.3.9/pretendard.css"
+            )),
+            IMMUTABLE
+        );
+        assert_eq!(
+            cache_policy(&Uri::from_static("/assets/app.js")),
+            REVALIDATE
+        );
+        assert_eq!(
+            cache_policy(&Uri::from_static("/assets/app.js?v=abc")),
+            IMMUTABLE
+        );
     }
 
     #[test]
