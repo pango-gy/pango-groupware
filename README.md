@@ -6,7 +6,7 @@
 [팡고지와이](https://github.com/pango-gy)에서 실제로 쓰려고 만들고 있으며, 같은 고민을 하는 다른 조직도 쓸 수 있도록 오픈소스로 공개합니다.
 
 > [!WARNING]
-> **개발 초기 단계(pre-alpha)입니다.** 아래 기능과 구조는 목표이며, 아직 동작하는 코드가 없습니다. API·DB 스키마는 예고 없이 바뀔 수 있습니다.
+> **개발 초기 단계(pre-alpha)입니다.** MVP를 만들고 있으며, API·DB 스키마는 예고 없이 바뀔 수 있습니다. 실제 업무에 쓰기 전에 직접 검증해 주세요.
 
 ---
 
@@ -73,49 +73,58 @@ pango-groupware는 다음을 목표로 합니다.
 
 ## 기술 스택
 
-가능한 모든 부분을 Rust로 작성합니다. 아래는 **현재 계획이며 확정되지 않았습니다.**
+가능한 모든 부분을 Rust로 작성합니다.
 
-| 계층 | 후보 | 비고 |
+| 계층 | 선택 | 비고 |
 | --- | --- | --- |
 | 서버 | [axum](https://github.com/tokio-rs/axum) + [tokio](https://tokio.rs) | REST/JSON API |
-| DB | SQLite + [sqlx](https://github.com/launchbadge/sqlx) | WAL 모드, 컴파일 타임 쿼리 검증, 내장 마이그레이션 |
-| 웹 UI | [Leptos](https://leptos.dev) 또는 [Dioxus](https://dioxuslabs.com) | Rust → WASM, 서버 바이너리에 정적 파일로 포함 |
-| 모바일 | [Tauri 2](https://tauri.app) (iOS/Android) | 웹 UI를 재사용하고 푸시·위치 등 네이티브 기능만 플러그인으로 연결 |
+| DB | SQLite + [sqlx](https://github.com/launchbadge/sqlx) | WAL 모드, 쓰기 연결 1개 + 읽기 풀, 내장 마이그레이션 |
+| 웹 UI | [Dioxus](https://dioxuslabs.com) | Rust → WASM. 서버 실행 파일에 포함 |
+| 모바일 | Dioxus (iOS/Android) | 웹과 같은 UI 코드를 사용 (예정) |
 | 비밀번호 | Argon2id | |
-| 푸시 | APNs / FCM | [모바일 앱 배포](#모바일-앱-배포) 참고 |
+| 푸시 | APNs / FCM | [모바일 앱 배포](#모바일-앱-배포) 참고 (예정) |
 
 데스크톱 앱은 만들지 않습니다. PC에서는 웹 브라우저로 사용합니다.
 
-## 저장소 구조
+화면 구성은 [flex](https://flex.team)의 정보 구조(카드형 홈, 큰 출퇴근 버튼, 결재함 탭)를 참고했습니다. 데스크톱은 좌측 사이드바, 모바일은 하단 탭입니다.
 
-계획 중인 Cargo workspace 구조입니다.
+## 저장소 구조
 
 ```text
 pango-groupware/
 ├── crates/
-│   ├── server/      # axum HTTP 서버, 인증, 권한
-│   ├── core/        # 도메인 로직 (근태 계산, 결재 상태 전이, 연차 계산)
-│   ├── db/          # SQLite 스키마, 마이그레이션, 쿼리
-│   └── web/         # 웹 UI (WASM)
-├── apps/
-│   └── mobile/      # Tauri 2 iOS/Android 앱
-└── docs/            # 설계 문서
+│   ├── core/      # 도메인 타입과 순수 규칙 (근태·연차·결재 상태 전이·권한). IO 없음
+│   ├── api/       # 요청/응답 타입. 서버와 웹이 함께 사용
+│   ├── db/        # SQLite 스키마, 마이그레이션, 저장소
+│   ├── server/    # 유스케이스 + HTTP + 실행 파일
+│   └── web/       # 웹 UI (Dioxus, WASM)
+├── xtask/         # 개발 작업 (웹 번들 빌드)
+└── docs/          # 설계 문서
 ```
+
+설계는 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), 기능 추가 방법은 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)에 있습니다.
 
 ## 시작하기
 
-> 아직 실행 가능한 코드가 없습니다. 아래는 목표로 하는 사용 방법입니다.
+Rust 1.85 이상이 필요합니다.
 
 ```bash
-# 빌드
-cargo build --release
+# 1. 웹 UI 빌드 도구 (최초 1회)
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.130 --locked
 
-# 최초 실행 시 DB 생성 및 최고 관리자 계정 설정
-./target/release/pango-groupware init --data-dir ./data
+# 2. 웹 UI 번들 → 서버 빌드 (번들은 실행 파일에 포함됩니다)
+cargo xtask web
+cargo build --release -p pango-server
 
-# 서버 실행
-./target/release/pango-groupware serve --data-dir ./data --bind 0.0.0.0:8080
+# 3. 최초 설정: 회사 정보와 최고 관리자 계정 생성 (임시 비밀번호가 한 번 출력됩니다)
+./target/release/pango-groupware --data-dir ./data init --company "우리 회사"
+
+# 4. 실행
+./target/release/pango-groupware --data-dir ./data serve --bind 127.0.0.1:8080
 ```
+
+HTTPS 없이 로컬에서만 써 볼 때는 `serve`에 `--insecure-cookies`를 붙입니다. 리버스 프록시 뒤에서 실행하면 `--trust-proxy`를 붙여야 접속 IP가 올바르게 기록됩니다.
 
 ### 운영 시 권장 사항
 
@@ -162,14 +171,14 @@ cargo build --release
 ### 기본 방식
 
 - **회원가입 없음**: 계정은 관리자만 발급합니다. 앱에서 계정을 만들 수 없으므로 스토어의 "앱 내 계정 삭제 기능" 요구사항(App Store 5.1.1(v), Google Play 계정 삭제 정책)의 적용 범위가 줄어듭니다. 최종 판단은 제출 시점의 정책을 확인합니다.
-- **아이디/비밀번호 + 2단계 인증(TOTP, 선택)**: 비밀번호는 Argon2id로 저장하고, 로그인 시도 횟수를 제한합니다.
-- **SSO(OIDC, 선택)**: Google Workspace, Microsoft Entra ID, Keycloak 등 조직의 계정으로 로그인합니다.
+- **아이디/비밀번호**: 비밀번호는 Argon2id로 저장합니다. 로그인 시도는 IP와 아이디별로 제한하며, 실패 응답으로 계정 존재 여부를 알 수 없게 합니다.
+- **2단계 인증(TOTP)과 SSO(OIDC)**: MVP 이후에 추가할 예정입니다.
 
 ### 모바일 로그인 시 지켜야 할 것
 
 - **SSO는 시스템 브라우저로**: iOS는 `ASWebAuthenticationSession`, Android는 Custom Tabs를 사용하고 PKCE를 적용합니다. Google은 앱 내 WebView에서의 OAuth 로그인을 차단합니다.
 - **Sign in with Apple**: Google·Kakao 등 **제3자 소셜 로그인**을 넣으면 Sign in with Apple도 함께 제공해야 합니다. 단, 회사 자체 계정이나 기업용 계정으로만 로그인하는 앱은 예외입니다. 이 프로젝트는 소셜 로그인을 제공하지 않을 계획입니다.
-- **토큰 저장**: 짧은 수명의 access token과 회전(rotation)하는 refresh token을 사용하고, iOS Keychain / Android Keystore에만 저장합니다.
+- **세션 토큰**: 서버가 발급하는 무작위 토큰을 쓰고, 서버에는 해시만 저장합니다. 웹은 HttpOnly 쿠키로, 모바일은 iOS Keychain / Android Keystore에 저장합니다. 유휴 14일·절대 90일에 만료되며 서버에서 즉시 폐기할 수 있습니다.
 - **기기 관리**: 관리자가 구성원의 로그인 기기를 확인하고 원격으로 세션을 끊을 수 있게 합니다. 퇴사자 계정은 비활성화 즉시 모든 세션이 무효화됩니다.
 - **생체 인증**: 앱 재실행 시 Face ID / 지문으로 잠금을 해제하는 기능(선택)은 저장된 토큰을 꺼내는 용도로만 쓰며, 서버 인증을 대신하지 않습니다.
 
@@ -184,12 +193,11 @@ cargo build --release
 
 ## 로드맵
 
-- [ ] **v0.1** — 서버 골격, 계정·로그인, 구성원/부서 관리, 출퇴근 기록, 웹 UI
-- [ ] **v0.2** — 근태 조회·정정 요청, 관리자 근태 관리, CSV 내보내기
-- [ ] **v0.3** — 휴가 신청·승인, 연차 자동 부여
-- [ ] **v0.4** — 전자결재(양식, 결재라인, 결재함), 공지사항
-- [ ] **v0.5** — Tauri 모바일 앱, 푸시 중계 서버
-- [ ] **v1.0** — SSO(OIDC), 감사 로그, 백업·복구 도구, 문서화
+- [ ] **MVP** — 인증·세션, 조직·구성원, 출퇴근·근태, 휴가(연차 자동 부여), 전자결재, 공지, 앱 내 알림, 관리자 화면, 감사 로그
+- [ ] 근태 정정 요청, CSV 내보내기 확장
+- [ ] iOS/Android 앱, 푸시 중계 서버
+- [ ] 2단계 인증(TOTP), SSO(OIDC)
+- [ ] 백업·복구 도구, 첨부파일
 
 ## 기여하기
 
@@ -197,9 +205,11 @@ cargo build --release
 
 ```bash
 cargo fmt --all
-cargo clippy --all-targets -- -D warnings
-cargo test --all
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 ```
+
+테스트를 먼저 쓰고, 기능마다 정상·거부·경계값·동시성·멱등성·기형 입력을 확인합니다. 자세한 기준은 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)를 봐 주세요.
 
 - 커밋 메시지와 이슈는 한국어·영어 모두 괜찮습니다.
 - 인증·권한·개인정보와 관련된 변경은 허용/거부 경로의 테스트를 함께 포함해 주세요.
