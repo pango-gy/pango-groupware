@@ -6,3 +6,5 @@
 *.db-wal
 .DS_Store
 .env
+/.claude/
+/.worktrees/

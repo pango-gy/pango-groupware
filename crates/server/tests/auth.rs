@@ -504,7 +504,8 @@ async fn revoking_unknown_or_malformed_session_is_not_found() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_logins_each_get_a_distinct_working_session() {
     let app = std::sync::Arc::new(TestApp::new().await);
-    let tasks: Vec<_> = (0..12)
+    // 진행 중인 시도도 한도(5)에 포함되므로, 같은 아이디의 동시 로그인은 5건까지 보장된다.
+    let tasks: Vec<_> = (0..5)
         .map(|_| {
             let app = app.clone();
             tokio::spawn(async move { app.login_owner().await })
@@ -514,7 +515,7 @@ async fn concurrent_logins_each_get_a_distinct_working_session() {
     for task in tasks {
         tokens.insert(task.await.expect("join"));
     }
-    assert_eq!(tokens.len(), 12);
+    assert_eq!(tokens.len(), 5);
     for token in &tokens {
         app.get("/me")
             .bearer(token)
@@ -719,6 +720,57 @@ async fn password_change_validations() {
     assert_eq!(
         try_login(&app, OWNER_LOGIN, OWNER_PASSWORD).await,
         StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn current_password_guessing_is_rate_limited() {
+    let app = TestApp::new().await;
+    let token = app.login_owner().await;
+    let guess = |current: &'static str| {
+        let (app, token) = (&app, token.clone());
+        async move {
+            app.post("/me/password")
+                .bearer(&token)
+                .json(&change(current, "brand-new-password-456"))
+                .send()
+                .await
+                .status
+        }
+    };
+    for _ in 0..5 {
+        assert_eq!(guess("not-my-password").await, StatusCode::BAD_REQUEST);
+    }
+    // 한도를 넘으면 맞는 비밀번호도 거부된다.
+    assert_eq!(guess(OWNER_PASSWORD).await, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        try_login(&app, OWNER_LOGIN, OWNER_PASSWORD).await,
+        StatusCode::OK,
+        "변경되지 않았다"
+    );
+
+    app.advance(Duration::minutes(15));
+    assert_eq!(guess(OWNER_PASSWORD).await, StatusCode::OK);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn parallel_guesses_cannot_exceed_the_lockout_limit() {
+    let app = std::sync::Arc::new(TestApp::new().await);
+    let tasks: Vec<_> = (0..30)
+        .map(|_| {
+            let app = app.clone();
+            tokio::spawn(async move { try_login(&app, OWNER_LOGIN, "wrong-password-123").await })
+        })
+        .collect();
+    let mut verified = 0;
+    for task in tasks {
+        if task.await.expect("join") == StatusCode::UNAUTHORIZED {
+            verified += 1;
+        }
+    }
+    assert_eq!(
+        verified, 5,
+        "동시에 보내도 한도만큼만 비밀번호 검증까지 간다"
     );
 }
 
