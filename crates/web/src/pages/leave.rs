@@ -94,7 +94,6 @@ fn BalanceSummary(dto: BalanceDto) -> Element {
 
 #[component]
 fn RequestsTab(today: NaiveDate, onchanged: EventHandler<()>) -> Element {
-    let mut session = use_session();
     let mut toasts = use_toasts();
     let (min_year, max_year) = logic::year_bounds(today);
     let mut year = use_signal(|| today.year());
@@ -118,7 +117,6 @@ fn RequestsTab(today: NaiveDate, onchanged: EventHandler<()>) -> Element {
                 onchanged.call(());
             }
             Err(error) => {
-                session.handle(&error);
                 toasts.error(text::leave_cancel_error_message(
                     &error.code,
                     error.field.as_deref(),

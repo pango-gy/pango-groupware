@@ -280,7 +280,7 @@ pub fn DocumentForm(
     #[props(default)] ondone: EventHandler<()>,
     #[props(default)] oncancel: EventHandler<()>,
 ) -> Element {
-    let mut session = use_session();
+    let session = use_session();
     let nav = navigator();
     let mut form_id = use_signal(|| {
         draft
@@ -397,7 +397,7 @@ pub fn DocumentForm(
                             id: detail.id.to_string(),
                         });
                     }
-                    Err(failure) => error.set(session.handle(&failure)),
+                    Err(failure) => error.set(failure.message()),
                 }
             }
             Some((id, version)) => {
@@ -426,7 +426,7 @@ pub fn DocumentForm(
                         report_error(&failure);
                         ondone.call(());
                     }
-                    Err((failure, _)) => error.set(session.handle(&failure)),
+                    Err((failure, _)) => error.set(failure.message()),
                 }
             }
         }

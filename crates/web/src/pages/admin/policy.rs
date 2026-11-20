@@ -78,7 +78,7 @@ fn PolicyEditor(dto: CompanySettingsDto, onreload: EventHandler<()>) -> Element 
                 onreload.call(());
             }
             Err(failure) => {
-                let message = session.handle(&failure);
+                let message = failure.message();
                 match failure.field {
                     Some(field) => {
                         errors.write().insert(field, message);

@@ -239,7 +239,6 @@ fn NoticeEditor(
     onclose: EventHandler<()>,
     onsaved: EventHandler<()>,
 ) -> Element {
-    let mut session = use_session();
     let mut form = use_signal(|| initial.clone());
     let mut error = use_signal(String::new);
     let mut busy = use_signal(|| false);
@@ -285,7 +284,7 @@ fn NoticeEditor(
                 report_error(&failure);
                 onsaved.call(());
             }
-            Err(failure) => error.set(session.handle(&failure)),
+            Err(failure) => error.set(failure.message()),
         }
     };
 

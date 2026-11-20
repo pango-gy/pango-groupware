@@ -6,8 +6,8 @@ use pango_api::Empty;
 
 use crate::api;
 use crate::route::Route;
-use crate::session::use_session;
-use crate::ui::{Button, FormError, Spinner, TextField};
+use crate::session::{self, use_session, SessionState};
+use crate::ui::{Button, ButtonKind, ErrorState, FormError, Spinner, TextField};
 
 #[component]
 pub fn Login() -> Element {
@@ -47,8 +47,19 @@ pub fn Login() -> Element {
         busy.set(false);
     };
 
-    if !session.is_loaded() {
-        return rsx! { div { class: "boot", Spinner {} } };
+    match session.state() {
+        SessionState::SignedOut => {}
+        // 쿠키 세션이 살아 있을 수 있다. 다시 로그인하면 서버 세션이 하나 더 생기므로 다시 시도를 권한다.
+        SessionState::Unreachable(message) => {
+            return rsx! {
+                main { class: "auth",
+                    ErrorState { message, onretry: move |_| session.retry() }
+                }
+            };
+        }
+        SessionState::Loading | SessionState::SignedIn(_) => {
+            return rsx! { div { class: "boot", Spinner {} } };
+        }
     }
     rsx! {
         main { class: "auth",
@@ -95,7 +106,7 @@ pub fn ChangePassword() -> Element {
     let mut busy = use_signal(|| false);
 
     use_effect(move || {
-        if session.is_loaded() && session.me().is_none() {
+        if session.state() == SessionState::SignedOut {
             nav.replace(Route::Login {});
         }
     });
@@ -123,11 +134,24 @@ pub fn ChangePassword() -> Element {
                 session.refresh().await;
                 nav.replace(Route::Home {});
             }
-            Err(failure) => error.set(session.handle(&failure)),
+            Err(failure) => error.set(failure.message()),
         }
         busy.set(false);
     };
 
+    match session.state() {
+        SessionState::SignedIn(_) => {}
+        SessionState::Unreachable(message) => {
+            return rsx! {
+                main { class: "auth",
+                    ErrorState { message, onretry: move |_| session.retry() }
+                }
+            };
+        }
+        SessionState::Loading | SessionState::SignedOut => {
+            return rsx! { div { class: "boot", Spinner {} } };
+        }
+    }
     rsx! {
         main { class: "auth",
             form { class: "auth-card", onsubmit: submit,
@@ -166,7 +190,16 @@ pub fn ChangePassword() -> Element {
                     oninput: move |value| confirm.set(value),
                 }
                 Button { submit: true, block: true, busy: busy(), "변경" }
-                if !forced {
+                if forced {
+                    // 임시 비밀번호를 받은 사람이 아니면(공용 PC 등) 여기서 빠져나갈 수 있어야 한다.
+                    Button {
+                        kind: ButtonKind::Ghost,
+                        block: true,
+                        disabled: busy(),
+                        onclick: move |_| session::logout(session, nav),
+                        "로그아웃"
+                    }
+                } else {
                     Link { class: "auth-link", to: Route::Profile {}, "돌아가기" }
                 }
             }

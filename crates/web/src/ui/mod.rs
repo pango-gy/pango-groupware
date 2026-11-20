@@ -12,7 +12,7 @@ use dioxus::prelude::*;
 
 use crate::api::{ApiError, ApiResult};
 use crate::format;
-use crate::session::{use_toasts, Session, ToastKind, Toasts};
+use crate::session::{use_toasts, ToastKind, Toasts};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ButtonKind {
@@ -171,15 +171,13 @@ pub fn resource_view<T: Clone + 'static>(
     mut resource: Resource<ApiResult<T>>,
     render: impl FnOnce(T) -> Element,
 ) -> Element {
-    // 훅이 아닌 조회를 쓴다(이 함수는 렌더 중 여러 번, 조건부로 불릴 수 있다).
-    let mut session = consume_context::<Session>();
+    // 세션 만료·권한 변경은 요청 future가 이미 반영했다(`api`). 여기서는 그리기만 한다.
     let state = resource.read().clone();
     match state {
         None => rsx! { Spinner {} },
         Some(Ok(value)) => render(value),
         Some(Err(error)) => {
-            let message = session.handle(&error);
-            rsx! { ErrorState { message, onretry: move |_| resource.restart() } }
+            rsx! { ErrorState { message: error.message(), onretry: move |_| resource.restart() } }
         }
     }
 }
@@ -435,10 +433,10 @@ pub fn ToastHost() -> Element {
     }
 }
 
-/// 요청 실패를 토스트로 알린다(세션 만료 처리 포함). 이벤트 핸들러 안에서 부른다.
+/// 요청 실패를 토스트로 알린다. 이벤트 핸들러 안에서 부른다.
+/// 세션 만료·권한 변경은 요청이 실패할 때 `api`가 이미 반영했다.
 pub fn report_error(error: &ApiError) {
-    let message = consume_context::<Session>().handle(error);
-    consume_context::<Toasts>().error(message);
+    consume_context::<Toasts>().error(error.message());
 }
 
 pub fn report_success(message: impl Into<String>) {

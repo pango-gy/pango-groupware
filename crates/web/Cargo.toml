@@ -18,8 +18,19 @@ chrono-tz.workspace = true
 gloo-net = { version = "0.6", default-features = false, features = ["http", "json"] }
 gloo-timers = { version = "0.3", features = ["futures"] }
 wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
-web-sys = { version = "0.3", features = ["Window", "Document", "RequestCredentials"] }
+web-sys = { version = "0.3", features = [
+    "AddEventListenerOptions",
+    "Document",
+    "Element",
+    "EventTarget",
+    "HtmlElement",
+    "NodeList",
+    "RequestCredentials",
+    "VisibilityState",
+    "Window",
+] }
 
 [lints]
 workspace = true

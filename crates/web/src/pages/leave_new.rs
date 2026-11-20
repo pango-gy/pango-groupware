@@ -19,7 +19,7 @@ use logic::Slot;
 
 #[component]
 pub fn LeaveNew() -> Element {
-    let mut session = use_session();
+    let session = use_session();
     let nav = navigator();
     let tz = session.zone();
     let today = today(tz);
@@ -103,7 +103,7 @@ pub fn LeaveNew() -> Element {
                 return;
             }
             Err(error) => {
-                let message = session.handle(&error);
+                let message = error.message();
                 server_error.set(Some((
                     logic::error_slot(&error.code, error.field.as_deref()),
                     message,
@@ -138,7 +138,7 @@ pub fn LeaveNew() -> Element {
     };
     let types_state = match &*types.read() {
         None => logic::Load::Loading,
-        Some(Err(error)) => logic::Load::Failed(session.handle(error)),
+        Some(Err(error)) => logic::Load::Failed(error.message()),
         Some(Ok(_)) => logic::Load::Ready,
     };
 

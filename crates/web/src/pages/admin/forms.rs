@@ -309,7 +309,6 @@ fn FormEditor(
     onclose: EventHandler<()>,
     onsaved: EventHandler<()>,
 ) -> Element {
-    let mut session = use_session();
     let initial = logic::initial_input(form.as_ref());
     let mut code = use_signal(|| initial.code.clone());
     let mut name = use_signal(|| initial.name.clone());
@@ -379,7 +378,7 @@ fn FormEditor(
             Err(failure) => error.set(
                 logic::form_conflict_message(&failure.code)
                     .map(str::to_owned)
-                    .unwrap_or_else(|| session.handle(&failure)),
+                    .unwrap_or_else(|| failure.message()),
             ),
         }
     };

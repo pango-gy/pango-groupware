@@ -398,7 +398,7 @@ fn CorrectionModal(
     onclose: EventHandler<()>,
     onsubmitted: EventHandler<()>,
 ) -> Element {
-    let mut session = use_session();
+    let session = use_session();
     let tz = session.zone();
     let zone_name = session.me().map(|me| me.timezone).unwrap_or_default();
     let me_id = session.me().map(|me| me.id);
@@ -448,7 +448,6 @@ fn CorrectionModal(
             Err(failure) => {
                 match logic::correction_failure_slot(&failure.code, failure.field.as_deref()) {
                     Some(slot) => {
-                        session.handle(&failure);
                         problem.set(Some((
                             slot,
                             text::correction_error_message(
@@ -571,7 +570,7 @@ fn CorrectionModal(
 /// 내 정정 요청 내역(최신 접수순). 결재 중인 요청은 취소(= 결재 문서 회수)할 수 있다.
 #[component]
 fn CorrectionHistory(revision: ReadSignal<u32>) -> Element {
-    let mut session = use_session();
+    let session = use_session();
     let mut toasts = use_toasts();
     let tz = session.zone();
     let more = use_more_pages::<CorrectionDto>();
@@ -595,7 +594,6 @@ fn CorrectionHistory(revision: ReadSignal<u32>) -> Element {
         match result {
             Ok(_) => report_success("정정 요청을 취소했습니다. 결재 문서도 회수했습니다."),
             Err(error) => {
-                session.handle(&error);
                 toasts.error(text::correction_error_message(
                     &error.code,
                     error.field.as_deref(),

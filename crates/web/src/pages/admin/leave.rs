@@ -157,7 +157,6 @@ fn AdjustModal(
     onclose: EventHandler<()>,
     ondone: EventHandler<()>,
 ) -> Element {
-    let mut session = use_session();
     let mut days = use_signal(String::new);
     let mut effective_on = use_signal(|| today.to_string());
     let mut memo = use_signal(String::new);
@@ -194,7 +193,7 @@ fn AdjustModal(
                 ));
                 ondone.call(());
             }
-            Err(failure) => error.set(session.handle(&failure)),
+            Err(failure) => error.set(failure.message()),
         }
         busy.set(false);
     };
@@ -424,7 +423,6 @@ fn TypeModal(
     onclose: EventHandler<()>,
     ondone: EventHandler<()>,
 ) -> Element {
-    let mut session = use_session();
     let mut toasts = use_toasts();
     let initial = logic::TypeForm::from_existing(existing.as_ref());
     let mut form = use_signal(|| initial);
@@ -479,12 +477,10 @@ fn TypeModal(
                     ondone.call(());
                 }
                 Err(Some(failure)) if failure.code == "version_conflict" => {
-                    session.handle(&failure);
                     toasts.error(failure.message());
                     ondone.call(());
                 }
                 Err(Some(failure)) => {
-                    session.handle(&failure);
                     error.set(logic::type_error_message(
                         &failure.code,
                         failure.field.as_deref(),
