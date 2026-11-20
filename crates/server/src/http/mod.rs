@@ -2,6 +2,7 @@
 
 pub mod auth;
 pub mod extract;
+pub mod web;
 
 use axum::extract::DefaultBodyLimit;
 use axum::response::{IntoResponse, Response};
@@ -50,6 +51,7 @@ pub fn router(state: AppState) -> Router {
         .layer(static_header("cache-control", "no-store"));
     Router::new()
         .nest(API_PREFIX, api)
+        .fallback(web::serve)
         .layer(DefaultBodyLimit::max(state.config.max_body_bytes))
         .layer(static_header("x-content-type-options", "nosniff"))
         .layer(static_header("x-frame-options", "DENY"))

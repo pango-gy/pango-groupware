@@ -31,6 +31,7 @@ sha2.workspace = true
 subtle.workspace = true
 getrandom.workspace = true
 clap.workspace = true
+rust-embed = { version = "8", features = ["interpolate-folder-path"] }
 tempfile = { workspace = true, optional = true }
 
 [features]

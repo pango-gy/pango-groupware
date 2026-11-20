@@ -1,0 +1,175 @@
+//! 로그인과 비밀번호 변경.
+
+use dioxus::prelude::*;
+use pango_api::auth::{ChangePasswordRequest, LoginRequest, LoginResponse};
+use pango_api::Empty;
+
+use crate::api;
+use crate::route::Route;
+use crate::session::use_session;
+use crate::ui::{Button, FormError, Spinner, TextField};
+
+#[component]
+pub fn Login() -> Element {
+    let mut session = use_session();
+    let nav = navigator();
+    let mut login_id = use_signal(String::new);
+    let mut password = use_signal(String::new);
+    let mut error = use_signal(String::new);
+    let mut busy = use_signal(|| false);
+
+    // 이미 로그인돼 있으면 홈으로.
+    use_effect(move || {
+        if session.me().is_some() {
+            nav.replace(Route::Home {});
+        }
+    });
+
+    let submit = move |event: FormEvent| async move {
+        event.prevent_default();
+        if busy() {
+            return;
+        }
+        busy.set(true);
+        error.set(String::new());
+        let request = LoginRequest {
+            login_id: login_id(),
+            password: password(),
+            token_in_body: false,
+        };
+        match api::post::<_, LoginResponse>("/auth/login", &request).await {
+            Ok(response) => {
+                password.set(String::new());
+                session.set(Some(response.me));
+            }
+            Err(failure) => error.set(failure.message()),
+        }
+        busy.set(false);
+    };
+
+    if !session.is_loaded() {
+        return rsx! { div { class: "boot", Spinner {} } };
+    }
+    rsx! {
+        main { class: "auth",
+            form { class: "auth-card", onsubmit: submit,
+                div { class: "brand brand-lg",
+                    span { class: "brand-mark", "P" }
+                    span { class: "brand-name", "pango" }
+                }
+                h1 { class: "auth-title", "로그인" }
+                FormError { message: error() }
+                TextField {
+                    label: "아이디",
+                    value: login_id(),
+                    autocomplete: "username",
+                    required: true,
+                    maxlength: 32,
+                    oninput: move |value| login_id.set(value),
+                }
+                TextField {
+                    label: "비밀번호",
+                    kind: "password",
+                    value: password(),
+                    autocomplete: "current-password",
+                    required: true,
+                    maxlength: 128,
+                    oninput: move |value| password.set(value),
+                }
+                Button { submit: true, block: true, busy: busy(), "로그인" }
+                p { class: "auth-hint", "계정은 관리자가 발급합니다. 비밀번호를 잊었다면 관리자에게 초기화를 요청하세요." }
+            }
+        }
+    }
+}
+
+/// 비밀번호 변경. 임시 비밀번호 상태에서는 이 화면만 쓸 수 있다.
+#[component]
+pub fn ChangePassword() -> Element {
+    let mut session = use_session();
+    let nav = navigator();
+    let mut current = use_signal(String::new);
+    let mut new_password = use_signal(String::new);
+    let mut confirm = use_signal(String::new);
+    let mut error = use_signal(String::new);
+    let mut busy = use_signal(|| false);
+
+    use_effect(move || {
+        if session.is_loaded() && session.me().is_none() {
+            nav.replace(Route::Login {});
+        }
+    });
+
+    let forced = session.me().is_some_and(|me| me.must_change_password);
+    let mismatch = !confirm().is_empty() && confirm() != new_password();
+
+    let submit = move |event: FormEvent| async move {
+        event.prevent_default();
+        if busy() {
+            return;
+        }
+        if new_password() != confirm() {
+            error.set("새 비밀번호가 서로 다릅니다.".into());
+            return;
+        }
+        busy.set(true);
+        error.set(String::new());
+        let request = ChangePasswordRequest {
+            current_password: current(),
+            new_password: new_password(),
+        };
+        match api::post::<_, Empty>("/me/password", &request).await {
+            Ok(_) => {
+                session.refresh().await;
+                nav.replace(Route::Home {});
+            }
+            Err(failure) => error.set(session.handle(&failure)),
+        }
+        busy.set(false);
+    };
+
+    rsx! {
+        main { class: "auth",
+            form { class: "auth-card", onsubmit: submit,
+                h1 { class: "auth-title", "비밀번호 변경" }
+                if forced {
+                    p { class: "auth-hint", "임시 비밀번호로 로그인했습니다. 계속하려면 새 비밀번호를 정해 주세요." }
+                }
+                FormError { message: error() }
+                TextField {
+                    label: if forced { "임시 비밀번호" } else { "현재 비밀번호" },
+                    kind: "password",
+                    value: current(),
+                    autocomplete: "current-password",
+                    required: true,
+                    maxlength: 128,
+                    oninput: move |value| current.set(value),
+                }
+                TextField {
+                    label: "새 비밀번호",
+                    kind: "password",
+                    value: new_password(),
+                    autocomplete: "new-password",
+                    hint: "10자 이상. 아이디가 들어가면 안 됩니다.",
+                    required: true,
+                    maxlength: 128,
+                    oninput: move |value| new_password.set(value),
+                }
+                TextField {
+                    label: "새 비밀번호 확인",
+                    kind: "password",
+                    value: confirm(),
+                    autocomplete: "new-password",
+                    error: if mismatch { "새 비밀번호와 다릅니다." } else { "" },
+                    required: true,
+                    maxlength: 128,
+                    oninput: move |value| confirm.set(value),
+                }
+                Button { submit: true, block: true, busy: busy(), "변경" }
+                if !forced {
+                    Link { class: "auth-link", to: Route::Profile {}, "돌아가기" }
+                }
+            }
+        }
+    }
+}
