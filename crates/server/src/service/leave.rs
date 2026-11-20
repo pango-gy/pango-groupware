@@ -560,7 +560,10 @@ pub async fn units_in_range(
     approved_units(conn, None, range).await
 }
 
-/// 한 구성원의 기간 안 날짜별 휴가 단위(근태 계산용).
+/// 한 구성원의 기간 안 날짜별 휴가 단위. 휴가 기능과 근태가 만나는 지점이다.
+///
+/// 근태 판정(지각·조퇴 기준 조정, 종일 휴가의 `on_leave`)은 **모두** 이 함수(여러 구성원이면
+/// [`units_in_range`])를 거친다. 승인된 휴가만 반영한다.
 pub async fn units_by_date(
     conn: &mut Conn,
     member_id: MemberId,

@@ -821,23 +821,10 @@ async fn run_linked_effect_tx(
             leave::on_document_closed_tx(conn, record.id, outcome, actor_id, now).await
         }
         DocumentKind::AttendanceCorrection => {
-            attendance_correction_effect_tx(conn, record, outcome, actor_id, now).await
+            attendance::on_correction_document_closed_tx(conn, record.id, outcome, actor_id, now)
+                .await
         }
     }
-}
-
-/// 근태 정정 문서가 종료됐을 때의 연결 효과(최종 승인 → 기록 정정, 반려·회수 → 요청 종료).
-///
-/// 오류를 돌려주면 결재 전이 전체가 롤백된다. 승인 시점에 정정 값을 다시 검증하므로, 값이 더는
-/// 유효하지 않으면 승인 자체가 실패하고 결재자는 반려로 문서를 끝낼 수 있다.
-async fn attendance_correction_effect_tx(
-    conn: &mut Conn,
-    record: &DocumentRecord,
-    outcome: LinkedOutcome,
-    actor_id: MemberId,
-    now: Timestamp,
-) -> ServiceResult<()> {
-    attendance::on_correction_document_closed_tx(conn, record.id, outcome, actor_id, now).await
 }
 
 // ───────────── 기안·상신 ─────────────

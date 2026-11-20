@@ -29,15 +29,6 @@ pub struct Page<T> {
     pub next_cursor: Option<String>,
 }
 
-impl<T> Page<T> {
-    pub fn complete(items: Vec<T>) -> Self {
-        Self {
-            items,
-            next_cursor: None,
-        }
-    }
-}
-
 /// 목록 조회 공통 쿼리.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PageQuery {

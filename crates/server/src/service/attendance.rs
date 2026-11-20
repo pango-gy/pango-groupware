@@ -69,18 +69,6 @@ const CSV_HEADER: [&str; 9] = [
     "상태",
 ];
 
-/// 휴가 기능과 연결되는 지점: 구성원이 기간 안의 어느 날 어떤 단위의 휴가를 쓰는지.
-///
-/// 근태 판정(지각·조퇴 기준 조정, 종일 휴가의 `on_leave`)은 **모두** 이 함수를 거친다.
-/// 승인된 휴가만 반영한다.
-async fn leave_units_by_date(
-    conn: &mut Conn,
-    member_id: MemberId,
-    range: DateRange,
-) -> ServiceResult<BTreeMap<NaiveDate, LeaveUnit>> {
-    super::leave::units_by_date(conn, member_id, range).await
-}
-
 fn record_dto(record: &AttendanceRecord) -> AttendanceRecordDto {
     AttendanceRecordDto {
         id: record.id,
@@ -197,7 +185,7 @@ impl Evaluator {
 /// 여러 구성원의 휴가를 구성원 수와 무관한 횟수의 조회로 읽어 둔다.
 ///
 /// 기간 안의 승인된 휴가를 전부 한 번에 읽어 `member_ids`의 것만 남긴다. 구성원마다
-/// [`leave_units_by_date`]를 부른 것과 결과가 같다(같은 규칙을 한 번에 적용할 뿐이다).
+/// [`super::leave::units_by_date`]를 부른 것과 결과가 같다(같은 규칙을 한 번에 적용할 뿐이다).
 async fn leaves_for(
     conn: &mut Conn,
     member_ids: Vec<MemberId>,
@@ -277,7 +265,7 @@ pub async fn today_tx(
     let evaluated_date = record.as_ref().map_or(work_date, |r| r.work_date);
 
     let range = DateRange::new(evaluated_date.min(work_date), work_date)?;
-    let leaves = leave_units_by_date(conn, member_id, range).await?;
+    let leaves = super::leave::units_by_date(conn, member_id, range).await?;
     let holiday_name = holiday_names(conn, DateRange::single(work_date))
         .await?
         .remove(&work_date);
@@ -410,7 +398,7 @@ async fn month_days(
         .into_iter()
         .map(|r| (r.work_date, r))
         .collect();
-    let leaves = leave_units_by_date(conn, member_id, range).await?;
+    let leaves = super::leave::units_by_date(conn, member_id, range).await?;
     let mut holidays = holiday_names(conn, range).await?;
     let company = Company::load(conn).await?;
     let evaluator = Evaluator::new(conn, company, range, now).await?;
@@ -864,7 +852,8 @@ pub async fn cancel_correction(
 /// - 같은 결과가 다시 오면 아무것도 하지 않는다.
 ///
 /// 문서에 연결된 요청이 없거나 정정 값이 더는 유효하지 않으면 오류다. 그러면 결재 전이 전체가
-/// 롤백되어, 문서만 승인되고 기록은 고쳐지지 않은 상태가 생기지 않는다.
+/// 롤백되어, 문서만 승인되고 기록은 고쳐지지 않은 상태가 생기지 않는다. 승인이 그렇게 실패한
+/// 문서는 결재자가 반려로 끝낼 수 있다.
 pub async fn on_correction_document_closed_tx(
     conn: &mut Conn,
     document_id: DocumentId,
