@@ -1,0 +1,16 @@
+[package]
+name = "pango-api"
+description = "pango-groupware 요청/응답 타입 (서버와 웹이 공유)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+pango-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+
+[lints]
+workspace = true

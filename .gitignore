@@ -1,0 +1,8 @@
+/target
+/data
+/crates/server/web-dist
+*.db
+*.db-shm
+*.db-wal
+.DS_Store
+.env
