@@ -66,7 +66,8 @@ fn PolicyEditor(dto: CompanySettingsDto, onreload: EventHandler<()>) -> Element 
             data: input,
         };
         let result = api::put::<_, CompanySettingsDto>("/admin/settings", &request).await;
-        busy.set(false);
+        // 저장에 성공했거나 버전이 어긋났으면 다시 읽는다. 다시 읽으면 이 편집기는 새 버전으로
+        // 바뀌므로(`key`) 그때까지 버튼을 막아 둔다(다시 읽는 사이 두 번째 저장 방지).
         match result {
             Ok(_) => {
                 report_success("근무 정책을 저장했습니다.");
@@ -81,6 +82,7 @@ fn PolicyEditor(dto: CompanySettingsDto, onreload: EventHandler<()>) -> Element 
                 onreload.call(());
             }
             Err(failure) => {
+                busy.set(false);
                 let message = failure.message();
                 match failure.field {
                     Some(field) => {

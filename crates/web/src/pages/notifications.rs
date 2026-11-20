@@ -28,6 +28,7 @@ pub fn Notifications() -> Element {
     // 이 화면에서 읽음 처리한 알림. 목록을 다시 받지 않고 바로 읽음으로 보이게 한다.
     let mut read_ids = use_signal(BTreeSet::<NotificationId>::new);
     let mut marking_all = use_signal(|| false);
+    let mut opening = use_signal(|| false);
     let more = use_more_pages::<NotificationDto>();
     let mut first = use_resource(move || async move {
         let path = list_path(unread_only());
@@ -36,6 +37,11 @@ pub fn Notifications() -> Element {
     });
 
     let open = move |item: NotificationDto| async move {
+        // 읽음 처리 중에 다시 누르면(두 번 누름) 한 번만 처리하고 한 번만 이동한다.
+        if opening() {
+            return;
+        }
+        opening.set(true);
         if is_unread(&item, &read_ids.read()) {
             match api::post::<_, Empty>(&format!("/notifications/{}/read", item.id), &Empty {})
                 .await
@@ -55,6 +61,7 @@ pub fn Notifications() -> Element {
         {
             nav.push(route);
         }
+        opening.set(false);
     };
     let mark_all = move |_| async move {
         if marking_all() {

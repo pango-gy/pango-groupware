@@ -20,6 +20,8 @@ pub fn Profile() -> Element {
     let nav = navigator();
     let mut sessions =
         use_resource(|| async { api::get::<Vec<SessionInfo>>("/me/sessions").await });
+    // 로그아웃시키는 중인 기기. 끝날 때까지 다른 "로그아웃"도 막는다.
+    let mut revoking = use_signal(|| None::<String>);
     let Some(me) = session.me() else {
         return rsx! {};
     };
@@ -27,6 +29,10 @@ pub fn Profile() -> Element {
 
     let logout = move |_| session::logout(session, nav);
     let revoke = move |id: String| async move {
+        if revoking().is_some() {
+            return;
+        }
+        revoking.set(Some(id.clone()));
         match api::delete::<Empty>(&format!("/me/sessions/{id}")).await {
             Ok(_) => {
                 report_success("기기에서 로그아웃했습니다.");
@@ -34,6 +40,7 @@ pub fn Profile() -> Element {
             }
             Err(error) => report_error(&error),
         }
+        revoking.set(None);
     };
 
     rsx! {
@@ -89,6 +96,8 @@ pub fn Profile() -> Element {
                                     Button {
                                         kind: ButtonKind::Secondary,
                                         small: true,
+                                        busy: revoking().as_deref() == Some(item.id.to_string().as_str()),
+                                        disabled: revoking().is_some(),
                                         onclick: {
                                             let id = item.id.to_string();
                                             move |_| revoke(id.clone())

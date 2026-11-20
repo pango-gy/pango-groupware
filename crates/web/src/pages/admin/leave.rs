@@ -163,6 +163,8 @@ fn AdjustModal(
     let mut memo = use_signal(String::new);
     let mut error = use_signal(String::new);
     let mut busy = use_signal(|| false);
+    // 창을 열 때 한 번 만든다. 다시 눌러도(응답을 못 받고 재시도해도) 조정은 한 번만 된다.
+    let mut key = use_signal(api::new_idempotency_key);
 
     let parsed = logic::parse_adjust_days(&days());
     let days_error = match (&parsed, days().trim().is_empty()) {
@@ -186,8 +188,9 @@ fn AdjustModal(
         };
         busy.set(true);
         error.set(String::new());
-        match api::post::<_, BalanceDto>("/admin/leave/adjustments", &request).await {
+        match api::post_once::<_, BalanceDto>("/admin/leave/adjustments", &request, &key()).await {
             Ok(balance) => {
+                key.set(api::new_idempotency_key());
                 report_success(format!(
                     "조정했습니다. 잔여 {}",
                     format::leave_days(balance.balance.remaining.quarters())
@@ -429,7 +432,8 @@ fn TypeModal(
     let mut form = use_signal(|| initial);
     let mut error = use_signal(String::new);
     let mut busy = use_signal(|| false);
-    let key = use_signal(api::new_idempotency_key);
+    // 창을 열 때 한 번 만들고 성공하면 바꾼다. 재시도해도 종류는 하나만 생긴다.
+    let mut key = use_signal(api::new_idempotency_key);
     let creating = existing.is_none();
     let existing_id = existing.as_ref().map(|t| t.id.to_string());
     let version = existing.as_ref().map(|t| t.version);
@@ -470,6 +474,7 @@ fn TypeModal(
             };
             match result {
                 Ok(_) => {
+                    key.set(api::new_idempotency_key());
                     report_success(if creating {
                         "휴가 종류를 추가했습니다."
                     } else {

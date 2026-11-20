@@ -319,7 +319,8 @@ fn FormEditor(
     let mut attempted = use_signal(|| false);
     let mut error = use_signal(String::new);
     let mut busy = use_signal(|| false);
-    let key = use_signal(api::new_idempotency_key);
+    // 창을 열 때 한 번 만들고 성공하면 바꾼다. 재시도해도 양식은 하나만 생긴다.
+    let mut key = use_signal(api::new_idempotency_key);
 
     let original: Option<(FormId, i64)> = form.as_ref().map(|f| (f.id, f.version));
     let system = form.as_ref().is_some_and(logic::is_system);
@@ -364,6 +365,7 @@ fn FormEditor(
         busy.set(false);
         match result {
             Ok(_) => {
+                key.set(api::new_idempotency_key());
                 report_success(if creating {
                     "양식을 만들었습니다."
                 } else {
