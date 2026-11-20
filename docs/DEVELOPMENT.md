@@ -54,3 +54,36 @@ cargo fmt --all                                          # 포맷
 - 거부된 요청이 **아무것도 바꾸지 않았는지**까지 확인합니다.
 - 응답에 다른 사람의 정보나 비밀 값이 섞이지 않았는지 확인합니다.
 - 동시성 테스트는 `#[tokio::test(flavor = "multi_thread", worker_threads = 4)]`로 실제 병렬 요청을 보냅니다.
+
+## 웹 화면을 추가하는 순서
+
+웹 UI는 `crates/web`(Dioxus 0.7, WASM)입니다. 기준 구현은 `pages/profile.rs`, `pages/people.rs`, `pages/auth.rs`입니다.
+
+```bash
+cargo xtask web --dev        # 번들 빌드 → crates/server/web-dist
+cargo test -p pango-web      # 순수 함수 테스트(네이티브에서 실행)
+cargo clippy -p pango-web --target wasm32-unknown-unknown -- -D warnings
+```
+
+| 무엇 | 어디 |
+| --- | --- |
+| 경로 | `route.rs`의 `Route` (이미 전체 경로가 정의돼 있음) |
+| 메뉴 | `layout.rs`의 `main_nav` / `team_nav` / `admin_nav` |
+| 화면 | `pages/<이름>.rs`, 관리자 화면은 `pages/admin/<이름>.rs` |
+| 공용 컴포넌트 | `ui/mod.rs` (`Button`, `Card`, `Badge`, `TextField`, `SelectField`, `TextArea`, `Modal`, `Tabs`, `Stat`, `EmptyState`, `PageHeader`, `MonthSwitcher`, `MonthCalendar`, `MemberPicker`, `resource_view`) |
+| 문구 | `text.rs` (오류 코드·상태 값 → 한국어). 화면 파일에 상태 값 문구를 흩어 놓지 않는다 |
+| 표시 변환 | `format.rs` (시각·날짜·시간 길이), `calendar.rs` (달력 계산) |
+| 스타일 | `assets/style.css`. 색·간격은 토큰(`var(--…)`)만 사용 |
+
+### 규칙
+- **화면은 조립만 한다.** 계산·분류·검증이 필요하면 순수 함수로 빼서(`format.rs`, `text.rs`, 또는 화면 파일의 `mod logic`) 테스트를 붙인다.
+- 서버 호출은 `api::get/post/post_once/patch/put/delete`만 쓴다. 요청/응답 타입은 `pango-api`의 것을 그대로 쓴다.
+- 조회는 `use_resource` + `resource_view`로 세 상태(불러오는 중·실패·성공)를 처리한다. 빈 목록은 `EmptyState`.
+- 변경 요청은 진행 중 `busy`로 버튼을 막고, 실패는 `report_error`, 성공은 `report_success` 후 목록을 `restart()`한다.
+- 생성 폼은 폼을 열 때 `api::new_idempotency_key()`를 하나 만들어 `post_once`에 쓴다(두 번 눌러도 한 번만 생성).
+- 수정 폼은 읽어 온 `version`을 그대로 보낸다. `version_conflict`는 문구로 안내하고 다시 불러온다.
+- 권한에 따라 버튼을 숨기되, **숨김은 편의일 뿐**이다. 서버 오류(403/404)도 정상 흐름으로 처리한다.
+- 삭제·반려·취소 같은 되돌리기 어려운 동작은 확인 단계를 둔다(`Modal`).
+- 사용자 입력에 `maxlength`를 주고, 서버 검증 오류는 해당 필드 근처나 폼 상단(`FormError`)에 보여 준다.
+- 모바일(폭 959px 이하)에서 가로 스크롤이 생기지 않아야 한다. 표는 `.table-wrap`으로 감싸거나 목록(`.list`)으로 바꾼다.
+- 훅(`use_*`)은 컴포넌트 본문 최상단에서만 부른다. 이벤트 핸들러 안에서는 `report_error` 같은 비-훅 함수를 쓴다.
