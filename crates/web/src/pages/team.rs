@@ -312,9 +312,13 @@ mod logic {
                 tone: Tone::Neutral,
             },
             tile("미출근", not_in, Tone::Danger),
+            // 아직 근무 중인 사람도 지각이면 센다(관리 홈의 집계와 같은 기준: 지각 분 > 0).
             tile(
                 "지각",
-                count(|s| matches!(s, DayStatus::Late | DayStatus::LateAndEarlyLeave)),
+                team.members
+                    .iter()
+                    .filter(|m| m.evaluation.late_minutes > 0)
+                    .count(),
                 Tone::Warning,
             ),
             tile("휴가", count(|s| s == DayStatus::OnLeave), Tone::Info),
@@ -342,6 +346,11 @@ mod logic {
                 record: clocked.then(|| record("2026-03-02", "2026-03-02T00:00:00Z", None)),
                 evaluation: evaluation(status, 0),
             }
+        }
+
+        fn late(mut entry: TeamAttendanceEntry) -> TeamAttendanceEntry {
+            entry.evaluation.late_minutes = 12;
+            entry
         }
 
         fn error(status: u16) -> ApiError {
@@ -439,7 +448,9 @@ mod logic {
                 is_working_day: true,
                 members: vec![
                     entry(DayStatus::Normal, true),
-                    entry(DayStatus::Late, true),
+                    late(entry(DayStatus::Late, true)),
+                    // 아직 근무 중이어도 늦게 출근했으면 지각으로 센다.
+                    late(entry(DayStatus::Working, true)),
                     entry(DayStatus::LateAndEarlyLeave, true),
                     entry(DayStatus::Scheduled, false),
                     entry(DayStatus::Absent, false),
@@ -454,8 +465,8 @@ mod logic {
             assert_eq!(
                 tiles,
                 vec![
-                    ("전체", "7명".to_owned(), Tone::Neutral),
-                    ("출근", "4명".to_owned(), Tone::Neutral),
+                    ("전체", "8명".to_owned(), Tone::Neutral),
+                    ("출근", "5명".to_owned(), Tone::Neutral),
                     ("미출근", "2명".to_owned(), Tone::Danger),
                     ("지각", "2명".to_owned(), Tone::Warning),
                     ("휴가", "1명".to_owned(), Tone::Info),
