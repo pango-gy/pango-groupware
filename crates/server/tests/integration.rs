@@ -271,7 +271,7 @@ async fn approver_who_lost_authority_cannot_complete_a_personal_request() {
 
     // 신청 뒤에 조직장에서 해제됐다.
     let department =
-        pango_db::members::find(&mut *app.state.db.read().await.expect("conn"), head.id)
+        pango_db::members::find(&mut app.state.db.read().await.expect("conn"), head.id)
             .await
             .expect("find")
             .expect("member")
