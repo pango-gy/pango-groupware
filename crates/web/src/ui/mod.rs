@@ -1,8 +1,10 @@
 //! 공용 UI 컴포넌트. 화면은 여기 있는 조각만 조립하고, 모양은 `assets/style.css`가 정한다.
 
 mod icon;
+mod member_picker;
 
 pub use icon::{Icon, IconName};
+pub use member_picker::MemberPicker;
 
 use dioxus::prelude::*;
 
@@ -423,4 +425,62 @@ pub fn report_error(error: &ApiError) {
 
 pub fn report_success(message: impl Into<String>) {
     consume_context::<Toasts>().success(message);
+}
+
+/// 달 이동 머리: `‹ 2026년 3월 ›`.
+#[component]
+pub fn MonthSwitcher(
+    month: crate::calendar::YearMonth,
+    onchange: EventHandler<crate::calendar::YearMonth>,
+) -> Element {
+    rsx! {
+        div { class: "month-switcher",
+            button {
+                class: "icon-btn month-prev",
+                r#type: "button",
+                "aria-label": "이전 달",
+                disabled: !month.can_go_prev(),
+                onclick: move |_| onchange.call(month.prev()),
+                Icon { name: IconName::Chevron }
+            }
+            strong { class: "month-label", "{month.label()}" }
+            button {
+                class: "icon-btn",
+                r#type: "button",
+                "aria-label": "다음 달",
+                disabled: !month.can_go_next(),
+                onclick: move |_| onchange.call(month.next()),
+                Icon { name: IconName::Chevron }
+            }
+        }
+    }
+}
+
+/// 한 달 달력. 날짜 칸의 내용은 `day`가 그린다.
+#[component]
+pub fn MonthCalendar(
+    month: crate::calendar::YearMonth,
+    day: Callback<chrono::NaiveDate, Element>,
+) -> Element {
+    const WEEKDAYS: [&str; 7] = ["일", "월", "화", "수", "목", "금", "토"];
+    rsx! {
+        div { class: "calendar", role: "grid",
+            div { class: "calendar-row calendar-head", role: "row",
+                for name in WEEKDAYS {
+                    span { class: "calendar-weekday", role: "columnheader", "{name}" }
+                }
+            }
+            for week in month.weeks() {
+                div { class: "calendar-row", role: "row",
+                    for cell in week {
+                        if let Some(date) = cell {
+                            div { class: "calendar-cell", role: "gridcell", {day.call(date)} }
+                        } else {
+                            div { class: "calendar-cell calendar-cell-empty", role: "gridcell" }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
