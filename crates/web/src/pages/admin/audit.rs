@@ -11,10 +11,10 @@ use crate::session::use_session;
 use crate::text;
 use crate::ui::{
     resource_view, use_more_pages, Button, ButtonKind, Card, EmptyState, FormError, IconName,
-    LoadMore, MemberPicker, Modal, PageHeader, PickedMember, SelectField, TextField,
+    LoadMore, MemberPicker, Meta, Modal, PageHeader, PickedMember, SelectField, TextField,
 };
 
-use logic::{actor_text, detail_full, detail_preview, query_pairs, target_text, AuditFilters};
+use logic::{actor_text, detail_full, detail_preview, query_pairs, target_parts, AuditFilters};
 
 /// 상세 열에 보여 줄 최대 글자 수. 넘으면 "전체 보기"로 연다.
 const PREVIEW_CHARS: usize = 80;
@@ -169,7 +169,9 @@ fn AuditRow(entry: AuditEntryDto, when: String, onopen: EventHandler<String>) ->
             td { "data-label": "시각", class: "nowrap", "{when}" }
             td { "data-label": "행위자", {actor_text(&entry)} }
             td { "data-label": "동작", title: "{entry.action}", {text::audit_action_label(&entry.action)} }
-            td { "data-label": "대상", class: "wrap-anywhere", {target_text(&entry)} }
+            td { "data-label": "대상",
+                Meta { items: target_parts(&entry) }
+            }
             td { "data-label": "상세",
                 code { class: "audit-detail", "{preview}" }
                 if truncated {
@@ -285,12 +287,11 @@ pub mod logic {
         }
     }
 
-    pub fn target_text(entry: &AuditEntryDto) -> String {
-        let label = text::audit_target_label(&entry.target_type);
-        match &entry.target_id {
-            Some(id) => format!("{label} · {id}"),
-            None => label,
-        }
+    /// 대상의 종류와 (있으면) ID. 화면은 둘을 간격을 둔 별도 요소로 그린다.
+    pub fn target_parts(entry: &AuditEntryDto) -> Vec<String> {
+        std::iter::once(text::audit_target_label(&entry.target_type))
+            .chain(entry.target_id.clone())
+            .collect()
     }
 
     #[cfg(test)]
@@ -412,10 +413,10 @@ pub mod logic {
             assert_eq!(actor_text(&e), "알 수 없는 구성원");
             e.actor_name = Some("홍길동".into());
             assert_eq!(actor_text(&e), "홍길동");
-            assert_eq!(target_text(&e), "공지 · abc");
+            assert_eq!(target_parts(&e), vec!["공지", "abc"]);
             e.target_id = None;
             e.target_type = "custom".into();
-            assert_eq!(target_text(&e), "custom");
+            assert_eq!(target_parts(&e), vec!["custom"]);
         }
     }
 }

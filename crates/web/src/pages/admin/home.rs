@@ -129,7 +129,11 @@ fn AuditLine(entry: AuditEntryDto, when: String) -> Element {
             Link { class: "row-link", to: Route::AdminAudit {},
                 span { class: "list-row-main",
                     strong { title: "{entry.action}", {text::audit_action_label(&entry.action)} }
-                    Meta { items: vec![audit_logic::actor_text(&entry), audit_logic::target_text(&entry)] }
+                    Meta {
+                        items: std::iter::once(audit_logic::actor_text(&entry))
+                            .chain(audit_logic::target_parts(&entry))
+                            .collect::<Vec<_>>(),
+                    }
                 }
                 small { class: "nowrap text-sub", "{when}" }
             }

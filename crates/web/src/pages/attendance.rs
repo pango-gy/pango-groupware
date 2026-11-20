@@ -1006,10 +1006,12 @@ pub(crate) mod logic {
         }
     }
 
-    /// 모바일 날짜 줄의 보조 정보: (공휴일 이름) · 출퇴근 시각 · (근무시간).
+    /// 모바일 날짜 줄의 보조 정보: (공휴일 이름), (기록이 있으면) 출퇴근 시각, (퇴근했으면) 근무시간.
     pub fn day_meta(row: &DayRow) -> Vec<String> {
         let mut items: Vec<String> = row.note.iter().cloned().collect();
-        items.push(format!("{} – {}", row.cells.clock_in, row.cells.clock_out));
+        if row.cells.clock_in != EMPTY {
+            items.push(format!("{} – {}", row.cells.clock_in, row.cells.clock_out));
+        }
         if row.cells.worked != EMPTY {
             items.push(row.cells.worked.clone());
         }
@@ -1647,7 +1649,7 @@ pub(crate) mod logic {
                 record: None,
                 evaluation: evaluation(DayStatus::DayOff, 0),
             };
-            assert_eq!(day_meta(&day_row(&entry, seoul())), vec!["삼일절", "- – -"]);
+            assert_eq!(day_meta(&day_row(&entry, seoul())), vec!["삼일절"]);
             let worked = DayEntry {
                 date: date("2026-03-03"),
                 is_working_day: true,

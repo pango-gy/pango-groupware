@@ -654,9 +654,10 @@ pub struct StatPart {
     pub unit: bool,
 }
 
-/// `12시간 30분` → `12` `시간 ` `30` `분`. 숫자가 하나도 없으면(`-`, `없음`) 통째로 값이다.
+/// `12시간 30분` → `12` `시간 ` `30` `분`. 시각(`16:15`)은 통째로 숫자이고, 숫자가 하나도 없으면
+/// (`-`, `없음`) 통째로 값이다.
 pub fn stat_parts(value: &str) -> Vec<StatPart> {
-    let is_number = |c: char| c.is_ascii_digit() || matches!(c, '.' | ',' | '-' | '+');
+    let is_number = |c: char| c.is_ascii_digit() || matches!(c, '.' | ',' | '-' | '+' | ':');
     if !value.chars().any(|c| c.is_ascii_digit()) {
         return vec![StatPart {
             text: value.to_owned(),
@@ -1315,6 +1316,11 @@ mod tests {
         assert_eq!(
             shown("12.5일"),
             vec![("12.5".into(), false), ("일".into(), true)]
+        );
+        assert_eq!(
+            shown("16:15"),
+            vec![("16:15".into(), false)],
+            "시각은 통째로 숫자"
         );
         assert_eq!(shown("-"), vec![("-".into(), false)]);
         assert_eq!(shown("없음"), vec![("없음".into(), false)]);

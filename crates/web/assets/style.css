@@ -14,9 +14,9 @@
   --grey-700: #4e5968;
   --grey-800: #333d4b;
   --grey-900: #191f28;
-  /* 패널(흰 바탕)과 그 위에 놓이는 입력 바탕 */
+  /* 앱 배경과 그 위에 놓이는 패널. 패널 안의 회색 단계(50 → 100 → 200)는 패널에서 한 칸씩 멀어진다. */
+  --canvas: #f9fafb;
   --panel: #ffffff;
-  --field: #f2f4f6;
   /* 색마다 기본(막대·채움) · strong(옅은 바탕 위 글자) · weak(옅은 바탕) */
   --blue: #2f6fe4;
   --blue-hover: #1b64da;
@@ -55,7 +55,7 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --grey-50: #17171c;
+    --grey-50: #1b1b21;
     --grey-100: #202027;
     --grey-200: #2c2c35;
     --grey-300: #3c3c47;
@@ -65,8 +65,8 @@
     --grey-700: #c3c3c6;
     --grey-800: #e4e4e5;
     --grey-900: #ffffff;
-    --panel: #1e1e25;
-    --field: #2a2a32;
+    --canvas: #101014;
+    --panel: #17171c;
     --blue: #4d8bf8;
     --blue-hover: #6a9dfa;
     --blue-strong: #8fb6fb;
@@ -90,12 +90,17 @@
   }
 }
 
+/* 모바일은 패널 사이의 8px 띠가 또렷하도록 앱 배경을 한 단계 진하게 둔다(다크는 이미 충분히 어둡다). */
+@media (max-width: 959px) and (prefers-color-scheme: light) {
+  :root { --canvas: #f2f4f6; }
+}
+
 /* ── 기본 ─────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0;
-  background: var(--grey-50);
+  background: var(--canvas);
   color: var(--grey-900);
   font: 15px/1.6 var(--font);
   letter-spacing: -0.01em;
@@ -233,8 +238,9 @@ html,
     margin-left: calc(20px + env(safe-area-inset-left));
     margin-right: calc(20px + env(safe-area-inset-right));
   }
-  .content > .panel, .content > .grid-2, .content > .people-layout, .content > .tabs, .content > .page-header {
-    margin-left: 0; margin-right: 0;
+  .content > .panel, .content > .grid-2, .content > .people-layout, .content > .tabs, .content > .page-header,
+  .content > .page-form, .content > .empty, .content > .skeleton {
+    margin-left: 0; margin-right: 0; border-radius: 0;
   }
 }
 
@@ -340,7 +346,7 @@ html,
 .field-error { font-size: 13px; color: var(--red-strong); }
 .input {
   width: 100%; min-height: 44px; padding: 10px 14px;
-  background: var(--field); border: 0; border-radius: var(--radius-control);
+  background: var(--grey-100); border: 0; border-radius: var(--radius-control);
   font-size: 16px; /* iOS가 입력 시 화면을 확대하지 않는 최소 크기 */
   line-height: 1.5;
 }
@@ -386,7 +392,7 @@ html,
 .check-input {
   appearance: none; -webkit-appearance: none; position: relative;
   width: 20px; height: 20px; margin: 2px 0 0; flex: none; cursor: pointer;
-  border-radius: 6px; background: var(--field); box-shadow: inset 0 0 0 1.5px var(--grey-300);
+  border-radius: 6px; background: var(--grey-100); box-shadow: inset 0 0 0 1.5px var(--grey-300);
 }
 .check-input:checked { background: var(--blue); box-shadow: none; }
 .check-input:checked::after {
@@ -523,7 +529,7 @@ button.notification { cursor: pointer; }
 .table-nowrap td { white-space: nowrap; }
 .table-nowrap td:first-child { white-space: normal; }
 .cell-sub { display: block; font-size: 12px; color: var(--grey-600); }
-.row-muted td, .row-muted .list-row-main { color: var(--grey-500); }
+.row-muted td, .row-muted .list-row-main { color: var(--grey-600); }
 @media (max-width: 959px) {
   .table-wrap { margin: 0 -20px; }
   /* 좁은 화면에서는 표의 각 행을 쌓는다(가로 스크롤 없이). */
@@ -610,6 +616,9 @@ button.notification { cursor: pointer; }
 .empty-title { color: var(--grey-600); overflow-wrap: anywhere; }
 .empty-hint { font-size: 13px; color: var(--grey-600); overflow-wrap: anywhere; }
 .empty > .btn { margin-top: 8px; }
+/* 화면의 본문 자리에 바로 놓인 빈 상태·골격은 패널처럼 보이게 한다(바탕 위에 떠 보이지 않게). */
+.content > .empty, .content > .skeleton { background: var(--panel); border-radius: var(--radius-panel); }
+.content > .skeleton { padding: 24px; }
 
 /* ── 모달·토스트 ──────────────────────────────────── */
 .modal-backdrop {
@@ -653,7 +662,7 @@ button.notification { cursor: pointer; }
 .toast {
   pointer-events: auto; display: inline-flex; align-items: center; gap: 8px; max-width: 100%;
   padding: 12px 16px; border: 0; border-radius: 14px;
-  background: var(--grey-800); color: var(--grey-50); font-weight: 500; text-align: left;
+  background: var(--grey-800); color: var(--panel); font-weight: 500; text-align: left;
   box-shadow: var(--shadow-float); cursor: pointer; overflow-wrap: anywhere;
   animation: modal-in .2s ease-out;
 }
@@ -755,7 +764,7 @@ body:has(.action-bar) .toasts { bottom: calc(24px + var(--action-bar-h) + env(sa
 .picker-option-text strong { font-weight: 600; }
 .picked-member {
   display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 2px 2px 2px 10px;
-  border-radius: var(--radius-control); background: var(--field); min-width: 0;
+  border-radius: var(--radius-control); background: var(--grey-100); min-width: 0;
 }
 .picked-member-name { flex: 1; min-width: 0; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
