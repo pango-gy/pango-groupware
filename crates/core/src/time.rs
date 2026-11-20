@@ -205,6 +205,21 @@ pub fn parse_timezone(name: &str) -> DomainResult<Tz> {
         .map_err(|_| DomainError::validation("timezone", ValidationReason::InvalidFormat))
 }
 
+/// `YYYY-MM-DD` 날짜를 읽는다.
+///
+/// `NaiveDate::from_str`은 `2026-3-2`도 받으므로 길이를 고정해 표기를 하나로 유지한다.
+/// 같은 날짜가 여러 표기로 저장·비교되지 않도록 입력 검증과 저장값 검증이 함께 쓴다.
+pub fn parse_date(field: &'static str, raw: &str) -> DomainResult<NaiveDate> {
+    let bytes = raw.as_bytes();
+    (bytes.len() == 10 && bytes[4] == b'-' && bytes[7] == b'-')
+        .then(|| raw.parse::<NaiveDate>().ok())
+        .flatten()
+        .ok_or(DomainError::validation(
+            field,
+            ValidationReason::InvalidFormat,
+        ))
+}
+
 /// 회사 시간대와 근무일 전환 시각.
 ///
 /// `day_cutoff`가 05:00이면 05:00 이전의 시각은 **전날 근무일**에 속한다.
@@ -307,6 +322,31 @@ mod tests {
 
     fn date(value: &str) -> NaiveDate {
         value.parse().expect("date")
+    }
+
+    #[test]
+    fn parse_date_accepts_only_fixed_width_real_dates() {
+        assert_eq!(parse_date("date", "2028-02-29"), Ok(date("2028-02-29")));
+        for bad in [
+            "2026-2-3",
+            "2026-02-30",
+            "2027-02-29",
+            "20260302",
+            "2026/03/02",
+            " 2026-03-02",
+            "2026-03-02T00:00",
+            "+2026-03-0",
+            "",
+        ] {
+            assert_eq!(
+                parse_date("date", bad),
+                Err(DomainError::validation(
+                    "date",
+                    ValidationReason::InvalidFormat
+                )),
+                "accepted {bad:?}"
+            );
+        }
     }
 
     #[test]

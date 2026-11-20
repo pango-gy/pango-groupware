@@ -1,7 +1,10 @@
 //! HTTP 계층: 라우터와 공통 미들웨어.
 
+pub mod admin;
 pub mod auth;
 pub mod extract;
+pub mod notices;
+pub mod notifications;
 
 use axum::extract::DefaultBodyLimit;
 use axum::response::{IntoResponse, Response};
@@ -22,6 +25,9 @@ fn api_routes() -> Router<AppState> {
     Router::new()
         .route("/health", get(health))
         .merge(auth::routes())
+        .merge(notices::routes())
+        .merge(notifications::routes())
+        .merge(admin::routes())
         .fallback(not_found)
 }
 

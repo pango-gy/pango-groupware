@@ -6,7 +6,11 @@
 //! - 계정·권한·기록을 바꾸면 같은 트랜잭션에서 [`support::audit`]을 남긴다.
 //! - 다른 유스케이스와 한 트랜잭션으로 묶여야 하는 로직은 `*_tx(conn, …)` 함수로 둔다.
 
+pub mod audit_log;
 pub mod auth;
+pub mod notices;
+pub mod notifications;
+pub mod settings;
 pub mod setup;
 pub mod support;
 

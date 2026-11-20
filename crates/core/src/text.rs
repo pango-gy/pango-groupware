@@ -148,6 +148,10 @@ text_type!(
     /// 반드시 적어야 하는 사유.
     Reason, block("reason", 1, 1_000)
 );
+text_type!(
+    /// 회사 이름. 규칙은 [`LabelName`]과 같지만 오류가 `company_name` 필드를 가리킨다.
+    CompanyName, line("company_name", 1, 50)
+);
 
 /// 로그인 아이디. 소문자 영문·숫자와 `.`, `_`, `-`만 쓰며 영문·숫자로 시작한다.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -305,6 +309,18 @@ mod tests {
         let parsed = PersonName::parse(nfd).expect("valid");
         assert_eq!(parsed.as_str(), "홍");
         assert_eq!(parsed.as_str().chars().count(), 1);
+    }
+
+    #[test]
+    fn company_name_errors_point_at_company_name() {
+        assert_eq!(
+            CompanyName::parse(" "),
+            Err(DomainError::validation(
+                "company_name",
+                ValidationReason::Empty
+            ))
+        );
+        assert_eq!(CompanyName::RULE.max_chars, LabelName::RULE.max_chars);
     }
 
     #[test]

@@ -39,6 +39,7 @@ testing = ["pango-db/testing", "dep:tempfile"]
 
 [dev-dependencies]
 pango-server = { path = ".", features = ["testing"] }
+sqlx.workspace = true
 
 [lints]
 workspace = true

@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{DomainError, DomainResult, ValidationReason};
 use crate::id::{DepartmentId, MemberId};
+use crate::string_enum;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -222,6 +223,101 @@ pub fn change_role(actor: &Actor, subject: &Subject) -> DomainResult<()> {
         Err(DomainError::Forbidden)
     } else {
         Ok(())
+    }
+}
+
+string_enum! {
+    /// 공지 등 대상을 지정해 게시하는 자원의 대상 종류.
+    pub enum AudienceKind("audience") {
+        /// 전 구성원.
+        All => "all",
+        /// 특정 부서와 그 하위 부서.
+        Department => "department",
+    }
+}
+
+/// 게시 대상. 부서 대상이면 그 부서와 **하위 부서 전체**가 받는다(본부 공지는 팀에도 간다).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Audience {
+    All,
+    Department(DepartmentId),
+}
+
+impl Audience {
+    /// 부서 대상은 부서가 반드시 있어야 하고, 전체 대상은 부서를 받지 않는다.
+    /// 둘이 어긋난 요청은 작성자의 의도를 알 수 없으므로 거부한다.
+    pub fn new(kind: AudienceKind, department_id: Option<DepartmentId>) -> DomainResult<Self> {
+        match (kind, department_id) {
+            (AudienceKind::All, None) => Ok(Self::All),
+            (AudienceKind::Department, Some(id)) => Ok(Self::Department(id)),
+            (AudienceKind::All, Some(_)) => Err(DomainError::validation(
+                "department_id",
+                ValidationReason::Inconsistent,
+            )),
+            (AudienceKind::Department, None) => Err(DomainError::validation(
+                "department_id",
+                ValidationReason::Empty,
+            )),
+        }
+    }
+
+    pub const fn kind(&self) -> AudienceKind {
+        match self {
+            Self::All => AudienceKind::All,
+            Self::Department(_) => AudienceKind::Department,
+        }
+    }
+
+    pub const fn department_id(&self) -> Option<DepartmentId> {
+        match self {
+            Self::All => None,
+            Self::Department(id) => Some(*id),
+        }
+    }
+}
+
+/// 구성원이 볼 수 있는 게시 대상의 범위. 목록 조회의 필터와 단건 판정이 같은 값을 쓴다.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AudienceScope {
+    /// 모든 게시물(관리자).
+    Everything,
+    /// 전체 대상 게시물 + 이 부서들을 대상으로 한 게시물.
+    Departments(BTreeSet<DepartmentId>),
+}
+
+impl AudienceScope {
+    pub fn allows(&self, audience: &Audience) -> bool {
+        match (self, audience) {
+            (Self::Everything, _) | (_, Audience::All) => true,
+            (Self::Departments(visible), Audience::Department(id)) => visible.contains(id),
+        }
+    }
+}
+
+/// 게시 대상 열람 범위: 관리자는 전부, 그 외는 전체 대상과 **자기 부서 또는 그 상위 부서**
+/// 대상. `own_department_ancestors`는 행위자 소속 부서의 조상 목록(자신 포함)이다.
+pub fn audience_scope(actor: &Actor, own_department_ancestors: &[DepartmentId]) -> AudienceScope {
+    if actor.is_admin() {
+        return AudienceScope::Everything;
+    }
+    // 조상 목록이 다른 부서의 것이면 쓰지 않는다(호출 실수로 범위가 넓어지지 않게).
+    let own_chain = actor
+        .department_id
+        .is_some_and(|own| own_department_ancestors.first() == Some(&own));
+    let visible = if own_chain {
+        own_department_ancestors.iter().copied().collect()
+    } else {
+        BTreeSet::new()
+    };
+    AudienceScope::Departments(visible)
+}
+
+/// 게시물 하나를 볼 수 있는지. 범위 밖이면 존재를 숨긴다.
+pub fn view_audience(scope: &AudienceScope, audience: &Audience) -> DomainResult<()> {
+    if scope.allows(audience) {
+        Ok(())
+    } else {
+        Err(DomainError::NotFound)
     }
 }
 
@@ -466,6 +562,96 @@ mod tests {
         assert_eq!(
             view_department_team(&actor(Role::Admin, None, &[]), w.dept_b),
             Ok(())
+        );
+    }
+
+    #[test]
+    fn audience_requires_department_exactly_when_targeted() {
+        let d = DepartmentId::new();
+        assert_eq!(Audience::new(AudienceKind::All, None), Ok(Audience::All));
+        assert_eq!(
+            Audience::new(AudienceKind::Department, Some(d)),
+            Ok(Audience::Department(d))
+        );
+        assert_eq!(
+            Audience::new(AudienceKind::All, Some(d)),
+            Err(DomainError::validation(
+                "department_id",
+                ValidationReason::Inconsistent
+            ))
+        );
+        assert_eq!(
+            Audience::new(AudienceKind::Department, None),
+            Err(DomainError::validation(
+                "department_id",
+                ValidationReason::Empty
+            ))
+        );
+        for audience in [Audience::All, Audience::Department(d)] {
+            assert_eq!(
+                Audience::new(audience.kind(), audience.department_id()),
+                Ok(audience)
+            );
+        }
+    }
+
+    #[test]
+    fn audience_visibility_matrix() {
+        // 본부(hq) ─ 팀(team) ─ 파트(part), 그리고 형제 부서(other).
+        let (hq, team, part, other) = (
+            DepartmentId::new(),
+            DepartmentId::new(),
+            DepartmentId::new(),
+            DepartmentId::new(),
+        );
+        let team_member = actor(Role::Member, Some(team), &[]);
+        let scope = audience_scope(&team_member, &[team, hq]);
+        assert_eq!(view_audience(&scope, &Audience::All), Ok(()));
+        assert_eq!(view_audience(&scope, &Audience::Department(team)), Ok(()));
+        assert_eq!(
+            view_audience(&scope, &Audience::Department(hq)),
+            Ok(()),
+            "상위 부서 공지는 하위 부서원에게도 보인다"
+        );
+        for hidden in [part, other] {
+            assert_eq!(
+                view_audience(&scope, &Audience::Department(hidden)),
+                Err(DomainError::NotFound),
+                "하위·형제 부서 공지는 보이지 않는다"
+            );
+        }
+
+        let homeless = actor(Role::Member, None, &[]);
+        let scope = audience_scope(&homeless, &[]);
+        assert_eq!(view_audience(&scope, &Audience::All), Ok(()));
+        assert_eq!(
+            view_audience(&scope, &Audience::Department(hq)),
+            Err(DomainError::NotFound)
+        );
+
+        // 조직장이라도 관리자가 아니면 관할 하위 부서 공지를 따로 보지 않는다.
+        let manager = actor(Role::Member, Some(hq), &[hq, team, part]);
+        let scope = audience_scope(&manager, &[hq]);
+        assert_eq!(
+            view_audience(&scope, &Audience::Department(team)),
+            Err(DomainError::NotFound)
+        );
+
+        let admin = actor(Role::Admin, None, &[]);
+        assert_eq!(audience_scope(&admin, &[]), AudienceScope::Everything);
+        assert_eq!(
+            view_audience(&AudienceScope::Everything, &Audience::Department(other)),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn audience_scope_ignores_ancestors_of_another_department() {
+        let (mine, foreign) = (DepartmentId::new(), DepartmentId::new());
+        let member = actor(Role::Member, Some(mine), &[]);
+        assert_eq!(
+            audience_scope(&member, &[foreign]),
+            AudienceScope::Departments(BTreeSet::new())
         );
     }
 
