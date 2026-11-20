@@ -134,10 +134,7 @@ fn optional_text(
     field: &'static str,
     parse: impl FnOnce(&str) -> Result<String, DomainError>,
 ) -> ServiceResult<String> {
-    let parsed = text::optional(Some(raw), parse).map_err(|error| match error {
-        DomainError::Validation { reason, .. } => DomainError::Validation { field, reason },
-        other => other,
-    })?;
+    let parsed = text::optional(Some(raw), parse).map_err(|error| error.with_field(field))?;
     Ok(parsed.unwrap_or_default())
 }
 

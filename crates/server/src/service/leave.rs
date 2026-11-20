@@ -1116,13 +1116,7 @@ pub async fn admin_adjust(
         return Err(out_of_range("amount_q"));
     }
     let effective_on = plain_date("effective_on", request.effective_on)?;
-    let memo = Reason::parse(&request.memo).map_err(|error| match error {
-        DomainError::Validation { reason, .. } => DomainError::Validation {
-            field: "memo",
-            reason,
-        },
-        other => other,
-    })?;
+    let memo = Reason::parse(&request.memo).map_err(|error| error.with_field("memo"))?;
     state
         .write(async |conn: &mut Conn| {
             let actor = require_current_admin(conn, ctx).await?;

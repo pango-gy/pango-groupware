@@ -315,7 +315,7 @@ pub async fn change_password(
     let now = state.now();
     let login_id = LoginId::parse(&ctx.member.login_id).map_err(ServiceError::internal)?;
     let new_password = PlainPassword::parse_new(&request.new_password, &login_id)
-        .map_err(|e| rename_field(e, "new_password"))?;
+        .map_err(|e| e.with_field("new_password"))?;
     if request.new_password == request.current_password {
         return Err(DomainError::Conflict(ConflictReason::PasswordReused).into());
     }
@@ -371,13 +371,6 @@ pub async fn change_password(
             .await
         })
         .await
-}
-
-fn rename_field(error: DomainError, field: &'static str) -> DomainError {
-    match error {
-        DomainError::Validation { reason, .. } => DomainError::Validation { field, reason },
-        other => other,
-    }
 }
 
 pub async fn list_sessions(state: &AppState, ctx: &AuthContext) -> ServiceResult<Vec<SessionInfo>> {

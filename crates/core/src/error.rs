@@ -26,6 +26,16 @@ impl DomainError {
         Self::Validation { field, reason }
     }
 
+    /// 입력 오류의 필드 이름을 요청 필드로 바꾼다. 값 타입의 검증(`Reason::parse` 등)은 자기
+    /// 이름으로 오류를 내므로, 요청의 어느 필드였는지 알릴 때 쓴다. 입력 오류가 아니면 그대로다.
+    #[must_use]
+    pub fn with_field(self, field: &'static str) -> Self {
+        match self {
+            Self::Validation { reason, .. } => Self::Validation { field, reason },
+            other => other,
+        }
+    }
+
     /// API와 UI가 공유하는 안정적인 오류 코드.
     pub const fn code(&self) -> &'static str {
         match self {
@@ -147,6 +157,23 @@ impl fmt::Display for ConflictReason {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn with_field_relabels_only_validation_errors() {
+        let error = DomainError::validation("reason", ValidationReason::TooLong { max: 5 });
+        assert_eq!(
+            error.with_field("memo"),
+            DomainError::validation("memo", ValidationReason::TooLong { max: 5 })
+        );
+        assert_eq!(
+            DomainError::NotFound.with_field("memo"),
+            DomainError::NotFound
+        );
+        assert_eq!(
+            DomainError::Conflict(ConflictReason::VersionConflict).with_field("memo"),
+            DomainError::Conflict(ConflictReason::VersionConflict)
+        );
+    }
 
     #[test]
     fn conflict_codes_are_unique_snake_case() {
