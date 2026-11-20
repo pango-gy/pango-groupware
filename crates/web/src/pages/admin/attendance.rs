@@ -13,10 +13,12 @@ use crate::calendar::YearMonth;
 use crate::company::use_company;
 use crate::format;
 use crate::org_tree;
+use crate::pages::admin::logic::can_edit_personal_records;
 use crate::pages::approval::DocumentRow;
 use crate::pages::attendance::RecordHistory;
 use crate::route::Route;
 use crate::session::use_session;
+use crate::text;
 use crate::ui::{
     loaded_or_empty, now, report_error, report_success, resource_view, use_initial_tab,
     use_more_pages, Badge, Button, ButtonKind, Card, EmptyState, FormError, Icon, IconName,
@@ -42,6 +44,7 @@ pub(crate) const TAB_CORRECTIONS: &str = "corrections";
 pub fn AdminAttendance() -> Element {
     let session = use_session();
     let tz = session.zone();
+    let me = session.me().map(|me| (me.id, me.role));
     let this_month = YearMonth::of(use_company().work_today(tz));
     let mut tab = use_initial_tab(Route::AdminAttendance {}, TAB_RECORDS);
     let mut from = use_signal(move || this_month.first_day().to_string());
@@ -179,7 +182,12 @@ pub fn AdminAttendance() -> Element {
                                                 Badge { tone: row.cells.tone, "{row.cells.status}" }
                                             }
                                             td { class: "att-row-actions",
-                                                RowActions { row: row.clone(), editor, history }
+                                                RowActions {
+                                                    editable: me.is_none_or(|(id, role)| can_edit_personal_records(id, role, row.item.record.member_id)),
+                                                    row: row.clone(),
+                                                    editor,
+                                                    history,
+                                                }
                                             }
                                         }
                                     }
@@ -197,7 +205,12 @@ pub fn AdminAttendance() -> Element {
                                     div { class: "list-row-side",
                                         Badge { tone: row.cells.tone, "{row.cells.status}" }
                                         div { class: "att-row-actions",
-                                            RowActions { row: row.clone(), editor, history }
+                                            RowActions {
+                                                editable: me.is_none_or(|(id, role)| can_edit_personal_records(id, role, row.item.record.member_id)),
+                                                row: row.clone(),
+                                                editor,
+                                                history,
+                                            }
                                         }
                                     }
                                 }
@@ -275,22 +288,27 @@ fn CorrectionRequests() -> Element {
     }
 }
 
-/// 표·목록 한 줄의 "수정"·"이력" 버튼.
+/// 표·목록 한 줄의 "수정"·"이력" 버튼. 고칠 수 없는 기록(관리자 본인의 기록)은 수정 대신 안내를 보인다.
 #[component]
 fn RowActions(
     row: AdminRow,
+    editable: bool,
     editor: Signal<Option<Editor>>,
     history: Signal<Option<(AttendanceRecordId, String)>>,
 ) -> Element {
     let item = row.item.clone();
     let target = (row.item.record.id, row.title.clone());
     rsx! {
-        Button {
-            kind: ButtonKind::Secondary,
-            small: true,
-            onclick: move |_| editor.set(Some(Editor::Edit(item.clone()))),
-            "수정"
-            span { class: "sr-only", " {row.title}" }
+        if editable {
+            Button {
+                kind: ButtonKind::Secondary,
+                small: true,
+                onclick: move |_| editor.set(Some(Editor::Edit(item.clone()))),
+                "수정"
+                span { class: "sr-only", " {row.title}" }
+            }
+        } else {
+            small { class: "field-hint", {text::OWN_RECORD_HINT} }
         }
         Button {
             kind: ButtonKind::Ghost,
@@ -328,6 +346,7 @@ fn RecordEditor(editor: Editor, onclose: EventHandler<()>, onsaved: EventHandler
     let tz = session.zone();
     let work_today = use_company().work_today(tz);
     let zone_name = session.me().map(|me| me.timezone).unwrap_or_default();
+    let me = session.me().map(|me| (me.id, me.role));
     let initial = match &editor {
         Editor::Create => logic::RecordForm::blank(work_today),
         Editor::Edit(item) => logic::RecordForm::from_record(&item.record, tz),
@@ -352,11 +371,16 @@ fn RecordEditor(editor: Editor, onclose: EventHandler<()>, onsaved: EventHandler
         ),
     };
 
+    // 관리자는 본인 기록을 직접 추가할 수 없다(서버도 403). 다른 관리자나 최고 관리자가 한다.
+    let own_record = form.read().member.is_some_and(|target| {
+        me.is_some_and(|(id, role)| !can_edit_personal_records(id, role, target))
+    });
+
     let submit = move |event: FormEvent| {
         let editor = editor.clone();
         async move {
             event.prevent_default();
-            if busy() {
+            if busy() || own_record {
                 return;
             }
             let current = form();
@@ -448,6 +472,9 @@ fn RecordEditor(editor: Editor, onclose: EventHandler<()>, onsaved: EventHandler
                             },
                         }
                     }
+                    if own_record {
+                        p { class: "notice", role: "note", {text::OWN_RECORD_HINT} }
+                    }
                     TextField {
                         label: "근무일",
                         kind: "date",
@@ -503,7 +530,7 @@ fn RecordEditor(editor: Editor, onclose: EventHandler<()>, onsaved: EventHandler
                 }
                 div { class: "card-actions",
                     Button { kind: ButtonKind::Ghost, onclick: move |_| onclose.call(()), "취소" }
-                    Button { submit: true, busy: busy(), "저장" }
+                    Button { submit: true, busy: busy(), disabled: own_record, "저장" }
                 }
             }
         }

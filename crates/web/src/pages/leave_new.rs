@@ -35,6 +35,8 @@ pub fn LeaveNew() -> Element {
     let mut line = use_line_draft(me_id.into_iter().collect());
     let mut busy = use_signal(|| false);
     let mut server_error = use_signal(|| None::<(Slot, String)>);
+    // 마지막 서버 오류에 덧붙일 안내. 날짜 칸의 서버 오류가 보일 때만 함께 보인다.
+    let mut server_hint = use_signal(|| None::<&'static str>);
 
     let mut types = use_resource(|| async { api::get::<Vec<LeaveTypeDto>>("/leave/types").await });
     let balance = use_resource(|| async { api::get::<BalanceDto>("/leave/balance").await });
@@ -79,6 +81,7 @@ pub fn LeaveNew() -> Element {
         ) {
             Ok(request) => request,
             Err(problem) => {
+                server_hint.set(None);
                 server_error.set(Some((problem.slot(), problem.message().to_owned())));
                 return;
             }
@@ -94,6 +97,7 @@ pub fn LeaveNew() -> Element {
             }
             Err(error) => {
                 let message = error.message();
+                server_hint.set(logic::server_hint(&error.code));
                 server_error.set(Some((
                     logic::error_slot(&error.code, error.field.as_deref()),
                     message,
@@ -125,6 +129,10 @@ pub fn LeaveNew() -> Element {
         } else {
             from_server
         }
+    };
+    let dates_hint = match (server_error(), server_hint()) {
+        (Some((Slot::Dates, _)), Some(hint)) => hint,
+        _ => "",
     };
     let types_state = match &*types.read() {
         None => logic::Load::Loading,
@@ -205,6 +213,9 @@ pub fn LeaveNew() -> Element {
                                     server_error.set(None);
                                 },
                             }
+                        }
+                        if !dates_hint.is_empty() {
+                            p { class: "field-hint", "{dates_hint}" }
                         }
                         div { class: "field",
                             TextArea {
@@ -564,6 +575,14 @@ pub(crate) mod logic {
         }
     }
 
+    /// 서버 오류 문구 아래에 덧붙일 안내.
+    ///
+    /// `insufficient_leave_balance`는 화면의 총 잔여가 넉넉해도 올 수 있다: 서버는 부여 경계
+    /// (소멸일·기념일)를 넘는 기간 전체를 첫날에 유효한 부여에서 차감하기 때문이다.
+    pub fn server_hint(code: &str) -> Option<&'static str> {
+        (code == "insufficient_leave_balance").then_some(crate::text::LEAVE_GRANT_BOUNDARY_HINT)
+    }
+
     /// 서버 오류를 붙일 자리.
     pub fn error_slot(code: &str, field: Option<&str>) -> Slot {
         match (code, field) {
@@ -906,6 +925,21 @@ pub(crate) mod logic {
             assert_eq!(error_slot("leave_type_inactive", None), Slot::Type);
             assert_eq!(error_slot("network_error", None), Slot::Form);
             assert_eq!(error_slot("validation_failed", None), Slot::Form);
+        }
+
+        #[test]
+        fn insufficient_balance_explains_grant_boundaries() {
+            let hint = server_hint("insufficient_leave_balance").expect("hint");
+            assert!(hint.contains("나눠서"), "{hint}");
+            assert_eq!(error_slot("insufficient_leave_balance", None), Slot::Dates);
+            for code in [
+                "leave_overlap",
+                "leave_no_working_days",
+                "validation_failed",
+                "",
+            ] {
+                assert_eq!(server_hint(code), None, "{code}");
+            }
         }
 
         #[test]

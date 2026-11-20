@@ -23,8 +23,8 @@ use crate::ui::{
 pub(crate) mod logic {
     use chrono::NaiveDate;
     use chrono_tz::Tz;
-    use pango_api::approval::{ApproveRequest, DocumentDetail, RejectRequest};
-    use pango_core::approval::{DocumentKind, DocumentStatus, StepStatus};
+    use pango_api::approval::{ApproveRequest, DocumentDetail, EventDto, RejectRequest};
+    use pango_core::approval::{DocumentKind, DocumentStatus, EventKind, StepStatus};
     use pango_core::attendance::WorkType;
     use pango_core::id::MemberId;
     use pango_core::leave::LeaveUnit;
@@ -44,9 +44,13 @@ pub(crate) mod logic {
         pub edit: bool,
         pub delete: bool,
         pub submit: bool,
+        /// 관리자의 대리 반려(`POST /admin/approval/documents/{id}/reject`). 동작 막대가 아니라
+        /// 따로 떨어진 관리자 영역에 둔다.
+        pub admin_reject: bool,
     }
 
     impl Actions {
+        /// 동작 막대에 놓이는 동작(당사자의 동작)이 있는지. 대리 반려는 세지 않는다.
         pub fn any(&self) -> bool {
             self.approve || self.reject || self.withdraw || self.edit || self.delete || self.submit
         }
@@ -57,9 +61,12 @@ pub(crate) mod logic {
     /// - 승인·반려: 진행 중 문서에서 내가 현재(대기 중) 단계의 결재자일 때.
     /// - 회수: 내가 기안자이고 진행 중이며 아직 아무도 처리하지 않았을 때.
     /// - 수정·삭제·상신: 내가 기안자이고 임시저장일 때.
+    /// - 대리 반려: 관리자(`capabilities.admin`)이고 진행 중이며, 내가 기안하지 않았고 지금
+    ///   차례의 결재자도 아닐 때(차례라면 보통의 반려를 쓴다). 서버 `authz::override_document`와
+    ///   같은 규칙이다.
     ///
-    /// 관리자라도 결재선에 없으면 열람만 한다.
-    pub fn available_actions(me: MemberId, detail: &DocumentDetail) -> Actions {
+    /// 관리자라도 결재선에 없으면 대리 반려 말고는 열람만 한다.
+    pub fn available_actions(me: MemberId, is_admin: bool, detail: &DocumentDetail) -> Actions {
         let drafter = detail.drafter_id == me;
         let in_progress = detail.status == DocumentStatus::InProgress;
         let draft = detail.status == DocumentStatus::Draft;
@@ -79,6 +86,52 @@ pub(crate) mod logic {
             edit: drafter && draft,
             delete: drafter && draft,
             submit: drafter && draft,
+            admin_reject: is_admin && in_progress && !drafter && !my_turn,
+        }
+    }
+
+    /// 지금 차례(대기 중)인 결재자의 이름.
+    pub fn pending_approver_name(detail: &DocumentDetail) -> Option<&str> {
+        detail
+            .steps
+            .iter()
+            .find(|step| step.status == StepStatus::Pending)
+            .map(|step| step.approver_name.as_str())
+    }
+
+    /// 반려 이력의 행위자가 그 이력이 가리키는 단계의 결재자가 아니면(관리자가 대신 반려) 그
+    /// 단계의 순서. 서버는 단계에는 건너뛴 결재자를, 이력의 행위자에는 관리자를 남긴다. 이력에
+    /// 단계 순서가 없으면 반려 상태인 단계로 찾는다.
+    fn is_proxy_rejection(detail: &DocumentDetail, event: &EventDto) -> Option<u8> {
+        if event.kind != EventKind::Rejected {
+            return None;
+        }
+        let step = match event.step_order {
+            Some(order) => detail.steps.iter().find(|step| step.order == order),
+            None => detail
+                .steps
+                .iter()
+                .find(|step| step.status == StepStatus::Rejected),
+        }?;
+        (step.approver_id != event.actor_id).then_some(step.order)
+    }
+
+    /// 관리자가 결재자 대신 반려한 단계: `(단계 순서, 관리자 이름)`. 마지막 반려 이력으로 정한다.
+    pub fn proxy_rejection(detail: &DocumentDetail) -> Option<(u8, &str)> {
+        let event = detail
+            .events
+            .iter()
+            .rev()
+            .find(|event| event.kind == EventKind::Rejected)?;
+        is_proxy_rejection(detail, event).map(|order| (order, event.actor_name.as_str()))
+    }
+
+    /// 이력 한 줄의 동사. 관리자가 대신 반려한 줄이면 "대리 반려".
+    pub fn event_verb(detail: &DocumentDetail, event: &EventDto) -> &'static str {
+        if is_proxy_rejection(detail, event).is_some() {
+            text::PROXY_REJECT_VERB
+        } else {
+            text::event_kind_label(event.kind)
         }
     }
 
@@ -252,6 +305,8 @@ enum Act {
     Withdraw,
     Delete,
     Submit,
+    /// 관리자의 대리 반려.
+    AdminReject,
 }
 
 impl Act {
@@ -262,6 +317,7 @@ impl Act {
             Self::Withdraw => "회수했습니다.",
             Self::Delete => "삭제했습니다.",
             Self::Submit => "상신했습니다.",
+            Self::AdminReject => "관리자 권한으로 반려했습니다.",
         }
     }
 }
@@ -295,6 +351,7 @@ pub fn ApprovalDetail(id: String) -> Element {
     let me = session.me();
     let tz = format::member_zone(me.as_ref());
     let me_id = me.as_ref().map(|m| m.id);
+    let is_admin = me.as_ref().is_some_and(|m| m.capabilities.admin);
 
     let run = move |act: Act| async move {
         if busy() {
@@ -323,6 +380,21 @@ pub fn ApprovalDetail(id: String) -> Element {
                     api::post::<_, DocumentDetail>(&format!("{path}/reject"), &body)
                         .await
                         .map(|_| ())
+                }
+                Err(message) => {
+                    dialog_error.set(message);
+                    return;
+                }
+            },
+            Act::AdminReject => match logic::reject_request(&note()) {
+                Ok(body) => {
+                    busy.set(true);
+                    api::post::<_, DocumentDetail>(
+                        &format!("/admin/approval/documents/{id}/reject"),
+                        &body,
+                    )
+                    .await
+                    .map(|_| ())
                 }
                 Err(message) => {
                     dialog_error.set(message);
@@ -410,10 +482,25 @@ pub fn ApprovalDetail(id: String) -> Element {
                     }
                 };
             }
-            let actions = logic::available_actions(me_id, &detail);
+            let actions = logic::available_actions(me_id, is_admin, &detail);
             let rows = logic::payload_rows(detail.kind, detail.payload.as_ref(), tz);
             rsx! {
                 DocumentView { detail: detail.clone(), rows, tz }
+                if actions.admin_reject {
+                    Card { title: "관리자 동작",
+                        p { class: "field-hint",
+                            "차례인 결재자가 퇴사·정지했거나 처리할 수 없어 문서가 멈춰 있을 때만 씁니다."
+                        }
+                        div { class: "card-actions",
+                            Button {
+                                kind: ButtonKind::Danger,
+                                disabled: busy(),
+                                onclick: move |_| open(Act::AdminReject),
+                                "관리자 대리 반려"
+                            }
+                        }
+                    }
+                }
                 if actions.any() {
                     ActionBar {
                         actions,
@@ -465,6 +552,40 @@ pub fn ApprovalDetail(id: String) -> Element {
                     }
                 }
             },
+            Some(Act::AdminReject) => {
+                let pending = doc
+                    .read()
+                    .as_ref()
+                    .and_then(|loaded| loaded.as_ref().ok())
+                    .and_then(|detail| logic::pending_approver_name(detail).map(str::to_owned))
+                    .unwrap_or_else(|| "지금 차례의 결재자".to_owned());
+                rsx! {
+                    Modal { title: "관리자 대리 반려", onclose: close,
+                        div { class: "form",
+                            p { class: "confirm-message",
+                                "{pending}님의 결재 차례에서 문서를 반려로 끝냅니다. 차례인 결재자가 퇴사·정지했거나 처리할 수 없을 때만 사용하세요."
+                            }
+                            p { class: "field-hint",
+                                "되돌릴 수 없습니다. 휴가 신청이면 연차가 복원되고, 기안자와 결재자에게 알림이 가며 감사 로그에 남습니다."
+                            }
+                            FormError { message: dialog_error() }
+                            TextArea {
+                                label: "반려 사유",
+                                value: note(),
+                                rows: 4,
+                                required: true,
+                                maxlength: pango_core::text::Reason::RULE.max_chars as i64,
+                                oninput: move |value| note.set(value),
+                            }
+                            CharCount { count: note().chars().count(), max: pango_core::text::Reason::RULE.max_chars }
+                            div { class: "modal-actions",
+                                Button { kind: ButtonKind::Secondary, disabled: busy(), onclick: move |_| dialog.set(None), "취소" }
+                                Button { kind: ButtonKind::Danger, busy: busy(), onclick: move |_| { spawn(run(Act::AdminReject)); }, "대리 반려" }
+                            }
+                        }
+                    }
+                }
+            }
             Some(act @ (Act::Withdraw | Act::Delete | Act::Submit)) => {
                 let (title, message, label, danger) = match act {
                     Act::Withdraw => ("문서 회수", "회수하면 결재가 중단되고 문서는 회수 상태로 종료됩니다. 휴가 신청이라면 신청도 함께 취소됩니다.", "회수", true),
@@ -495,6 +616,13 @@ fn DocumentView(
     tz: chrono_tz::Tz,
 ) -> Element {
     let drafter = logic::drafter_line(&detail);
+    let proxy = logic::proxy_rejection(&detail)
+        .map(|(order, admin)| (order, text::proxy_rejection_note(admin)));
+    let verbs: Vec<&'static str> = detail
+        .events
+        .iter()
+        .map(|event| logic::event_verb(&detail, event))
+        .collect();
     rsx! {
         PageHeader {
             title: detail.title.clone(),
@@ -558,6 +686,9 @@ fn DocumentView(
                         if let Some(at) = step.acted_at {
                             small { class: "timeline-meta", {format::datetime(at, tz)} }
                         }
+                        if let Some((_, note)) = proxy.as_ref().filter(|(order, _)| *order == step.order) {
+                            small { class: "timeline-meta", "{note}" }
+                        }
                         if let Some(comment) = step.comment.as_ref().filter(|c| !c.trim().is_empty()) {
                             p { class: "timeline-comment", "{comment}" }
                         }
@@ -587,11 +718,11 @@ fn DocumentView(
         if !detail.events.is_empty() {
             Card { title: "이력",
                 Timeline {
-                    for (index , event) in detail.events.iter().enumerate() {
+                    for (index , (event , verb)) in detail.events.iter().zip(verbs).enumerate() {
                         TimelineItem { key: "{index}",
                             div { class: "timeline-head",
                                 strong { "{event.actor_name}" }
-                                span { class: "timeline-meta", {text::event_kind_label(event.kind)} }
+                                span { class: "timeline-meta", "{verb}" }
                             }
                             small { class: "timeline-meta", {format::datetime(event.created_at, tz)} }
                             if let Some(comment) = event.comment.as_ref().filter(|c| !c.trim().is_empty()) {
@@ -640,8 +771,8 @@ fn ActionBar(
 #[cfg(test)]
 mod tests {
     use super::logic::*;
-    use pango_api::approval::{DocumentDetail, ReferenceDto, StepDto};
-    use pango_core::approval::{DocumentKind, DocumentStatus, StepKind, StepStatus};
+    use pango_api::approval::{DocumentDetail, EventDto, ReferenceDto, StepDto};
+    use pango_core::approval::{DocumentKind, DocumentStatus, EventKind, StepKind, StepStatus};
     use pango_core::id::{DocumentId, FormId, MemberId};
     use pango_core::time::Timestamp;
     use serde_json::json;
@@ -714,6 +845,7 @@ mod tests {
         edit: false,
         delete: false,
         submit: false,
+        admin_reject: false,
     };
     const DRAFT_OWNER: Actions = Actions {
         edit: true,
@@ -730,13 +862,17 @@ mod tests {
         withdraw: true,
         ..NONE
     };
+    const OVERRIDE: Actions = Actions {
+        admin_reject: true,
+        ..NONE
+    };
 
     #[test]
     fn action_matrix_by_role_and_status() {
         use DocumentStatus as D;
         use StepStatus as S;
         let p = people();
-        // (문서 상태, 단계 상태들, [기안자, 1단계, 2단계, 참조자, 관리자])
+        // (문서 상태, 단계 상태들, [기안자, 1단계, 2단계, 참조자, 관리자]) — 관리자 권한 없이.
         let cases: [(D, [S; 2], [Actions; 5]); 7] = [
             (
                 D::Draft,
@@ -763,12 +899,120 @@ mod tests {
             let who = [p.drafter, p.first, p.second, p.reference, p.admin];
             for (member, want) in who.iter().zip(expected) {
                 assert_eq!(
-                    available_actions(*member, &doc),
+                    available_actions(*member, false, &doc),
                     want,
                     "{status:?} {steps:?}"
                 );
             }
         }
+    }
+
+    #[test]
+    fn admin_matrix_adds_override_only_where_the_server_allows_it() {
+        use DocumentStatus as D;
+        use StepStatus as S;
+        let p = people();
+        // 같은 사람들이 모두 관리자 권한을 가졌을 때. 대리 반려는 진행 중 문서에서 기안자도 지금
+        // 차례의 결재자도 아닌 관리자에게만 열린다(기안자는 403, 차례인 결재자는 보통의 반려).
+        let cases: [(D, [S; 2], [Actions; 5]); 7] = [
+            (
+                D::Draft,
+                [S::Waiting, S::Waiting],
+                [DRAFT_OWNER, NONE, NONE, NONE, NONE],
+            ),
+            (
+                D::InProgress,
+                [S::Pending, S::Waiting],
+                [WITHDRAW, DECIDE, OVERRIDE, OVERRIDE, OVERRIDE],
+            ),
+            (
+                D::InProgress,
+                [S::Approved, S::Pending],
+                [NONE, OVERRIDE, DECIDE, OVERRIDE, OVERRIDE],
+            ),
+            (D::Approved, [S::Approved, S::Approved], [NONE; 5]),
+            (D::Rejected, [S::Rejected, S::Waiting], [NONE; 5]),
+            (D::Rejected, [S::Approved, S::Rejected], [NONE; 5]),
+            (D::Withdrawn, [S::Waiting, S::Waiting], [NONE; 5]),
+        ];
+        for (status, steps, expected) in cases {
+            let doc = detail(&p, status, steps);
+            let who = [p.drafter, p.first, p.second, p.reference, p.admin];
+            for (member, want) in who.iter().zip(expected) {
+                assert_eq!(
+                    available_actions(*member, true, &doc),
+                    want,
+                    "{status:?} {steps:?}"
+                );
+            }
+        }
+        // 대리 반려는 동작 막대에 세지 않는다.
+        assert!(!OVERRIDE.any());
+    }
+
+    fn event(kind: EventKind, actor: MemberId, name: &str, order: Option<u8>) -> EventDto {
+        EventDto {
+            kind,
+            actor_id: actor,
+            actor_name: name.into(),
+            step_order: order,
+            comment: None,
+            created_at: Timestamp::from_millis(0).expect("ts"),
+        }
+    }
+
+    #[test]
+    fn pending_approver_is_the_current_step() {
+        let p = people();
+        let mut doc = detail(
+            &p,
+            DocumentStatus::InProgress,
+            [StepStatus::Approved, StepStatus::Pending],
+        );
+        doc.steps[1].approver_name = "이차례".into();
+        assert_eq!(pending_approver_name(&doc), Some("이차례"));
+        let closed = detail(
+            &p,
+            DocumentStatus::Approved,
+            [StepStatus::Approved, StepStatus::Approved],
+        );
+        assert_eq!(pending_approver_name(&closed), None);
+    }
+
+    #[test]
+    fn proxy_rejection_is_detected_from_the_event_actor() {
+        let p = people();
+        let mut doc = detail(
+            &p,
+            DocumentStatus::Rejected,
+            [StepStatus::Approved, StepStatus::Rejected],
+        );
+        doc.events = vec![
+            event(EventKind::Submitted, p.drafter, "기안자", None),
+            event(EventKind::Approved, p.first, "결재자", Some(1)),
+            event(EventKind::Rejected, p.admin, "김관리", Some(2)),
+        ];
+        assert_eq!(proxy_rejection(&doc), Some((2, "김관리")));
+        assert_eq!(event_verb(&doc, &doc.events[2]), "대리 반려");
+        assert_eq!(event_verb(&doc, &doc.events[1]), "승인");
+        assert_eq!(event_verb(&doc, &doc.events[0]), "상신");
+
+        // 결재자가 직접 반려했으면 대리 반려가 아니다.
+        doc.events[2] = event(EventKind::Rejected, p.second, "결재자", Some(2));
+        assert_eq!(proxy_rejection(&doc), None);
+        assert_eq!(event_verb(&doc, &doc.events[2]), "반려");
+
+        // 이력에 단계 순서가 없으면 반려된 단계로 찾는다.
+        doc.events[2] = event(EventKind::Rejected, p.admin, "김관리", None);
+        assert_eq!(proxy_rejection(&doc), Some((2, "김관리")));
+
+        // 반려 이력이 없거나, 가리키는 단계가 없으면 아무것도 붙이지 않는다.
+        doc.events.truncate(2);
+        assert_eq!(proxy_rejection(&doc), None);
+        doc.events
+            .push(event(EventKind::Rejected, p.admin, "김관리", Some(9)));
+        assert_eq!(proxy_rejection(&doc), None);
+        assert_eq!(event_verb(&doc, &doc.events[2]), "반려");
     }
 
     #[test]
@@ -780,7 +1024,12 @@ mod tests {
             DocumentStatus::Approved,
             [StepStatus::Pending, StepStatus::Waiting],
         );
-        assert_eq!(available_actions(p.first, &doc), NONE);
+        assert_eq!(available_actions(p.first, false, &doc), NONE);
+        assert_eq!(
+            available_actions(p.admin, true, &doc),
+            NONE,
+            "끝난 문서는 대리 반려도 없다"
+        );
         assert!(!NONE.any());
         assert!(WITHDRAW.any());
     }

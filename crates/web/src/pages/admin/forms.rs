@@ -259,6 +259,9 @@ pub fn AdminApprovalForms() -> Element {
                     onchange: move |value: String| status.set(value),
                 }
             }
+            p { class: "field-hint",
+                "차례인 결재자가 퇴사·정지해 멈춘 진행 중 문서는 문서를 열어 관리자 대리 반려로 끝낼 수 있습니다. 본인이 기안한 문서는 대리 반려할 수 없습니다."
+            }
             {resource_view(docs, move |page: Page<DocumentSummary>| {
                 let next = more.cursor(&page);
                 let has_more = next.is_some();

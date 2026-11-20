@@ -126,6 +126,13 @@ fn validation_message(field: Option<&str>, reason: Option<&str>) -> String {
         (Some("clock_in_at" | "clock_out_at"), Some("out_of_range")) => {
             "근무는 24시간을 넘을 수 없고, 미래 시각은 입력할 수 없습니다.".into()
         }
+        // 서버 `member::validate_hired_on`·`validate_retired_on`의 범위.
+        (Some("hired_on"), Some("out_of_range")) => {
+            "입사일은 1950. 1. 1.부터 오늘의 1년 뒤까지만 입력할 수 있습니다.".into()
+        }
+        (Some("retired_on"), Some("inconsistent")) => {
+            "퇴사일은 입사일보다 이를 수 없습니다.".into()
+        }
         (_, Some("empty")) => format!("{label}을(를) 입력해 주세요."),
         (_, Some("too_short")) => format!("{label}이(가) 너무 짧습니다."),
         (_, Some("too_long")) => format!("{label}이(가) 너무 깁니다."),
@@ -281,6 +288,7 @@ pub const AUDIT_ACTIONS: &[(&str, &str)] = &[
     ("approval_form.create", "결재 양식 추가"),
     ("approval_form.update", "결재 양식 수정"),
     ("approval.admin_view", "결재 문서 열람(관리자)"),
+    ("approval.admin_reject", "결재 문서 대리 반려(관리자)"),
     ("approval.draft_delete", "임시저장 문서 삭제"),
     ("notice.create", "공지 게시"),
     ("notice.update", "공지 수정"),
@@ -291,6 +299,44 @@ pub const AUDIT_ACTIONS: &[(&str, &str)] = &[
     ("holiday.import", "공휴일 일괄 등록"),
     ("system.initialize", "초기 설정"),
 ];
+
+/// 알림 종류 코드와 문구. 알림 목록에서 제목 위에 붙인다.
+pub const NOTIFICATION_KINDS: &[(&str, &str)] = &[
+    ("notice.new", "공지"),
+    ("approval.todo", "결재 요청"),
+    ("approval.reference", "참조"),
+    ("approval.approved", "최종 승인"),
+    ("approval.rejected", "반려"),
+    ("approval.admin_rejected", "관리자 대리 반려"),
+    ("approval.withdrawn", "회수"),
+    ("attendance.corrected", "근태 정정 반영"),
+    ("leave.canceled", "휴가 취소"),
+];
+
+/// 알림 종류 문구. 모르는 종류는 `None`(제목만 보여 준다).
+pub fn notification_kind_label(kind: &str) -> Option<&'static str> {
+    NOTIFICATION_KINDS
+        .iter()
+        .find(|(known, _)| *known == kind)
+        .map(|(_, label)| *label)
+}
+
+/// 관리자(최고 관리자 제외)가 자기 개인 기록을 관리자 권한으로 다루려 할 때의 안내.
+/// 서버 `authz::edit_personal_records`가 403으로 막는다.
+pub const OWN_RECORD_HINT: &str = "본인 기록은 다른 관리자나 최고 관리자가 처리합니다.";
+
+/// 연차 부여 경계를 넘는 휴가 신청이 잔여 부족으로 거부됐을 때 덧붙이는 안내. 서버는 기간
+/// 전체를 첫날에 유효한 부여에서 차감하므로, 화면의 총 잔여가 넉넉해도 거부될 수 있다.
+pub const LEAVE_GRANT_BOUNDARY_HINT: &str =
+    "연차 유효기간(부여일·소멸일)을 넘는 기간은 나눠서 신청해 주세요.";
+
+/// 문서 이력에서 관리자가 결재자 대신 반려한 줄의 동사.
+pub const PROXY_REJECT_VERB: &str = "대리 반려";
+
+/// 결재선에서 관리자가 대신 반려한 단계 아래에 붙는 설명.
+pub fn proxy_rejection_note(admin_name: &str) -> String {
+    format!("관리자 {admin_name}님이 대리 반려")
+}
 
 /// 감사 로그 동작 문구. 모르는 코드는 코드를 그대로 보여 준다(새 동작이 생겨도 기록은 보여야 한다).
 pub fn audit_action_label(code: &str) -> String {
@@ -609,6 +655,136 @@ mod tests {
         codes.sort_unstable();
         codes.dedup();
         assert_eq!(codes.len(), AUDIT_ACTIONS.len(), "코드가 중복되지 않는다");
+    }
+
+    /// 서버가 남기는 감사 로그 동작 코드. `crates/server/src/service`의 `Audit { action: "…" }`와
+    /// `audit_request`·`audit_correction`에 넘기는 문자열이다. 서버에 동작이 생기거나 없어지면
+    /// 여기와 [`AUDIT_ACTIONS`]를 함께 고친다(`grep -rn 'action: "' crates/server/src/service`).
+    const BACKEND_AUDIT_ACTIONS: &[&str] = &[
+        "approval.admin_reject",
+        "approval.admin_view",
+        "approval.draft_delete",
+        "approval_form.create",
+        "approval_form.update",
+        "attendance.correction",
+        "attendance.correction_cancel",
+        "attendance.correction_request",
+        "attendance.create",
+        "attendance.edit",
+        "attendance.export",
+        "auth.login",
+        "auth.logout",
+        "auth.password_change",
+        "auth.session_revoke",
+        "department.archive",
+        "department.create",
+        "department.update",
+        "holiday.delete",
+        "holiday.import",
+        "holiday.upsert",
+        "leave.accrual_run",
+        "leave.adjust",
+        "leave.admin_cancel",
+        "leave.cancel",
+        "leave.request",
+        "leave_type.create",
+        "leave_type.update",
+        "member.create",
+        "member.password_reset",
+        "member.role",
+        "member.status",
+        "member.update",
+        "notice.archive",
+        "notice.create",
+        "notice.update",
+        "position.archive",
+        "position.create",
+        "position.update",
+        "settings.update",
+        "system.initialize",
+    ];
+
+    /// 서버가 만드는 알림 종류. `crates/server/src/service`의 `Notify { kind: "…" }`와
+    /// `approval::notify_event_tx`, `notices::NEW_NOTICE`의 문자열이다.
+    const BACKEND_NOTIFICATION_KINDS: &[&str] = &[
+        "approval.admin_rejected",
+        "approval.approved",
+        "approval.reference",
+        "approval.rejected",
+        "approval.todo",
+        "approval.withdrawn",
+        "attendance.corrected",
+        "leave.canceled",
+        "notice.new",
+    ];
+
+    fn sorted_codes(list: &[(&str, &str)]) -> Vec<String> {
+        let mut codes: Vec<String> = list.iter().map(|(code, _)| (*code).to_owned()).collect();
+        codes.sort_unstable();
+        codes
+    }
+
+    #[test]
+    fn every_backend_audit_action_has_a_label() {
+        for code in BACKEND_AUDIT_ACTIONS {
+            let label = audit_action_label(code);
+            assert_ne!(label, *code, "{code}에 문구가 없다");
+            assert!(!label.trim().is_empty(), "{code}");
+        }
+        // 서버에 없는 코드가 남아 있지 않다(필터 선택지에 쓰인다).
+        let mut backend: Vec<String> = BACKEND_AUDIT_ACTIONS
+            .iter()
+            .map(|c| (*c).to_owned())
+            .collect();
+        backend.sort_unstable();
+        assert_eq!(sorted_codes(AUDIT_ACTIONS), backend);
+        assert_eq!(
+            audit_action_label("approval.admin_reject"),
+            "결재 문서 대리 반려(관리자)"
+        );
+    }
+
+    #[test]
+    fn every_backend_notification_kind_has_a_label() {
+        for kind in BACKEND_NOTIFICATION_KINDS {
+            let label = notification_kind_label(kind);
+            assert!(label.is_some_and(|l| !l.trim().is_empty()), "{kind}");
+        }
+        let mut backend: Vec<String> = BACKEND_NOTIFICATION_KINDS
+            .iter()
+            .map(|c| (*c).to_owned())
+            .collect();
+        backend.sort_unstable();
+        assert_eq!(sorted_codes(NOTIFICATION_KINDS), backend);
+        assert_eq!(
+            notification_kind_label("approval.admin_rejected"),
+            Some("관리자 대리 반려")
+        );
+        assert_eq!(notification_kind_label("future.kind"), None);
+        assert_eq!(notification_kind_label(""), None);
+    }
+
+    #[test]
+    fn member_date_errors_are_specific() {
+        let hired = error_message("validation_failed", Some("hired_on"), Some("out_of_range"));
+        assert!(hired.contains("1950"), "{hired}");
+        assert_eq!(
+            error_message(
+                "validation_failed",
+                Some("retired_on"),
+                Some("inconsistent")
+            ),
+            "퇴사일은 입사일보다 이를 수 없습니다."
+        );
+        // 그 밖의 이유는 공통 문구.
+        assert_eq!(
+            error_message("validation_failed", Some("hired_on"), Some("empty")),
+            "입사일을(를) 입력해 주세요."
+        );
+        assert_eq!(
+            proxy_rejection_note("김관리"),
+            "관리자 김관리님이 대리 반려"
+        );
     }
 
     #[test]

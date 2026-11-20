@@ -156,6 +156,7 @@ fn NotificationRow(
     onopen: EventHandler<NotificationDto>,
 ) -> Element {
     let has_link = item.link.as_deref().and_then(safe_link).is_some();
+    let kind = crate::text::notification_kind_label(&item.kind);
     let class = if unread {
         "notification notification-unread"
     } else {
@@ -164,6 +165,9 @@ fn NotificationRow(
     let content = rsx! {
         span { class: if unread { "unread-dot" } else { "unread-dot unread-dot-off" }, "aria-hidden": "true" }
         span { class: "list-row-main",
+            if let Some(kind) = kind {
+                small { "{kind}" }
+            }
             strong { "{item.title}" }
             if !item.body.is_empty() {
                 small { "{item.body}" }
