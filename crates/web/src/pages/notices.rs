@@ -40,27 +40,14 @@ pub fn Notices() -> Element {
                     Card {
                         ul { class: "list",
                             for notice in items {
-                                li { key: "{notice.id}", class: "list-row",
-                                    Link {
-                                        class: "row-link",
-                                        to: Route::NoticeDetail { id: notice.id.to_string() },
-                                        span {
-                                            class: if notice.read { "unread-dot unread-dot-off" } else { "unread-dot" },
-                                            "aria-hidden": "true",
-                                        }
-                                        span { class: "list-row-main",
-                                            span { class: "notice-title",
-                                                NoticeFlags { pinned: notice.pinned, must_read: notice.must_read }
-                                                strong { "{notice.title}" }
-                                            }
-                                            small {
-                                                if !notice.read {
-                                                    span { class: "sr-only", "읽지 않음, " }
-                                                }
-                                                "{notice.author_name} · {format::short_when(notice.published_at, at, tz)}"
-                                            }
-                                        }
-                                    }
+                                NoticeRow {
+                                    key: "{notice.id}",
+                                    id: notice.id,
+                                    title: notice.title.clone(),
+                                    pinned: notice.pinned,
+                                    must_read: notice.must_read,
+                                    read: notice.read,
+                                    meta: format!("{} · {}", notice.author_name, format::short_when(notice.published_at, at, tz)),
                                 }
                             }
                         }
@@ -100,6 +87,40 @@ async fn load_and_mark(id: String) -> ApiResult<Option<NoticeDto>> {
         }
     }
     Ok(Some(notice))
+}
+
+/// 공지 목록의 한 줄: 읽지 않음 점, 고정·필독 배지, 제목, 보조 문구. 공지 목록과 홈이 함께 쓴다.
+#[component]
+pub(crate) fn NoticeRow(
+    id: NoticeId,
+    title: String,
+    pinned: bool,
+    must_read: bool,
+    read: bool,
+    meta: String,
+) -> Element {
+    rsx! {
+        li { class: "list-row",
+            Link { class: "row-link", to: Route::NoticeDetail { id: id.to_string() },
+                span {
+                    class: if read { "unread-dot unread-dot-off" } else { "unread-dot" },
+                    "aria-hidden": "true",
+                }
+                span { class: "list-row-main",
+                    span { class: "notice-title",
+                        NoticeFlags { pinned, must_read }
+                        strong { "{title}" }
+                    }
+                    small {
+                        if !read {
+                            span { class: "sr-only", "읽지 않음, " }
+                        }
+                        "{meta}"
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// 공지의 "고정"·"필독" 배지. 공지 목록·상세·관리가 함께 쓴다.

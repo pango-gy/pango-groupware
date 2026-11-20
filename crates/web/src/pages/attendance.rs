@@ -1,44 +1,70 @@
-//! 근태: 오늘 출퇴근과 월별 기록.
+//! 근태: 오늘 출퇴근, 월별 기록, 근태 정정 요청.
 //!
 //! 월별 기록(`MonthAttendance`)은 팀 현황 화면이 구성원 한 명의 달을 보여 줄 때도 그대로 쓴다.
+//! 오늘 카드(`TodayBody`)는 홈도 함께 쓴다.
 
 use dioxus::prelude::*;
+use pango_api::approval::LineSuggestion;
 use pango_api::attendance::{
-    AttendanceEventDto, AttendanceRecordDto, MonthRecords, MonthlySummaryDto, TodayResponse,
+    AttendanceEventDto, AttendanceRecordDto, CorrectionDto, MonthRecords, MonthlySummaryDto,
+    TodayResponse,
 };
-use pango_api::Empty;
+use pango_api::{Empty, Page};
 use pango_core::attendance::WorkType;
 use pango_core::id::{AttendanceRecordId, MemberId};
 
 use crate::api;
 use crate::calendar::YearMonth;
 use crate::format;
-use crate::session::use_session;
+use crate::route::Route;
+use crate::session::{use_session, use_toasts};
 use crate::text;
+use crate::ui::approval_line::{from_suggestion, line_problem};
 use crate::ui::{
-    report_error, report_success, resource_view, today, Badge, Button, Card, EmptyState, IconName,
-    Modal, MonthSwitcher, PageHeader, Stat, TextField, Tone,
+    report_error, report_success, resource_view, today, use_more_pages, ApprovalLineEditor,
+    ApproverEntry, Badge, Button, ButtonKind, Card, ConfirmModal, EmptyState, FormError, IconName,
+    LoadMore, Modal, MonthSwitcher, PageHeader, SelectField, Spinner, Stat, TextArea, TextField,
+    Tone,
 };
 
-use logic::{DayRow, MonthEndpoint, TodayStage};
+use logic::{CorrectionSlot, CorrectionTarget, DayRow, MonthEndpoint, TodayStage};
 
 #[component]
 pub fn Attendance() -> Element {
-    // 출퇴근하면 아래 월별 기록도 다시 읽는다.
+    let mut today = use_resource(|| async { api::get::<TodayResponse>("/attendance/today").await });
+    // 출퇴근하면 아래 월별 기록을, 정정을 요청하면 요청 내역을 다시 읽는다.
     let mut revision = use_signal(|| 0_u32);
+    let mut corrections = use_signal(|| 0_u32);
     rsx! {
         PageHeader { title: "근태" }
-        TodayCard { onchange: move |_| *revision.write() += 1 }
-        MonthAttendance { member_id: None, revision: revision() }
+        Card { title: "오늘", class: "today-card",
+            {resource_view(today, move |state: TodayResponse| rsx! {
+                TodayBody {
+                    state,
+                    onchange: move |_| {
+                        today.restart();
+                        *revision.write() += 1;
+                    },
+                }
+            })}
+        }
+        MonthAttendance {
+            member_id: None,
+            revision: revision(),
+            oncorrect: move |_| *corrections.write() += 1,
+        }
+        CorrectionHistory { revision: corrections() }
     }
 }
 
-/// "오늘" 카드: 큰 출근·퇴근 버튼.
+/// "오늘" 카드의 내용: 큰 출근·퇴근 버튼. 근태 화면과 홈이 같은 것을 쓴다.
+///
+/// 상태(`state`)는 부모가 읽어 넘긴다(홈은 `GET /home` 한 번으로 받는다). 출퇴근을 시도한 뒤에는
+/// 성공·실패와 관계없이 `onchange`를 불러 부모가 다시 읽게 한다.
 #[component]
-fn TodayCard(onchange: EventHandler<()>) -> Element {
+pub fn TodayBody(state: TodayResponse, onchange: EventHandler<()>) -> Element {
     let session = use_session();
     let tz = session.zone();
-    let mut today = use_resource(|| async { api::get::<TodayResponse>("/attendance/today").await });
     let mut now = use_signal(crate::ui::now);
     let mut work_type = use_signal(|| WorkType::Office);
     let mut note = use_signal(String::new);
@@ -68,7 +94,6 @@ fn TodayCard(onchange: EventHandler<()>) -> Element {
             Err(error) => report_error(&error),
         }
         now.set(crate::ui::now());
-        today.restart();
         onchange.call(());
     };
     let clock_out = move |_| async move {
@@ -83,121 +108,117 @@ fn TodayCard(onchange: EventHandler<()>) -> Element {
             Err(error) => report_error(&error),
         }
         now.set(crate::ui::now());
-        today.restart();
         onchange.call(());
     };
 
-    let body = resource_view(today, move |state: TodayResponse| {
-        let stage = logic::today_stage(&state);
-        let day_note = logic::day_note(state.is_working_day, state.holiday_name.as_deref());
-        let hours = logic::expected_hours(state.expected_start, state.expected_end);
-        let status = state.evaluation.status;
-        rsx! {
-            div { class: "today-head",
-                div {
-                    p { class: "today-date", {format::date_md(state.work_date)} }
-                    p { class: "today-meta",
-                        "근무 시간 {hours}"
-                        if let Some(day_note) = day_note {
-                            " · {day_note}"
+    let stage = logic::today_stage(&state);
+    let day_note = logic::day_note(state.is_working_day, state.holiday_name.as_deref());
+    let hours = logic::expected_hours(state.expected_start, state.expected_end);
+    let status = state.evaluation.status;
+    rsx! {
+        div { class: "today-head",
+            div {
+                p { class: "today-date", {format::date_md(state.work_date)} }
+                p { class: "today-meta",
+                    "근무 시간 {hours}"
+                    if let Some(day_note) = day_note {
+                        " · {day_note}"
+                    }
+                }
+            }
+            Badge { tone: text::day_status_tone(status), {text::day_status_label(status)} }
+        }
+        {match stage {
+            TodayStage::ClockIn => rsx! {
+                div { class: "chip-group", role: "group", "aria-label": "근무 형태",
+                    for option in WorkType::ALL.iter().copied() {
+                        button {
+                            key: "{option.as_str()}",
+                            r#type: "button",
+                            class: if option == work_type() { "chip chip-active" } else { "chip" },
+                            "aria-pressed": option == work_type(),
+                            disabled: busy(),
+                            onclick: move |_| work_type.set(option),
+                            {text::work_type_label(option)}
                         }
                     }
                 }
-                Badge { tone: text::day_status_tone(status), {text::day_status_label(status)} }
-            }
-            {match stage {
-                TodayStage::ClockIn => rsx! {
-                    div { class: "chip-group", role: "group", "aria-label": "근무 형태",
-                        for option in WorkType::ALL.iter().copied() {
-                            button {
-                                key: "{option.as_str()}",
-                                r#type: "button",
-                                class: if option == work_type() { "chip chip-active" } else { "chip" },
-                                "aria-pressed": option == work_type(),
-                                disabled: busy(),
-                                onclick: move |_| work_type.set(option),
-                                {text::work_type_label(option)}
-                            }
-                        }
+                TextField {
+                    label: "메모 (선택)",
+                    value: note(),
+                    placeholder: "예: 오전 외근 후 복귀",
+                    maxlength: logic::NOTE_MAX_CHARS,
+                    disabled: busy(),
+                    oninput: move |value| note.set(value),
+                }
+                div { class: "clock-action",
+                    Button { block: true, busy: busy(), onclick: clock_in, "출근하기" }
+                }
+            },
+            TodayStage::Working { clock_in_at, work_type, overnight } => rsx! {
+                div { class: "today-working",
+                    p { class: "today-elapsed",
+                        "근무 중 "
+                        strong { {format::duration_minutes(format::elapsed_minutes(clock_in_at, now()))} }
                     }
-                    TextField {
-                        label: "메모 (선택)",
-                        value: note(),
-                        placeholder: "예: 오전 외근 후 복귀",
-                        maxlength: logic::NOTE_MAX_CHARS,
-                        disabled: busy(),
-                        oninput: move |value| note.set(value),
-                    }
-                    div { class: "clock-action",
-                        Button { block: true, busy: busy(), onclick: clock_in, "출근하기" }
-                    }
-                },
-                TodayStage::Working { clock_in_at, work_type, overnight } => rsx! {
-                    div { class: "today-working",
-                        p { class: "today-elapsed",
-                            "근무 중 "
-                            strong { {format::duration_minutes(format::elapsed_minutes(clock_in_at, now()))} }
-                        }
-                        p { class: "today-meta",
-                            if overnight {
-                                "출근 {format::datetime(clock_in_at, tz)} · 전날 시작한 근무"
-                            } else {
-                                "출근 {format::time_hm(clock_in_at, tz)}"
-                            }
-                            " · {text::work_type_label(work_type)}"
-                        }
-                    }
-                    div { class: "clock-action",
-                        Button { block: true, busy: busy(), onclick: clock_out, "퇴근하기" }
-                    }
-                },
-                TodayStage::Finished { clock_in_at, clock_out_at, worked_minutes, work_type } => rsx! {
-                    dl { class: "today-summary",
-                        div {
-                            dt { "출근" }
-                            dd { {format::time_hm(clock_in_at, tz)} }
-                        }
-                        div {
-                            dt { "퇴근" }
-                            dd { {format::time_hm(clock_out_at, tz)} }
-                        }
-                        div {
-                            dt { "근무" }
-                            dd { {format::duration_minutes(worked_minutes)} }
-                        }
-                        div {
-                            dt { "형태" }
-                            dd { {text::work_type_label(work_type)} }
-                        }
-                    }
-                    p { class: "today-meta", "오늘 근무를 마쳤습니다." }
-                },
-                TodayStage::MissedClockOut { clock_in_at } => rsx! {
                     p { class: "today-meta",
-                        "{format::datetime(clock_in_at, tz)} 출근 기록이 퇴근 없이 끝났습니다. 관리자에게 정정을 요청해 주세요."
+                        if overnight {
+                            "출근 {format::datetime(clock_in_at, tz)} · 전날 시작한 근무"
+                        } else {
+                            "출근 {format::time_hm(clock_in_at, tz)}"
+                        }
+                        " · {text::work_type_label(work_type)}"
                     }
-                },
-            }}
-        }
-    });
-
-    rsx! {
-        Card { title: "오늘", class: "today-card", {body} }
+                }
+                div { class: "clock-action",
+                    Button { block: true, busy: busy(), onclick: clock_out, "퇴근하기" }
+                }
+            },
+            TodayStage::Finished { clock_in_at, clock_out_at, worked_minutes, work_type } => rsx! {
+                dl { class: "today-summary",
+                    div {
+                        dt { "출근" }
+                        dd { {format::time_hm(clock_in_at, tz)} }
+                    }
+                    div {
+                        dt { "퇴근" }
+                        dd { {format::time_hm(clock_out_at, tz)} }
+                    }
+                    div {
+                        dt { "근무" }
+                        dd { {format::duration_minutes(worked_minutes)} }
+                    }
+                    div {
+                        dt { "형태" }
+                        dd { {text::work_type_label(work_type)} }
+                    }
+                }
+                p { class: "today-meta", "오늘 근무를 마쳤습니다." }
+            },
+            TodayStage::MissedClockOut { clock_in_at } => rsx! {
+                p { class: "today-meta",
+                    "{format::datetime(clock_in_at, tz)} 출근 기록이 퇴근 없이 끝났습니다. 근태 화면의 월별 기록에서 정정을 요청해 주세요."
+                }
+            },
+        }}
     }
 }
 
 /// 한 달의 요약 타일과 날짜별 기록. `member_id`가 없으면 본인.
 ///
-/// `revision`이 바뀌면 다시 읽는다(출퇴근 직후 등).
+/// `revision`이 바뀌면 다시 읽는다(출퇴근 직후 등). `oncorrect`를 주면 본인의 달에 한해
+/// 날짜마다 "정정 요청" 버튼이 붙고, 요청을 올린 뒤 `oncorrect`가 불린다.
 #[component]
 pub fn MonthAttendance(
     member_id: ReadSignal<Option<MemberId>>,
     revision: ReadSignal<u32>,
+    oncorrect: Option<EventHandler<()>>,
 ) -> Element {
     let session = use_session();
     let tz = session.zone();
     let mut month = use_signal(move || YearMonth::of(today(tz)));
     let mut opened = use_signal(|| None::<(AttendanceRecordId, String)>);
+    let mut correcting = use_signal(|| None::<CorrectionTarget>);
 
     let summary = use_resource(move || async move {
         let _ = revision();
@@ -210,6 +231,10 @@ pub fn MonthAttendance(
         api::get::<MonthRecords>(&path).await
     });
 
+    // 정정 요청은 본인 기록에만 올릴 수 있다(조직장·관리자가 남의 달을 볼 때는 숨긴다).
+    let own = member_id().is_none() && oncorrect.is_some();
+    let current_day = today(tz);
+
     let open = move |row: &DayRow| {
         let target = row.record_id.map(|id| (id, row.date_label.clone()));
         move |_| {
@@ -217,6 +242,14 @@ pub fn MonthAttendance(
                 opened.set(Some(target));
             }
         }
+    };
+    let correct = move |row: &DayRow| {
+        let target = CorrectionTarget {
+            date: row.date,
+            date_label: row.date_label.clone(),
+            record: row.record.clone(),
+        };
+        move |_| correcting.set(Some(target.clone()))
     };
 
     rsx! {
@@ -248,6 +281,9 @@ pub fn MonthAttendance(
                                     th { "퇴근" }
                                     th { class: "num", "근무시간" }
                                     th { "상태" }
+                                    if own {
+                                        th { span { class: "sr-only", "정정" } }
+                                    }
                                 }
                             }
                             tbody {
@@ -273,6 +309,19 @@ pub fn MonthAttendance(
                                         td {
                                             Badge { tone: row.cells.tone, "{row.cells.status}" }
                                         }
+                                        if own {
+                                            td { class: "num",
+                                                if logic::can_request_correction(row.date, current_day) {
+                                                    Button {
+                                                        kind: ButtonKind::Ghost,
+                                                        small: true,
+                                                        onclick: correct(&row),
+                                                        "정정 요청"
+                                                        span { class: "sr-only", " ({row.date_label})" }
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -289,6 +338,15 @@ pub fn MonthAttendance(
                                 } else {
                                     div { class: "att-day-main", DayLine { row: row.clone() } }
                                 }
+                                if own && logic::can_request_correction(row.date, current_day) {
+                                    Button {
+                                        kind: ButtonKind::Ghost,
+                                        small: true,
+                                        onclick: correct(&row),
+                                        "정정"
+                                        span { class: "sr-only", " 요청 ({row.date_label})" }
+                                    }
+                                }
                             }
                         }
                     }
@@ -297,6 +355,18 @@ pub fn MonthAttendance(
         }
         if let Some((record_id, title)) = opened() {
             RecordHistory { record_id, title, onclose: move |_| opened.set(None) }
+        }
+        if let Some(target) = correcting() {
+            CorrectionModal {
+                target,
+                onclose: move |_| correcting.set(None),
+                onsubmitted: move |_| {
+                    correcting.set(None);
+                    if let Some(handler) = oncorrect {
+                        handler.call(());
+                    }
+                },
+            }
         }
     }
 }
@@ -318,6 +388,298 @@ fn DayLine(row: DayRow) -> Element {
             }
         }
         Badge { tone: row.cells.tone, "{row.cells.status}" }
+    }
+}
+
+/// 근태 정정 요청 창. 고칠 출퇴근 시각·근무 형태·사유와 결재선을 받아 결재 문서로 올린다.
+#[component]
+fn CorrectionModal(
+    target: CorrectionTarget,
+    onclose: EventHandler<()>,
+    onsubmitted: EventHandler<()>,
+) -> Element {
+    let mut session = use_session();
+    let tz = session.zone();
+    let zone_name = session.me().map(|me| me.timezone).unwrap_or_default();
+    let me_id = session.me().map(|me| me.id);
+    let initial = logic::CorrectionForm::for_record(target.record.as_ref(), tz);
+    let mut form = use_signal(move || initial);
+    // 창을 열 때 한 번 만든다. 두 번 눌러도 요청은 하나만 생긴다.
+    let key = use_signal(api::new_idempotency_key);
+    let mut line = use_signal(Vec::<ApproverEntry>::new);
+    let mut line_touched = use_signal(|| false);
+    let mut busy = use_signal(|| false);
+    let mut problem = use_signal(|| None::<(CorrectionSlot, String)>);
+    let suggestion = use_resource(move || async move {
+        let result = api::get::<LineSuggestion>("/approval/line-suggestion").await;
+        if let Ok(found) = &result {
+            // 사용자가 이미 고쳤다면 추천으로 덮어쓰지 않는다.
+            if !*line_touched.peek() {
+                let exclude: Vec<_> = me_id.into_iter().collect();
+                line.set(from_suggestion(&exclude, &found.steps));
+            }
+        }
+        result
+    });
+
+    let work_date = target.date;
+    let submit = move |event: FormEvent| async move {
+        event.prevent_default();
+        if busy() {
+            return;
+        }
+        let request = match logic::correction_request(work_date, &form(), &line(), tz) {
+            Ok(request) => request,
+            Err(issue) => {
+                problem.set(Some((issue.slot(), issue.message().to_owned())));
+                return;
+            }
+        };
+        busy.set(true);
+        problem.set(None);
+        match api::post_once::<_, CorrectionDto>("/attendance/corrections", &request, &key()).await
+        {
+            Ok(_) => {
+                report_success("정정을 요청했습니다. 결재가 끝나면 기록에 반영됩니다.");
+                // 창이 닫히므로 버튼을 다시 풀지 않는다(닫히기 전 두 번째 제출 방지).
+                onsubmitted.call(());
+                return;
+            }
+            Err(failure) => {
+                match logic::correction_failure_slot(&failure.code, failure.field.as_deref()) {
+                    Some(slot) => {
+                        session.handle(&failure);
+                        problem.set(Some((
+                            slot,
+                            text::correction_error_message(
+                                &failure.code,
+                                failure.field.as_deref(),
+                                failure.reason.as_deref(),
+                            ),
+                        )));
+                    }
+                    None => report_error(&failure),
+                }
+            }
+        }
+        busy.set(false);
+    };
+
+    let message_for = move |slot: CorrectionSlot| -> String {
+        match problem() {
+            Some((at, message)) if at == slot => message,
+            _ => String::new(),
+        }
+    };
+    let current = form();
+    let line_now = line();
+    let line_message = {
+        let from_problem = message_for(CorrectionSlot::Line);
+        if from_problem.is_empty() {
+            line_problem(&line_now).unwrap_or_default().to_owned()
+        } else {
+            from_problem
+        }
+    };
+
+    rsx! {
+        Modal { title: "{target.date_label} 정정 요청", onclose: move |_| onclose.call(()),
+            form { class: "form", onsubmit: submit,
+                FormError { message: message_for(CorrectionSlot::Form) }
+                div { class: "field",
+                    span { class: "field-label", "지금 기록" }
+                    span { class: "field-static", {logic::record_text(target.record.as_ref(), tz)} }
+                }
+                div { class: "form-row",
+                    TextField {
+                        label: "출근 시각",
+                        kind: "datetime-local",
+                        value: current.clock_in.clone(),
+                        required: true,
+                        hint: "{zone_name} 기준 · 이 근무일의 출근이어야 합니다.",
+                        error: message_for(CorrectionSlot::Times),
+                        oninput: move |value| {
+                            form.write().clock_in = value;
+                            problem.set(None);
+                        },
+                    }
+                    TextField {
+                        label: "퇴근 시각",
+                        kind: "datetime-local",
+                        value: current.clock_out.clone(),
+                        hint: "비워 두면 퇴근 전으로 남습니다.",
+                        oninput: move |value| {
+                            form.write().clock_out = value;
+                            problem.set(None);
+                        },
+                    }
+                }
+                SelectField {
+                    label: "근무 형태",
+                    value: current.work_type.as_str(),
+                    options: logic::work_type_options(),
+                    onchange: move |value: String| {
+                        if let Ok(work_type) = WorkType::parse(&value) {
+                            form.write().work_type = work_type;
+                        }
+                    },
+                }
+                div { class: "field",
+                    TextArea {
+                        label: "사유",
+                        value: current.reason.clone(),
+                        rows: 3,
+                        required: true,
+                        maxlength: logic::TEXT_MAX_CHARS as i64,
+                        placeholder: "예: 지문 인식기 고장으로 출근이 기록되지 않았습니다.",
+                        oninput: move |value| {
+                            form.write().reason = value;
+                            problem.set(None);
+                        },
+                    }
+                    if !message_for(CorrectionSlot::Reason).is_empty() {
+                        span { class: "field-error", role: "alert", {message_for(CorrectionSlot::Reason)} }
+                    }
+                }
+                div { class: "field",
+                    p { class: "field-hint", "마지막 결재자는 내 조직장 또는 관리자여야 합니다. 추천 결재선을 쓰면 이 조건을 맞춥니다." }
+                    if suggestion.read().is_none() {
+                        Spinner {}
+                    } else {
+                        ApprovalLineEditor {
+                            steps: line_now,
+                            exclude: me_id.into_iter().collect::<Vec<_>>(),
+                            disabled: busy(),
+                            error: line_message,
+                            onchange: move |next: Vec<ApproverEntry>| {
+                                line_touched.set(true);
+                                line.set(next);
+                                problem.set(None);
+                            },
+                        }
+                    }
+                }
+                div { class: "modal-actions",
+                    Button { kind: ButtonKind::Ghost, onclick: move |_| onclose.call(()), "취소" }
+                    Button { submit: true, busy: busy(), "정정 요청" }
+                }
+            }
+        }
+    }
+}
+
+/// 내 정정 요청 내역(최신 접수순). 결재 중인 요청은 취소(= 결재 문서 회수)할 수 있다.
+#[component]
+fn CorrectionHistory(revision: ReadSignal<u32>) -> Element {
+    let mut session = use_session();
+    let mut toasts = use_toasts();
+    let tz = session.zone();
+    let more = use_more_pages::<CorrectionDto>();
+    let mut first = use_resource(move || async move {
+        let _ = revision();
+        more.reset();
+        api::get::<Page<CorrectionDto>>(&logic::corrections_path(None)).await
+    });
+    let mut confirm = use_signal(|| None::<CorrectionDto>);
+    let mut busy = use_signal(|| false);
+
+    let cancel = move |id: String| async move {
+        if busy() {
+            return;
+        }
+        busy.set(true);
+        let path = format!("/attendance/corrections/{id}/cancel");
+        let result = api::post::<_, CorrectionDto>(&path, &Empty {}).await;
+        busy.set(false);
+        confirm.set(None);
+        match result {
+            Ok(_) => report_success("정정 요청을 취소했습니다. 결재 문서도 회수했습니다."),
+            Err(error) => {
+                session.handle(&error);
+                toasts.error(text::correction_error_message(
+                    &error.code,
+                    error.field.as_deref(),
+                    error.reason.as_deref(),
+                ));
+            }
+        }
+        // 성공이든 실패든(이미 결재가 진행됨, 상태가 바뀜 등) 지금 상태로 다시 읽는다.
+        first.restart();
+    };
+
+    rsx! {
+        Card { title: "정정 요청 내역",
+            {resource_view(first, move |page: Page<CorrectionDto>| {
+                let next = more.cursor(&page);
+                let has_more = next.is_some();
+                let items: Vec<CorrectionDto> = page.items.into_iter().chain(more.items()).collect();
+                if items.is_empty() {
+                    return rsx! {
+                        EmptyState {
+                            title: "올린 정정 요청이 없습니다.",
+                            hint: "기록이 틀린 날의 \"정정 요청\"을 눌러 고칠 값을 올리면 결재 후 반영됩니다.",
+                            icon: IconName::Clock,
+                        }
+                    };
+                }
+                rsx! {
+                    ul { class: "list",
+                        for item in items {
+                            li { key: "{item.id}", class: "list-row leave-row",
+                                div { class: "list-row-main",
+                                    div { class: "leave-row-title",
+                                        strong { {format::date_md(item.work_date)} }
+                                        Badge { tone: text::correction_status_tone(item.status), {text::correction_status_label(item.status)} }
+                                    }
+                                    small { {logic::correction_summary(&item, tz)} }
+                                    p { class: "leave-row-reason", "{item.reason}" }
+                                }
+                                div { class: "list-row-side",
+                                    Link {
+                                        to: Route::ApprovalDetail { id: item.document_id.to_string() },
+                                        "결재 문서"
+                                    }
+                                    if logic::can_cancel_correction(item.status) {
+                                        Button {
+                                            kind: ButtonKind::Secondary,
+                                            small: true,
+                                            onclick: {
+                                                let item = item.clone();
+                                                move |_| confirm.set(Some(item.clone()))
+                                            },
+                                            "취소"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    LoadMore {
+                        has_more,
+                        busy: more.busy(),
+                        onclick: move |_| {
+                            if let Some(cursor) = next.clone() {
+                                spawn(more.load(cursor, |c| logic::corrections_path(Some(c))));
+                            }
+                        },
+                    }
+                }
+            })}
+        }
+        if let Some(target) = confirm() {
+            ConfirmModal {
+                title: "정정 요청 취소",
+                message: logic::cancel_correction_message(&target),
+                confirm_label: "요청 취소",
+                danger: true,
+                busy: busy(),
+                oncancel: move |_| confirm.set(None),
+                onconfirm: {
+                    let id = target.id.to_string();
+                    move |_| cancel(id.clone())
+                },
+            }
+        }
     }
 }
 
@@ -372,19 +734,24 @@ pub fn RecordHistory(
 
 /// 화면이 그리는 값을 만드는 순수 함수.
 pub(crate) mod logic {
-    use chrono::NaiveDate;
+    use chrono::{Days, NaiveDate};
     use chrono_tz::Tz;
     use pango_api::attendance::{
-        AttendanceEventDto, AttendanceRecordDto, ClockInRequest, DayEntry, TodayResponse,
+        AttendanceEventDto, AttendanceRecordDto, ClockInRequest, CorrectionDto,
+        CreateCorrectionRequest, DayEntry, TodayResponse,
     };
-    use pango_core::attendance::{DayEvaluation, DayStatus, MonthlySummary, WorkType};
+    use pango_core::attendance::{
+        CorrectionStatus, DayEvaluation, DayStatus, MonthlySummary, WorkType,
+        CORRECTION_WINDOW_DAYS, MAX_SHIFT,
+    };
     use pango_core::id::{AttendanceEventId, AttendanceRecordId, MemberId};
     use pango_core::time::{MinuteOfDay, Timestamp};
 
     use crate::calendar::YearMonth;
-    use crate::format;
+    use crate::format::{self, LocalInputError};
     use crate::text;
-    use crate::ui::Tone;
+    use crate::ui::approval_line::{line_problem, to_inputs};
+    use crate::ui::{ApproverEntry, Tone};
 
     /// 값이 없는 칸.
     pub const EMPTY: &str = "-";
@@ -516,6 +883,8 @@ pub(crate) mod logic {
         pub muted: bool,
         /// 기록이 있어야 변경 이력을 열 수 있다.
         pub record_id: Option<AttendanceRecordId>,
+        /// 정정 요청 창에 지금 값을 채우는 데 쓴다.
+        pub record: Option<AttendanceRecordDto>,
         pub cells: RecordCells,
     }
 
@@ -526,6 +895,7 @@ pub(crate) mod logic {
             note: day_note(entry.is_working_day, entry.holiday_name.as_deref()),
             muted: !entry.is_working_day,
             record_id: entry.record.as_ref().map(|r| r.id),
+            record: entry.record.clone(),
             cells: record_cells(entry.date, entry.record.as_ref(), &entry.evaluation, tz),
         }
     }
@@ -634,21 +1004,37 @@ pub(crate) mod logic {
         pub after: String,
     }
 
+    /// `출근 09:02 · 퇴근 18:10 · 사무실`. 퇴근이 없으면 `퇴근 없음`.
+    fn times_text(
+        work_date: NaiveDate,
+        clock_in_at: Timestamp,
+        clock_out_at: Option<Timestamp>,
+        work_type: WorkType,
+        tz: Tz,
+    ) -> String {
+        let clock_out = clock_out_at
+            .map(|at| clock_text(at, work_date, tz))
+            .unwrap_or_else(|| "없음".to_owned());
+        format!(
+            "출근 {} · 퇴근 {} · {}",
+            clock_text(clock_in_at, work_date, tz),
+            clock_out,
+            text::work_type_label(work_type)
+        )
+    }
+
+    /// 기록 한 건의 요약. 기록이 없으면 그렇게 말한다.
+    pub fn record_text(record: Option<&AttendanceRecordDto>, tz: Tz) -> String {
+        match record {
+            Some(r) => times_text(r.work_date, r.clock_in_at, r.clock_out_at, r.work_type, tz),
+            None => "기록 없음".to_owned(),
+        }
+    }
+
     /// 이력에 저장된 기록 모양(JSON)을 `출근 09:02 · 퇴근 18:10 · 사무실`로.
     pub fn record_snapshot(value: &serde_json::Value, tz: Tz) -> String {
         match serde_json::from_value::<AttendanceRecordDto>(value.clone()) {
-            Ok(record) => {
-                let clock_out = record
-                    .clock_out_at
-                    .map(|at| clock_text(at, record.work_date, tz))
-                    .unwrap_or_else(|| "없음".to_owned());
-                format!(
-                    "출근 {} · 퇴근 {} · {}",
-                    clock_text(record.clock_in_at, record.work_date, tz),
-                    clock_out,
-                    text::work_type_label(record.work_type)
-                )
-            }
+            Ok(record) => record_text(Some(&record), tz),
             Err(_) => "내용을 표시할 수 없습니다.".to_owned(),
         }
     }
@@ -674,6 +1060,257 @@ pub(crate) mod logic {
                 .map(|value| record_snapshot(value, tz)),
             after: record_snapshot(&event.after, tz),
         }
+    }
+
+    // ───────────── 기록 입력(정정 요청·관리자 수정이 함께 쓴다) ─────────────
+
+    /// 사유·메모 최대 글자 수(서버 `Reason`·`Comment` 규칙과 같다).
+    pub const TEXT_MAX_CHARS: usize = 1_000;
+
+    pub fn work_type_options() -> Vec<(String, String)> {
+        WorkType::ALL
+            .iter()
+            .copied()
+            .map(|t| (t.as_str().to_owned(), text::work_type_label(t).to_owned()))
+            .collect()
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum FormIssue {
+        MemberMissing,
+        WorkDateInvalid,
+        ClockInMissing,
+        ClockInInvalid,
+        ClockInNonexistent,
+        ClockOutInvalid,
+        ClockOutNonexistent,
+        ClockOutNotAfterClockIn,
+        ShiftTooLong,
+        ReasonMissing,
+        ReasonTooLong,
+        NoteTooLong,
+    }
+
+    impl FormIssue {
+        pub const fn message(self) -> &'static str {
+            match self {
+                Self::MemberMissing => "구성원을 골라 주세요.",
+                Self::WorkDateInvalid => "근무일을 확인해 주세요.",
+                Self::ClockInMissing => "출근 시각을 입력해 주세요.",
+                Self::ClockInInvalid => "출근 시각의 형식이 올바르지 않습니다.",
+                Self::ClockInNonexistent => {
+                    "출근 시각이 서머타임 전환으로 존재하지 않는 시각입니다."
+                }
+                Self::ClockOutInvalid => "퇴근 시각의 형식이 올바르지 않습니다.",
+                Self::ClockOutNonexistent => {
+                    "퇴근 시각이 서머타임 전환으로 존재하지 않는 시각입니다."
+                }
+                Self::ClockOutNotAfterClockIn => "퇴근 시각은 출근 시각보다 늦어야 합니다.",
+                Self::ShiftTooLong => "한 번의 근무는 24시간을 넘을 수 없습니다.",
+                Self::ReasonMissing => "사유를 입력해 주세요. 이력에 남습니다.",
+                Self::ReasonTooLong => "사유는 1,000자까지 쓸 수 있습니다.",
+                Self::NoteTooLong => "메모는 1,000자까지 쓸 수 있습니다.",
+            }
+        }
+    }
+
+    /// `datetime-local` 출근·퇴근 입력을 시각으로. 퇴근은 비워 둘 수 있다.
+    pub fn parse_times(
+        clock_in: &str,
+        clock_out: &str,
+        tz: Tz,
+    ) -> Result<(Timestamp, Option<Timestamp>), FormIssue> {
+        let clock_in = format::parse_local_input(clock_in, tz).map_err(|e| match e {
+            LocalInputError::Empty => FormIssue::ClockInMissing,
+            LocalInputError::Invalid => FormIssue::ClockInInvalid,
+            LocalInputError::Nonexistent => FormIssue::ClockInNonexistent,
+        })?;
+        let clock_out = match format::parse_local_input(clock_out, tz) {
+            Ok(at) => Some(at),
+            Err(LocalInputError::Empty) => None,
+            Err(LocalInputError::Invalid) => return Err(FormIssue::ClockOutInvalid),
+            Err(LocalInputError::Nonexistent) => return Err(FormIssue::ClockOutNonexistent),
+        };
+        if let Some(out) = clock_out {
+            if out <= clock_in {
+                return Err(FormIssue::ClockOutNotAfterClockIn);
+            }
+            if out.since(clock_in) > MAX_SHIFT {
+                return Err(FormIssue::ShiftTooLong);
+            }
+        }
+        Ok((clock_in, clock_out))
+    }
+
+    /// 필수 사유: 앞뒤 공백을 지우고 길이를 본다.
+    pub fn parse_reason(raw: &str) -> Result<String, FormIssue> {
+        let reason = raw.trim();
+        if reason.is_empty() {
+            return Err(FormIssue::ReasonMissing);
+        }
+        if reason.chars().count() > TEXT_MAX_CHARS {
+            return Err(FormIssue::ReasonTooLong);
+        }
+        Ok(reason.to_owned())
+    }
+
+    // ───────────── 근태 정정 요청 ─────────────
+
+    /// 정정 요청 창을 여는 날.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct CorrectionTarget {
+        pub date: NaiveDate,
+        pub date_label: String,
+        /// 그날의 지금 기록(없을 수 있다).
+        pub record: Option<AttendanceRecordDto>,
+    }
+
+    /// 그날에 정정을 요청할 수 있어 보이는지: 오늘까지, [`CORRECTION_WINDOW_DAYS`]일 전까지.
+    /// `today`는 브라우저 시계로 본 회사 시간대의 오늘이라 근무일 전환 시각 근처에서는
+    /// 서버와 하루 어긋날 수 있다. 최종 판정은 서버가 한다.
+    pub fn can_request_correction(date: NaiveDate, today: NaiveDate) -> bool {
+        let earliest = today.checked_sub_days(Days::new(CORRECTION_WINDOW_DAYS));
+        date <= today && earliest.is_some_and(|earliest| date >= earliest)
+    }
+
+    /// 정정 요청 창의 입력값.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct CorrectionForm {
+        /// `datetime-local` 값.
+        pub clock_in: String,
+        pub clock_out: String,
+        pub work_type: WorkType,
+        pub reason: String,
+    }
+
+    impl CorrectionForm {
+        /// 지금 기록이 있으면 그 값으로 채운다(보통 한 칸만 고친다).
+        pub fn for_record(record: Option<&AttendanceRecordDto>, tz: Tz) -> Self {
+            Self {
+                clock_in: record
+                    .map(|r| format::local_input(r.clock_in_at, tz))
+                    .unwrap_or_default(),
+                clock_out: record
+                    .and_then(|r| r.clock_out_at)
+                    .map(|at| format::local_input(at, tz))
+                    .unwrap_or_default(),
+                work_type: record.map_or(WorkType::Office, |r| r.work_type),
+                reason: String::new(),
+            }
+        }
+    }
+
+    /// 오류를 붙일 자리.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum CorrectionSlot {
+        Form,
+        Times,
+        Reason,
+        Line,
+    }
+
+    /// 보내기 전에 알 수 있는 문제.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum CorrectionProblem {
+        Form(FormIssue),
+        Line(&'static str),
+    }
+
+    impl CorrectionProblem {
+        pub fn message(self) -> &'static str {
+            match self {
+                Self::Form(issue) => issue.message(),
+                Self::Line(message) => message,
+            }
+        }
+
+        pub fn slot(self) -> CorrectionSlot {
+            match self {
+                Self::Form(FormIssue::ReasonMissing | FormIssue::ReasonTooLong) => {
+                    CorrectionSlot::Reason
+                }
+                Self::Form(
+                    FormIssue::ClockInMissing
+                    | FormIssue::ClockInInvalid
+                    | FormIssue::ClockInNonexistent
+                    | FormIssue::ClockOutInvalid
+                    | FormIssue::ClockOutNonexistent
+                    | FormIssue::ClockOutNotAfterClockIn
+                    | FormIssue::ShiftTooLong,
+                ) => CorrectionSlot::Times,
+                Self::Form(_) => CorrectionSlot::Form,
+                Self::Line(_) => CorrectionSlot::Line,
+            }
+        }
+    }
+
+    /// 폼 값을 요청 본문으로. 결재선은 화면에서 고른 그대로 보낸다(서버가 최종 결재자의 권한을 본다).
+    pub fn correction_request(
+        work_date: NaiveDate,
+        form: &CorrectionForm,
+        line: &[ApproverEntry],
+        tz: Tz,
+    ) -> Result<CreateCorrectionRequest, CorrectionProblem> {
+        let (clock_in_at, clock_out_at) =
+            parse_times(&form.clock_in, &form.clock_out, tz).map_err(CorrectionProblem::Form)?;
+        let reason = parse_reason(&form.reason).map_err(CorrectionProblem::Form)?;
+        if let Some(message) = line_problem(line) {
+            return Err(CorrectionProblem::Line(message));
+        }
+        Ok(CreateCorrectionRequest {
+            work_date: work_date.to_string(),
+            clock_in_at,
+            clock_out_at,
+            work_type: form.work_type,
+            reason,
+            steps: Some(to_inputs(line)),
+            references: Vec::new(),
+        })
+    }
+
+    /// 서버 오류를 창 안 어디에 보여 줄지. `None`이면 창 밖(토스트)으로 알린다.
+    pub fn correction_failure_slot(code: &str, field: Option<&str>) -> Option<CorrectionSlot> {
+        match (code, field) {
+            ("validation_failed", Some("clock_in_at" | "clock_out_at" | "work_date")) => {
+                Some(CorrectionSlot::Times)
+            }
+            ("validation_failed", Some("reason")) => Some(CorrectionSlot::Reason),
+            ("validation_failed", Some("steps" | "references")) | ("member_inactive", _) => {
+                Some(CorrectionSlot::Line)
+            }
+            ("validation_failed" | "already_exists" | "not_working_member", _) => {
+                Some(CorrectionSlot::Form)
+            }
+            _ => None,
+        }
+    }
+
+    /// `/attendance/corrections?limit=20[&cursor=…]`
+    pub fn corrections_path(cursor: Option<&str>) -> String {
+        crate::api::with_cursor("/attendance/corrections?limit=20".to_owned(), cursor)
+    }
+
+    /// 요청한 값: `출근 09:00 · 퇴근 18:00 · 사무실`.
+    pub fn correction_summary(correction: &CorrectionDto, tz: Tz) -> String {
+        times_text(
+            correction.work_date,
+            correction.clock_in_at,
+            correction.clock_out_at,
+            correction.work_type,
+            tz,
+        )
+    }
+
+    /// 결재 중일 때만 취소(= 결재 문서 회수)할 수 있다. 누군가 이미 결재했으면 서버가 거절한다.
+    pub fn can_cancel_correction(status: CorrectionStatus) -> bool {
+        status == CorrectionStatus::Pending
+    }
+
+    pub fn cancel_correction_message(correction: &CorrectionDto) -> String {
+        format!(
+            "{} 정정 요청을 취소합니다. 결재 문서도 함께 회수됩니다.",
+            format::date_md(correction.work_date)
+        )
     }
 
     #[cfg(test)]
@@ -1008,6 +1645,180 @@ pub(crate) mod logic {
             assert_eq!(row.reason.as_deref(), Some("지문 인식 오류"));
             assert_eq!(row.before.as_deref(), Some("출근 09:05 · 퇴근 없음 · 재택"));
             assert_eq!(row.after, "출근 09:00 · 퇴근 02:10 (+1일) · 재택");
+        }
+
+        fn approver(kind: pango_core::approval::StepKind) -> ApproverEntry {
+            ApproverEntry {
+                approver_id: MemberId::new(),
+                approver_name: "팀장".into(),
+                kind,
+            }
+        }
+
+        fn filled() -> CorrectionForm {
+            CorrectionForm {
+                clock_in: "2026-03-02T09:00".into(),
+                clock_out: "2026-03-02T18:00".into(),
+                work_type: WorkType::Office,
+                reason: " 지문 인식 실패 ".into(),
+            }
+        }
+
+        #[test]
+        fn correction_window_is_today_back_to_31_days() {
+            let today = date("2026-03-31");
+            assert!(can_request_correction(today, today));
+            assert!(!can_request_correction(date("2026-04-01"), today), "미래");
+            assert!(can_request_correction(date("2026-02-28"), today), "31일 전");
+            assert!(
+                !can_request_correction(date("2026-02-27"), today),
+                "32일 전"
+            );
+            assert!(!can_request_correction(NaiveDate::MIN, NaiveDate::MIN));
+        }
+
+        #[test]
+        fn correction_form_starts_from_the_current_record() {
+            let tz = seoul();
+            let blank = CorrectionForm::for_record(None, tz);
+            assert_eq!(blank.clock_in, "");
+            assert_eq!(blank.clock_out, "");
+            assert_eq!(blank.work_type, WorkType::Office);
+            let open = record("2026-03-02", "2026-03-02T00:05:00Z", None);
+            let form = CorrectionForm::for_record(Some(&open), tz);
+            assert_eq!(form.clock_in, "2026-03-02T09:05");
+            assert_eq!(form.clock_out, "");
+            assert_eq!(form.work_type, WorkType::Remote);
+            assert_eq!(form.reason, "");
+        }
+
+        #[test]
+        fn correction_request_converts_wall_clock_and_line() {
+            let tz = seoul();
+            let line = vec![approver(pango_core::approval::StepKind::Approve)];
+            let request = correction_request(date("2026-03-02"), &filled(), &line, tz).expect("ok");
+            assert_eq!(request.work_date, "2026-03-02");
+            assert_eq!(request.clock_in_at, ts("2026-03-02T00:00:00Z"));
+            assert_eq!(request.clock_out_at, Some(ts("2026-03-02T09:00:00Z")));
+            assert_eq!(request.reason, "지문 인식 실패");
+            let steps = request.steps.expect("steps");
+            assert_eq!(steps.len(), 1);
+            assert_eq!(steps[0].approver_id, line[0].approver_id);
+            assert!(request.references.is_empty());
+
+            let mut no_out = filled();
+            no_out.clock_out = "  ".into();
+            let request = correction_request(date("2026-03-02"), &no_out, &line, tz).expect("ok");
+            assert_eq!(request.clock_out_at, None);
+        }
+
+        #[test]
+        fn correction_request_reports_problems_where_they_belong() {
+            let tz = seoul();
+            let line = vec![approver(pango_core::approval::StepKind::Approve)];
+            let day = date("2026-03-02");
+            let check = |change: fn(&mut CorrectionForm), slot: CorrectionSlot| {
+                let mut form = filled();
+                change(&mut form);
+                let problem = correction_request(day, &form, &line, tz).expect_err("problem");
+                assert_eq!(problem.slot(), slot, "{problem:?}");
+                assert!(!problem.message().is_empty());
+            };
+            check(|f| f.clock_in = String::new(), CorrectionSlot::Times);
+            check(|f| f.clock_in = "09:00".into(), CorrectionSlot::Times);
+            check(
+                |f| f.clock_out = "2026-03-02T08:00".into(),
+                CorrectionSlot::Times,
+            );
+            check(
+                |f| f.clock_out = "2026-03-03T09:01".into(),
+                CorrectionSlot::Times,
+            );
+            check(|f| f.reason = "  ".into(), CorrectionSlot::Reason);
+            check(|f| f.reason = "가".repeat(1_001), CorrectionSlot::Reason);
+
+            let empty = correction_request(day, &filled(), &[], tz).expect_err("line");
+            assert_eq!(empty.slot(), CorrectionSlot::Line);
+            let agree_last = vec![approver(pango_core::approval::StepKind::Agree)];
+            assert_eq!(
+                correction_request(day, &filled(), &agree_last, tz)
+                    .expect_err("line")
+                    .slot(),
+                CorrectionSlot::Line
+            );
+            assert_eq!(
+                CorrectionProblem::Form(FormIssue::MemberMissing).slot(),
+                CorrectionSlot::Form
+            );
+        }
+
+        #[test]
+        fn server_failures_are_placed_in_the_form() {
+            use CorrectionSlot::*;
+            let cases = [
+                ("validation_failed", Some("clock_in_at"), Some(Times)),
+                ("validation_failed", Some("work_date"), Some(Times)),
+                ("validation_failed", Some("reason"), Some(Reason)),
+                ("validation_failed", Some("steps"), Some(Line)),
+                ("validation_failed", Some("references"), Some(Line)),
+                ("member_inactive", None, Some(Line)),
+                ("validation_failed", Some("work_type"), Some(Form)),
+                ("already_exists", None, Some(Form)),
+                ("not_working_member", None, Some(Form)),
+                ("forbidden", None, None),
+                ("network_error", None, None),
+                ("idempotency_key_reused", None, None),
+            ];
+            for (code, field, slot) in cases {
+                assert_eq!(
+                    correction_failure_slot(code, field),
+                    slot,
+                    "{code} {field:?}"
+                );
+            }
+        }
+
+        fn correction(status: CorrectionStatus) -> CorrectionDto {
+            CorrectionDto {
+                id: pango_core::id::AttendanceCorrectionId::new(),
+                member_id: MemberId::new(),
+                member_name: "나".into(),
+                work_date: date("2026-03-02"),
+                clock_in_at: ts("2026-03-02T00:00:00Z"),
+                clock_out_at: Some(ts("2026-03-02T17:10:00Z")),
+                work_type: WorkType::Field,
+                reason: "외근".into(),
+                status,
+                document_id: pango_core::id::DocumentId::new(),
+                created_at: ts("2026-03-03T00:00:00Z"),
+                decided_at: None,
+            }
+        }
+
+        #[test]
+        fn correction_rows_describe_requested_values() {
+            let tz = seoul();
+            assert_eq!(
+                correction_summary(&correction(CorrectionStatus::Pending), tz),
+                "출근 09:00 · 퇴근 02:10 (+1일) · 외근"
+            );
+            assert_eq!(record_text(None, tz), "기록 없음");
+            assert!(
+                cancel_correction_message(&correction(CorrectionStatus::Pending))
+                    .starts_with("3월 2일 (월)")
+            );
+            for status in CorrectionStatus::ALL.iter().copied() {
+                assert_eq!(
+                    can_cancel_correction(status),
+                    status == CorrectionStatus::Pending,
+                    "{status:?}"
+                );
+            }
+            assert_eq!(corrections_path(None), "/attendance/corrections?limit=20");
+            assert_eq!(
+                corrections_path(Some("a&b")),
+                "/attendance/corrections?limit=20&cursor=a%26b"
+            );
         }
 
         #[test]

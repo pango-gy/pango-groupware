@@ -480,17 +480,14 @@ mod logic {
         AdminAttendanceItem, AdminCreateRecordRequest, AdminEditRecordRequest, AttendanceRecordDto,
     };
     use pango_api::API_PREFIX;
-    use pango_core::attendance::{WorkType, MAX_SHIFT};
+    use pango_core::attendance::WorkType;
     use pango_core::calendar::{parse_date, DateRange};
     use pango_core::id::{DepartmentId, MemberId};
-    use pango_core::time::Timestamp;
 
-    use crate::format::{self, LocalInputError};
-    use crate::pages::attendance::logic::{record_cells, RecordCells};
-    use crate::text;
+    use crate::format;
+    use crate::pages::attendance::logic::{parse_reason, parse_times, record_cells, RecordCells};
+    pub use crate::pages::attendance::logic::{work_type_options, FormIssue, TEXT_MAX_CHARS};
 
-    /// 사유·메모 최대 글자 수(서버 `Reason`·`Comment` 규칙과 같다).
-    pub const TEXT_MAX_CHARS: usize = 1_000;
     /// 한 번에 읽는 기록 수.
     const PAGE_SIZE: u32 = 50;
 
@@ -581,14 +578,6 @@ mod logic {
         ))
     }
 
-    pub fn work_type_options() -> Vec<(String, String)> {
-        WorkType::ALL
-            .iter()
-            .copied()
-            .map(|t| (t.as_str().to_owned(), text::work_type_label(t).to_owned()))
-            .collect()
-    }
-
     /// 관리 목록 한 줄.
     #[derive(Debug, Clone, PartialEq)]
     pub struct AdminRow {
@@ -659,79 +648,6 @@ mod logic {
         }
     }
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum FormIssue {
-        MemberMissing,
-        WorkDateInvalid,
-        ClockInMissing,
-        ClockInInvalid,
-        ClockInNonexistent,
-        ClockOutInvalid,
-        ClockOutNonexistent,
-        ClockOutNotAfterClockIn,
-        ShiftTooLong,
-        ReasonMissing,
-        ReasonTooLong,
-        NoteTooLong,
-    }
-
-    impl FormIssue {
-        pub const fn message(self) -> &'static str {
-            match self {
-                Self::MemberMissing => "구성원을 골라 주세요.",
-                Self::WorkDateInvalid => "근무일을 확인해 주세요.",
-                Self::ClockInMissing => "출근 시각을 입력해 주세요.",
-                Self::ClockInInvalid => "출근 시각의 형식이 올바르지 않습니다.",
-                Self::ClockInNonexistent => {
-                    "출근 시각이 서머타임 전환으로 존재하지 않는 시각입니다."
-                }
-                Self::ClockOutInvalid => "퇴근 시각의 형식이 올바르지 않습니다.",
-                Self::ClockOutNonexistent => {
-                    "퇴근 시각이 서머타임 전환으로 존재하지 않는 시각입니다."
-                }
-                Self::ClockOutNotAfterClockIn => "퇴근 시각은 출근 시각보다 늦어야 합니다.",
-                Self::ShiftTooLong => "한 번의 근무는 24시간을 넘을 수 없습니다.",
-                Self::ReasonMissing => "사유를 입력해 주세요. 이력에 남습니다.",
-                Self::ReasonTooLong => "사유는 1,000자까지 쓸 수 있습니다.",
-                Self::NoteTooLong => "메모는 1,000자까지 쓸 수 있습니다.",
-            }
-        }
-    }
-
-    fn times(form: &RecordForm, tz: Tz) -> Result<(Timestamp, Option<Timestamp>), FormIssue> {
-        let clock_in = format::parse_local_input(&form.clock_in, tz).map_err(|e| match e {
-            LocalInputError::Empty => FormIssue::ClockInMissing,
-            LocalInputError::Invalid => FormIssue::ClockInInvalid,
-            LocalInputError::Nonexistent => FormIssue::ClockInNonexistent,
-        })?;
-        let clock_out = match format::parse_local_input(&form.clock_out, tz) {
-            Ok(at) => Some(at),
-            Err(LocalInputError::Empty) => None,
-            Err(LocalInputError::Invalid) => return Err(FormIssue::ClockOutInvalid),
-            Err(LocalInputError::Nonexistent) => return Err(FormIssue::ClockOutNonexistent),
-        };
-        if let Some(out) = clock_out {
-            if out <= clock_in {
-                return Err(FormIssue::ClockOutNotAfterClockIn);
-            }
-            if out.since(clock_in) > MAX_SHIFT {
-                return Err(FormIssue::ShiftTooLong);
-            }
-        }
-        Ok((clock_in, clock_out))
-    }
-
-    fn reason(form: &RecordForm) -> Result<String, FormIssue> {
-        let reason = form.reason.trim();
-        if reason.is_empty() {
-            return Err(FormIssue::ReasonMissing);
-        }
-        if reason.chars().count() > TEXT_MAX_CHARS {
-            return Err(FormIssue::ReasonTooLong);
-        }
-        Ok(reason.to_owned())
-    }
-
     pub fn create_request(
         form: &RecordForm,
         tz: Tz,
@@ -739,7 +655,7 @@ mod logic {
         let member_id = form.member.ok_or(FormIssue::MemberMissing)?;
         let work_date = parse_date("work_date", form.work_date.trim())
             .map_err(|_| FormIssue::WorkDateInvalid)?;
-        let (clock_in_at, clock_out_at) = times(form, tz)?;
+        let (clock_in_at, clock_out_at) = parse_times(&form.clock_in, &form.clock_out, tz)?;
         let note = form.note.trim();
         if note.chars().count() > TEXT_MAX_CHARS {
             return Err(FormIssue::NoteTooLong);
@@ -751,7 +667,7 @@ mod logic {
             clock_out_at,
             work_type: form.work_type,
             note: (!note.is_empty()).then(|| note.to_owned()),
-            reason: reason(form)?,
+            reason: parse_reason(&form.reason)?,
         })
     }
 
@@ -760,13 +676,13 @@ mod logic {
         version: i64,
         tz: Tz,
     ) -> Result<AdminEditRecordRequest, FormIssue> {
-        let (clock_in_at, clock_out_at) = times(form, tz)?;
+        let (clock_in_at, clock_out_at) = parse_times(&form.clock_in, &form.clock_out, tz)?;
         Ok(AdminEditRecordRequest {
             version,
             clock_in_at,
             clock_out_at,
             work_type: form.work_type,
-            reason: reason(form)?,
+            reason: parse_reason(&form.reason)?,
         })
     }
 

@@ -392,6 +392,22 @@ pub fn Stat(
     }
 }
 
+/// 누르면 다른 화면으로 가는 숫자 타일(홈·관리 홈의 "처리할 일").
+#[component]
+pub fn StatLink(
+    to: crate::route::Route,
+    #[props(into)] label: String,
+    #[props(into)] value: String,
+    #[props(into, default)] hint: String,
+    #[props(default)] tone: Tone,
+) -> Element {
+    rsx! {
+        Link { class: "stat-link", to,
+            Stat { label, value, hint, tone }
+        }
+    }
+}
+
 /// 폼 상단에 띄우는 오류 문구.
 #[component]
 pub fn FormError(#[props(into)] message: String) -> Element {

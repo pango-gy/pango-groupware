@@ -2,12 +2,10 @@
 
 use dioxus::prelude::*;
 use pango_api::auth::Me;
-use pango_api::Empty;
 
-use crate::api;
 use crate::badges::{self, provide_badges, use_badges};
 use crate::route::Route;
-use crate::session::use_session;
+use crate::session::{self, use_session};
 use crate::text;
 use crate::ui::{Avatar, Icon, IconName, Spinner};
 
@@ -107,14 +105,9 @@ fn NavLink(item: NavItem, #[props(default)] compact: bool) -> Element {
 
 #[component]
 fn Sidebar(me: Me) -> Element {
-    let mut session = use_session();
+    let session = use_session();
     let nav = navigator();
-    let logout = move |_| async move {
-        // 실패해도 화면에서는 로그아웃한다(세션은 서버에서 곧 만료된다).
-        let _ = api::post::<_, Empty>("/auth/logout", &Empty {}).await;
-        session.set(None);
-        nav.replace(Route::Login {});
-    };
+    let logout = move |_| session::logout(session, nav);
     rsx! {
         aside { class: "sidebar",
             div { class: "brand",
