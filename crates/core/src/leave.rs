@@ -590,6 +590,78 @@ pub fn check_sufficient(
     Ok(())
 }
 
+/// 신청한 근무일 **하루하루가** 그날 유효한 부여로 덮이는지 확인한다.
+///
+/// 이미 기록된 사용을 모두 배정한 뒤([`allocate`]), 근무일을 날짜순으로 하나씩, 그날 유효한
+/// 부여 중 만료가 빠른 것부터 하루치(`unit`)를 차감해 본다. 어느 날이든 모자라면
+/// `InsufficientLeaveBalance`다. 아무것도 기록하지 않는 **검사**다.
+///
+/// [`check_sufficient`]는 휴가의 첫날 하루만 본다. 그것만으로는 첫날에 유효한 부여가 넉넉하면,
+/// 그 부여가 만료된 뒤의 날짜까지(다음 부여가 아직 없는데도) 걸친 신청이 통과한다. 이 함수는
+/// 그런 신청, 곧 쉴 권리가 없는 날이 섞인 신청을 막는다.
+///
+/// `working_dates`는 실제로 쉬는 근무일([`LeaveSpan::working_dates`])이며 순서는 상관없다.
+/// 비어 있으면 `Validation { field: "amount", OutOfRange }`다.
+pub fn check_span_covered(
+    entries: &[LedgerEntry],
+    working_dates: &[NaiveDate],
+    unit: LeaveUnit,
+) -> DomainResult<()> {
+    if working_dates.is_empty() {
+        return Err(AMOUNT_OUT_OF_RANGE);
+    }
+    let per_day = i64::from(unit.amount_per_day().quarters());
+    let mut buckets = allocate(entries)?.buckets;
+    let mut dates = working_dates.to_vec();
+    dates.sort_unstable();
+    for date in dates {
+        let mut needed = per_day;
+        for bucket in buckets.iter_mut().filter(|bucket| bucket.is_valid_on(date)) {
+            if needed == 0 {
+                break;
+            }
+            // taken 은 needed 와 남은 수량 이하이므로 넘치지 않는다.
+            let taken = needed.min(bucket.unconsumed());
+            bucket.consumed += taken;
+            needed -= taken;
+        }
+        if needed > 0 {
+            return Err(ConflictReason::InsufficientLeaveBalance.into());
+        }
+    }
+    Ok(())
+}
+
+/// 차감하는 휴가 신청을 접수(예약)할 수 있는지. 두 조건을 **모두** 만족해야 한다.
+///
+/// 1. [`check_sufficient`]: 총 수량이 **첫 근무일** 기준 잔여 안에 든다.
+/// 2. [`check_span_covered`]: 근무일 하루하루가 그날 유효한 부여로 덮인다.
+///
+/// # 예약을 한 줄로 두는 이유와 그 한계
+///
+/// 예약은 신청당 원장 한 줄(`Use { effective_on: 첫 근무일, amount: 총 수량 }`)이다. 부여
+/// 구간마다 나눠 적지 않는다. 그래도 안전한 까닭:
+///
+/// - 조건 1 덕분에 그 한 줄은 첫 근무일에 유효한 부여만으로 전부 차감된다. 그래서 새 부채가
+///   생기지 않고, 어느 날짜의 잔여도 기록한 수량보다 더 줄지 않는다([`available_for`]의 약속).
+///   신청 구간의 어느 날짜를 기준으로 [`Balance::compute`]를 다시 해도, 접수 전에 0 이상이던
+///   잔여가 음수가 되지 않는다(속성 테스트 `reservable_span_never_creates_debt`).
+/// - 조건 2 덕분에 쉬는 날마다 그날 유효한 부여가 실제로 남아 있다. 만료된 뒤이거나 아직
+///   부여받지 않은 날에 쉬는 신청은 접수되지 않는다.
+///
+/// 남는 한계(의도된 것): 부여 경계(연차 기념일 등)를 넘는 신청은 **경계 뒤의 날짜도 첫날에
+/// 유효하던 부여에서** 차감된다. 조건 2의 날짜순 차감은 자격을 따지는 계산일 뿐 기록에는
+/// 쓰이지 않는다. 따라서
+///
+/// - 첫날의 부여만으로 전체를 낼 수 없으면, 경계 뒤의 새 부여가 넉넉해도 거부된다. 신청자는
+///   경계에서 둘로 나눠 신청하면 된다(뒤쪽 신청은 그 첫날 기준으로 새 부여에서 차감된다).
+/// - 경계를 넘는 신청이 통과하면 뒤쪽 날짜의 몫만큼 새 부여가 덜 줄어든다(곧 소멸할 부여가
+///   대신 쓰인다). 그 날짜들에 새 부여가 실제로 남아 있었음은 조건 2가 보장한다.
+pub fn check_reservable(entries: &[LedgerEntry], span: &LeaveSpan) -> DomainResult<()> {
+    check_sufficient(entries, span.first_day(), span.amount())?;
+    check_span_covered(entries, span.working_dates(), span.unit())
+}
+
 // ───────────── 신청 상태 ─────────────
 
 crate::string_enum! {
@@ -1787,6 +1859,223 @@ mod tests {
         assert_eq!(check_sufficient(&[], start, q(1)), Err(insufficient));
     }
 
+    // ---- 부여 경계를 넘는 신청 ----
+
+    const INSUFFICIENT: DomainError =
+        DomainError::Conflict(ConflictReason::InsufficientLeaveBalance);
+
+    fn span(start: &str, end: &str) -> LeaveSpan {
+        LeaveSpan::new(range(start, end), LeaveUnit::FullDay, &calendar(&[])).expect("span")
+    }
+
+    fn dates(values: &[&str]) -> Vec<NaiveDate> {
+        values.iter().map(|value| d(value)).collect()
+    }
+
+    /// 하나뿐인 부여가 끝난 뒤까지 걸친 신청: 첫날 잔여는 넉넉해도 뒤쪽 날짜에는 쉴 권리가 없다.
+    #[test]
+    fn span_ending_after_the_only_grant_expires_is_rejected() {
+        // 2026-03-09(월)까지 유효한 11일. 다음 부여는 아직 원장에 없다.
+        let entries = [grant("2025-04-10", Some("2026-03-09"), 44)];
+        let crossing = span("2026-03-09", "2026-03-10");
+        // 첫날 기준 총량 검사만으로는 통과했다(이것이 고치려는 결함이다).
+        assert_eq!(
+            check_sufficient(&entries, crossing.first_day(), crossing.amount()),
+            Ok(())
+        );
+        assert_eq!(
+            check_span_covered(&entries, crossing.working_dates(), LeaveUnit::FullDay),
+            Err(INSUFFICIENT)
+        );
+        assert_eq!(check_reservable(&entries, &crossing), Err(INSUFFICIENT));
+        // 긴 휴가의 마지막 하루만 넘어가도 마찬가지다.
+        assert_eq!(
+            check_reservable(&entries, &span("2026-03-02", "2026-03-10")),
+            Err(INSUFFICIENT)
+        );
+    }
+
+    #[test]
+    fn exact_boundary_days_of_a_grant() {
+        let entries = [grant("2026-03-04", Some("2026-03-09"), 44)];
+        // 만료일 당일까지, 시작일 당일부터는 된다.
+        assert_eq!(
+            check_reservable(&entries, &span("2026-03-09", "2026-03-09")),
+            Ok(())
+        );
+        assert_eq!(
+            check_reservable(&entries, &span("2026-03-04", "2026-03-09")),
+            Ok(())
+        );
+        // 만료 다음 날 하루, 시작 전날 하루는 안 된다.
+        assert_eq!(
+            check_reservable(&entries, &span("2026-03-10", "2026-03-10")),
+            Err(INSUFFICIENT)
+        );
+        assert_eq!(
+            check_reservable(&entries, &span("2026-03-03", "2026-03-03")),
+            Err(INSUFFICIENT)
+        );
+        // 시작 전날부터 걸친 신청도 안 된다(첫날에 유효한 부여가 없다).
+        assert_eq!(
+            check_reservable(&entries, &span("2026-03-03", "2026-03-04")),
+            Err(INSUFFICIENT)
+        );
+        // 금요일(03-06)~다음 주 월요일(03-09): 주말은 세지 않으므로 만료일에 딱 맞는다.
+        assert_eq!(
+            check_reservable(&entries, &span("2026-03-06", "2026-03-09")),
+            Ok(())
+        );
+        assert_eq!(
+            check_reservable(&entries, &span("2026-03-06", "2026-03-10")),
+            Err(INSUFFICIENT)
+        );
+    }
+
+    /// 기념일을 넘는 신청: 양쪽 부여가 모두 넉넉하면 통과한다.
+    #[test]
+    fn span_crossing_an_anniversary_with_balance_on_both_sides_is_accepted() {
+        let entries = [
+            grant("2025-03-02", Some("2026-03-01"), 60),
+            grant("2026-03-02", Some("2027-03-01"), 60),
+        ];
+        // 02-27(금), 03-02(월), 03-03(화).
+        let crossing = span("2026-02-27", "2026-03-03");
+        assert_eq!(
+            crossing.working_dates(),
+            dates(&["2026-02-27", "2026-03-02", "2026-03-03"])
+        );
+        assert_eq!(check_reservable(&entries, &crossing), Ok(()));
+        // 예약은 첫 근무일 한 줄이고, 그 뒤 구간의 어느 날짜에도 잔여가 음수가 아니다.
+        let mut recorded = entries.to_vec();
+        recorded.push(use_on(
+            crossing.first_day(),
+            crossing.amount().quarters(),
+            1,
+        ));
+        for on in ["2026-02-27", "2026-03-01", "2026-03-02", "2026-03-03"] {
+            let remaining = Balance::compute(&recorded, d(on))
+                .expect("balance")
+                .remaining;
+            assert!(!remaining.is_negative(), "{on}: {remaining}");
+        }
+        // 한계(문서화된 것): 전부 첫날의 부여에서 차감되므로 새 부여는 줄지 않는다.
+        assert_eq!(balance(&recorded, "2026-03-03"), (120, 12, 48, 60));
+    }
+
+    /// 기념일 뒤쪽이 모자라면, 첫날 부여가 아무리 넉넉해도 거부한다.
+    #[test]
+    fn span_crossing_an_anniversary_needs_balance_after_it_too() {
+        let old = grant("2025-03-02", Some("2026-03-01"), 60);
+        // 새 부여 15일 중 14일이 이미 뒤 날짜의 휴가로 예약돼 있다: 1일 남음.
+        let entries = [
+            old,
+            grant("2026-03-02", Some("2027-03-01"), 60),
+            used("2026-04-01", 56, 1),
+        ];
+        // 뒤쪽 하루(03-02)는 남은 1일로 덮인다.
+        assert_eq!(
+            check_reservable(&entries, &span("2026-02-27", "2026-03-02")),
+            Ok(())
+        );
+        // 뒤쪽 이틀(03-02, 03-03)은 덮이지 않는다. 첫날 기준 총량은 넉넉한데도.
+        let two_after = span("2026-02-27", "2026-03-03");
+        assert_eq!(
+            check_sufficient(&entries, two_after.first_day(), two_after.amount()),
+            Ok(())
+        );
+        assert_eq!(check_reservable(&entries, &two_after), Err(INSUFFICIENT));
+        // 그 예약이 복원되면 다시 통과한다.
+        let mut restored = entries.to_vec();
+        restored.push(restore(1, 56));
+        assert_eq!(check_reservable(&restored, &two_after), Ok(()));
+        // 새 부여가 아직 원장에 없을 때(기념일 전에 미리 신청)도 거부한다.
+        assert_eq!(check_reservable(&[old], &two_after), Err(INSUFFICIENT));
+    }
+
+    /// 문서화된 한계: 첫날의 부여만으로 전체를 낼 수 없으면, 날짜별로는 덮여도 거부한다.
+    /// 신청자가 경계에서 둘로 나누면 각각 통과한다.
+    #[test]
+    fn span_must_be_payable_by_the_grants_valid_on_its_first_day() {
+        // 옛 부여 1일 남음, 새 부여 15일.
+        let entries = [
+            grant("2025-03-02", Some("2026-03-01"), 60),
+            used("2025-06-02", 56, 1),
+            grant("2026-03-02", Some("2027-03-01"), 60),
+        ];
+        let crossing = span("2026-02-27", "2026-03-03");
+        assert_eq!(
+            check_span_covered(&entries, crossing.working_dates(), LeaveUnit::FullDay),
+            Ok(())
+        );
+        assert_eq!(check_reservable(&entries, &crossing), Err(INSUFFICIENT));
+        // 나눠서 신청: 앞쪽(02-27)과 뒤쪽(03-02~03-03).
+        let before = span("2026-02-27", "2026-02-27");
+        assert_eq!(check_reservable(&entries, &before), Ok(()));
+        let mut recorded = entries.to_vec();
+        recorded.push(use_on(before.first_day(), before.amount().quarters(), 2));
+        let after = span("2026-03-02", "2026-03-03");
+        assert_eq!(check_reservable(&recorded, &after), Ok(()));
+        recorded.push(use_on(after.first_day(), after.amount().quarters(), 3));
+        assert_eq!(balance(&recorded, "2026-03-03"), (120, 68, 0, 52));
+    }
+
+    #[test]
+    fn span_coverage_counts_partial_units_and_ignores_date_order() {
+        // 반차 한 번(2/4일)만 남은 날.
+        let entries = [grant("2026-03-02", Some("2026-03-31"), 2)];
+        let day = dates(&["2026-03-10"]);
+        assert_eq!(
+            check_span_covered(&entries, &day, LeaveUnit::AmHalf),
+            Ok(())
+        );
+        assert_eq!(
+            check_span_covered(&entries, &day, LeaveUnit::PmQuarter),
+            Ok(())
+        );
+        assert_eq!(
+            check_span_covered(&entries, &day, LeaveUnit::FullDay),
+            Err(INSUFFICIENT)
+        );
+        // 날짜 순서가 뒤섞여 와도 결과가 같다. 날마다 만료가 빠른 부여부터 쓴다.
+        let two = [
+            grant("2026-03-02", Some("2026-03-10"), 4),
+            grant("2026-03-02", Some("2026-03-31"), 4),
+        ];
+        for order in [
+            dates(&["2026-03-10", "2026-03-11"]),
+            dates(&["2026-03-11", "2026-03-10"]),
+        ] {
+            assert_eq!(check_span_covered(&two, &order, LeaveUnit::FullDay), Ok(()));
+        }
+        assert_eq!(
+            check_span_covered(
+                &two,
+                &dates(&["2026-03-11", "2026-03-12"]),
+                LeaveUnit::FullDay
+            ),
+            Err(INSUFFICIENT)
+        );
+        // 소멸하지 않는 양수 조정은 그날부터 어느 날이든 덮는다.
+        let adjusted = [adjust("2026-03-02", 8)];
+        assert_eq!(
+            check_span_covered(
+                &adjusted,
+                &dates(&["2026-03-02", "2030-01-02"]),
+                LeaveUnit::FullDay
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            check_span_covered(&[], &[], LeaveUnit::FullDay),
+            Err(AMOUNT_ERR)
+        );
+        assert_eq!(
+            check_span_covered(&[], &day, LeaveUnit::AmQuarter),
+            Err(INSUFFICIENT)
+        );
+    }
+
     #[test]
     fn check_sufficient_rejects_non_positive_requests() {
         let entries = [grant("2026-01-01", Some("2026-12-31"), 60)];
@@ -2126,6 +2415,73 @@ mod tests {
             }
             let b = Balance::compute(&entries, day(5_000)).expect("balance");
             prop_assert_eq!((b.granted.quarters(), b.used.quarters()), (granted, consumed));
+        }
+
+        /// 접수할 수 있다고 판정한 신청을 첫 근무일 한 줄로 기록해도, 구간의 어느 날짜에서도
+        /// 잔여가 새로 음수가 되지 않고(이미 음수였다면 더 내려가지 않고) 기록한 수량보다 더
+        /// 줄지 않는다. 그리고 접수된 신청의 모든 날에는 그날 유효한 부여가 있었다.
+        #[test]
+        fn reservable_span_never_creates_debt(
+            entries in ledger_strategy(),
+            start in 0i64..1_200,
+            // 며칠 간격으로 띄엄띄엄 쉬는 날(주말·공휴일을 건너뛴 근무일을 흉내 낸다).
+            gaps in proptest::collection::vec(1i64..5, 0..12),
+            unit in prop_oneof![
+                Just(LeaveUnit::FullDay), Just(LeaveUnit::AmHalf), Just(LeaveUnit::PmQuarter)
+            ],
+        ) {
+            let mut working = vec![day(start)];
+            let mut offset = start;
+            for gap in gaps {
+                offset += gap;
+                working.push(day(offset));
+            }
+            let total = unit.amount_per_day().quarters() * working.len() as i32;
+            let first = working[0];
+            let reservable = check_sufficient(&entries, first, q(total))
+                .and_then(|()| check_span_covered(&entries, &working, unit));
+            // 날짜 순서는 판정에 영향을 주지 않는다.
+            let mut reversed = working.clone();
+            reversed.reverse();
+            prop_assert_eq!(
+                check_span_covered(&entries, &working, unit),
+                check_span_covered(&entries, &reversed, unit)
+            );
+            if reservable.is_err() {
+                return Ok(());
+            }
+            let mut recorded = entries.clone();
+            recorded.push(use_on(first, total, 1_000));
+            let last = *working.last().expect("non-empty");
+            // 구간 안의 모든 날짜: 0 이상이던 잔여는 음수가 되지 않고, 이미 음수였다면
+            // (음수 조정으로 생긴 부채) 더 내려가지 않는다.
+            let span_days = last.signed_duration_since(first).num_days();
+            for probe in (0..=span_days).map(|n| first + Duration::days(n)) {
+                let was = Balance::compute(&entries, probe).expect("balance").remaining.quarters();
+                let now = Balance::compute(&recorded, probe).expect("balance").remaining.quarters();
+                prop_assert!(now >= was.min(0), "{}: {} -> {}", probe, was, now);
+            }
+            // 구간 밖을 포함한 어느 날짜든: 기록한 수량보다 더 줄지 않는다.
+            let around = [first - Duration::days(400), first - Duration::days(1)];
+            let later = [last + Duration::days(1), last + Duration::days(400)];
+            for probe in around.into_iter().chain(later).chain(working.iter().copied()) {
+                let was = Balance::compute(&entries, probe).expect("balance").remaining.quarters();
+                let now = Balance::compute(&recorded, probe).expect("balance").remaining.quarters();
+                prop_assert!(now >= was - total, "{}: {} -> {}", probe, was, now);
+                prop_assert!(now <= was);
+            }
+            for date in &working {
+                prop_assert!(
+                    valid_grant_total(&entries, *date) >= unit.amount_per_day().quarters(),
+                    "{}에 유효한 부여가 없다", date
+                );
+            }
+            // 복원하면 원래대로 돌아온다.
+            recorded.push(restore(1_000, total));
+            prop_assert_eq!(
+                Balance::compute(&recorded, last).expect("balance"),
+                Balance::compute(&entries, last).expect("balance")
+            );
         }
 
         #[test]

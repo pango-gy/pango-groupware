@@ -2425,3 +2425,149 @@ async fn admin_cannot_adjust_or_admin_cancel_their_own_leave_but_the_owner_can()
         .expect(StatusCode::CREATED);
     assert_eq!(audit_count(&w.app, "leave.adjust").await, before + 1);
 }
+
+// ── 부여 경계를 넘는 신청 ─────────────────────────────────────────────────
+
+/// 2025-03-10 입사자: 월 부여 11일이 전부 2026-03-09(월)에 소멸하고, 1주년 연차는
+/// 2026-03-10(화)에 생긴다(오늘은 03-02라 아직 원장에 없다).
+async fn first_year_member(w: &World) -> TestMember {
+    let newbie = w.app.add_member("newbie", Role::Member, Some(w.dev)).await;
+    let mut tx = w.app.state.db.begin_write().await.expect("begin");
+    let mut member = members::find(&mut tx, newbie.id)
+        .await
+        .expect("find")
+        .expect("member");
+    member.hired_on = date("2025-03-10");
+    assert!(members::update(&mut tx, &member, w.app.state.now())
+        .await
+        .expect("update"));
+    tx.commit().await.expect("commit");
+    newbie
+}
+
+/// 첫날 잔여만 보던 때는, 부여가 끝난 다음 날(아직 다음 부여가 없는 날)까지 걸친 신청이
+/// 통과했다. 쉬는 날 하루하루가 그날 유효한 부여로 덮여야 한다.
+#[tokio::test]
+async fn request_reaching_past_the_last_valid_grant_is_rejected() {
+    let w = world().await;
+    let newbie = first_year_member(&w).await;
+    assert_eq!(remaining(&w.app, &newbie).await, 44);
+    let before = stored_ledger(&w.app, newbie.id).await;
+
+    // 03-09(월, 소멸일)~03-10(화, 부여 없음): 첫날 잔여는 11일이지만 둘째 날은 덮이지 않는다.
+    for (start, end) in [("2026-03-09", "2026-03-10"), ("2026-03-05", "2026-03-10")] {
+        request(&w.app, &newbie, &leave(&w.annual, start, end, "full_day"))
+            .await
+            .expect_error(StatusCode::CONFLICT, "insufficient_leave_balance");
+    }
+    // 소멸 다음 날 하루, 반차도 마찬가지다.
+    request(
+        &w.app,
+        &newbie,
+        &leave(&w.annual, "2026-03-10", "2026-03-10", "am_half"),
+    )
+    .await
+    .expect_error(StatusCode::CONFLICT, "insufficient_leave_balance");
+    assert_eq!(stored_ledger(&w.app, newbie.id).await, before);
+    assert_eq!(reservations(&w.app, newbie.id).await, (0, 0));
+    assert_eq!(
+        notification_count(&w.app, w.lead.id, "approval.todo").await,
+        0
+    );
+    assert_eq!(audit_count(&w.app, "leave.request").await, 0);
+    // 차감하지 않는 휴가는 부여와 무관하다.
+    let sick = type_id(&w.app, &w.owner, "sick").await;
+    request(
+        &w.app,
+        &newbie,
+        &leave(&sick, "2026-03-09", "2026-03-10", "full_day"),
+    )
+    .await
+    .expect(StatusCode::CREATED);
+
+    // 경계: 소멸일 당일까지는 된다.
+    request(
+        &w.app,
+        &newbie,
+        &leave(&w.annual, "2026-03-06", "2026-03-06", "full_day"),
+    )
+    .await
+    .expect(StatusCode::CREATED);
+    assert_eq!(remaining(&w.app, &newbie).await, 40);
+    assert_ledger_invariants(&w.app, &newbie).await;
+}
+
+/// 기념일이 지나 새 부여가 원장에 있으면, 경계를 넘는 (사후) 신청은 양쪽이 덮이므로 통과한다.
+#[tokio::test]
+async fn request_crossing_an_anniversary_passes_when_both_sides_are_covered() {
+    let w = world().await;
+    let newbie = first_year_member(&w).await;
+    // 1주년 다음 날. 03-09(월 부여의 마지막 날)~03-11(1주년 연차).
+    w.app.set_time("2026-03-11T00:00:00Z");
+    let crossing = leave(&w.annual, "2026-03-09", "2026-03-11", "full_day");
+    let created = request(&w.app, &newbie, &crossing)
+        .await
+        .expect(StatusCode::CREATED);
+    assert_eq!(created["amount"], 12);
+    // 예약은 첫 근무일 한 줄이다.
+    let records = stored_ledger(&w.app, newbie.id).await;
+    let uses: Vec<&LedgerRecord> = records
+        .iter()
+        .filter(|record| matches!(record.entry.kind, LedgerEntryKind::Use { .. }))
+        .collect();
+    assert_eq!(uses.len(), 1);
+    assert_eq!(
+        uses[0].entry.kind,
+        LedgerEntryKind::Use {
+            effective_on: date("2026-03-09"),
+            request: created["id"].as_str().expect("id").parse().expect("id"),
+        }
+    );
+    // 구간의 어느 날짜를 기준으로 해도 잔여는 음수가 아니다.
+    let entries: Vec<LedgerEntry> = records.iter().map(|record| record.entry).collect();
+    for on in ["2026-03-09", "2026-03-10", "2026-03-11"] {
+        let balance = Balance::compute(&entries, date(on)).expect("balance");
+        assert!(!balance.remaining.is_negative(), "{on}");
+    }
+    assert_ledger_invariants(&w.app, &newbie).await;
+
+    // 기념일 뒤쪽의 부여가 모자라면 거부한다.
+    let lee = w.app.add_member("lee", Role::Member, Some(w.dev)).await;
+    let mut tx = w.app.state.db.begin_write().await.expect("begin");
+    let mut member = members::find(&mut tx, lee.id)
+        .await
+        .expect("find")
+        .expect("member");
+    member.hired_on = date("2025-03-10");
+    assert!(members::update(&mut tx, &member, w.app.state.now())
+        .await
+        .expect("update"));
+    tx.commit().await.expect("commit");
+    // lee: 1주년 연차 15일을 먼저 전부 예약 → 03-09~03-10은 첫날(월 부여 11일)로는 넉넉하지만
+    // 03-10을 덮을 1주년 연차가 남아 있지 않다.
+    request(
+        &w.app,
+        &lee,
+        &leave(&w.annual, "2026-03-16", "2026-04-03", "full_day"),
+    )
+    .await
+    .expect(StatusCode::CREATED);
+    let before = stored_ledger(&w.app, lee.id).await;
+    request(
+        &w.app,
+        &lee,
+        &leave(&w.annual, "2026-03-09", "2026-03-10", "full_day"),
+    )
+    .await
+    .expect_error(StatusCode::CONFLICT, "insufficient_leave_balance");
+    assert_eq!(stored_ledger(&w.app, lee.id).await, before);
+    // 경계 앞쪽 하루만은 된다.
+    request(
+        &w.app,
+        &lee,
+        &leave(&w.annual, "2026-03-09", "2026-03-09", "full_day"),
+    )
+    .await
+    .expect(StatusCode::CREATED);
+    assert_ledger_invariants(&w.app, &lee).await;
+}

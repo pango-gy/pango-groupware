@@ -1,6 +1,6 @@
 //! 휴가: 종류, 연차 자동 부여, 잔여·원장, 신청·취소, 달력.
 //!
-//! 잔여는 원장(`leave_ledger`)으로만 계산한다. 신청할 때 `use` 한 줄로 **예약**하고,
+//! 잔여는 원장(`leave_ledger`)으로만 계산한다. 신청할 때 `use` 한 줄(첫 근무일 기준)로 **예약**하고,
 //! 반려·회수·취소되면 `restore` 한 줄로 되돌린다. 신청 1건에 `use`와 `restore`는 각각
 //! 한 줄뿐이며(DB 유일 인덱스), 확인과 기록이 한 쓰기 트랜잭션이라 동시에 신청해도
 //! 같은 잔여를 두 번 쓸 수 없다.
@@ -684,9 +684,11 @@ pub async fn create_request(
                 return Err(DomainError::Conflict(ConflictReason::LeaveOverlap).into());
             }
 
+            // 총량이 첫 근무일 잔여 안에 들고, 쉬는 날 하루하루가 그날 유효한 부여로 덮여야
+            // 한다. 예약은 아래에서 첫 근무일 한 줄로 기록한다(`rules::check_reservable` 참고).
             if leave_type.deducts_balance {
                 let entries = ledger_entries(conn, member.id).await?;
-                rules::check_sufficient(&entries, span.first_day(), span.amount())?;
+                rules::check_reservable(&entries, &span)?;
             }
 
             let id = LeaveRequestId::new();
