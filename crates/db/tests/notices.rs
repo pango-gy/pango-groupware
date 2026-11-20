@@ -274,3 +274,123 @@ async fn read_receipts_are_unique_and_keep_first_time() {
         .expect("some");
     assert_eq!(unread_view.item.read_at, None);
 }
+
+// ── 알림 회수 ───────────────────────────────────────────────────────────
+
+mod withdrawn_notifications {
+    use pango_core::id::NotificationId;
+    use pango_db::notifications::{self, Notification};
+
+    use super::*;
+
+    fn alert(member_id: MemberId, kind: &str, key: &str, read: bool) -> Notification {
+        Notification {
+            id: NotificationId::new(),
+            member_id,
+            kind: kind.to_owned(),
+            title: "제목".to_owned(),
+            body: String::new(),
+            link: None,
+            dedupe_key: Some(key.to_owned()),
+            read_at: read.then(|| ts(50)),
+            created_at: ts(10),
+        }
+    }
+
+    async fn remaining(db: &Db, member_id: MemberId) -> Vec<(String, Option<String>, bool)> {
+        let mut conn = db.read().await.expect("read");
+        let mut items: Vec<_> = notifications::list(&mut conn, member_id, false, None, 200)
+            .await
+            .expect("list")
+            .0
+            .into_iter()
+            .map(|n| (n.kind, n.dedupe_key, n.read_at.is_some()))
+            .collect();
+        items.sort();
+        items
+    }
+
+    #[tokio::test]
+    async fn delete_unread_removes_only_unread_rows_of_that_event() {
+        let test = TestDb::new().await;
+        let (a, b, c) = (
+            insert_member(&test, "a").await,
+            insert_member(&test, "b").await,
+            insert_member(&test, "c").await,
+        );
+        let mut tx = test.begin_write().await.expect("begin");
+        for row in [
+            alert(a, "notice.new", "notice.new:1", false),
+            alert(b, "notice.new", "notice.new:1", true),
+            alert(c, "notice.new", "notice.new:1", false),
+            // 다른 공지, 같은 키를 쓰는 다른 종류.
+            alert(a, "notice.new", "notice.new:2", false),
+            alert(c, "other.kind", "notice.new:1x", false),
+        ] {
+            assert!(notifications::insert(&mut tx, &row).await.expect("insert"));
+        }
+        tx.commit().await.expect("commit");
+
+        let mut tx = test.begin_write().await.expect("begin");
+        assert_eq!(
+            notifications::unread_recipients(&mut tx, "notice.new", "notice.new:1")
+                .await
+                .expect("recipients")
+                .into_iter()
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([a, c])
+        );
+        // 고른 구성원의 것만. 읽은 사람(b)과 목록에 없는 사람(c)은 그대로다.
+        let deleted =
+            notifications::delete_unread(&mut tx, "notice.new", "notice.new:1", Some(&[a, b]))
+                .await
+                .expect("delete");
+        assert_eq!(deleted, 1);
+        // 빈 목록은 아무것도 지우지 않는다(전부 지우는 `None`과 다르다).
+        let none = notifications::delete_unread(&mut tx, "notice.new", "notice.new:1", Some(&[]))
+            .await
+            .expect("delete");
+        assert_eq!(none, 0);
+        tx.commit().await.expect("commit");
+        assert_eq!(
+            remaining(&test, a).await,
+            [(
+                "notice.new".to_owned(),
+                Some("notice.new:2".to_owned()),
+                false
+            )]
+        );
+        assert_eq!(remaining(&test, c).await.len(), 2);
+
+        // 전부: 남은 읽지 않은 것(c)만 지워지고 읽은 것(b)은 남는다.
+        let mut tx = test.begin_write().await.expect("begin");
+        let deleted = notifications::delete_unread(&mut tx, "notice.new", "notice.new:1", None)
+            .await
+            .expect("delete");
+        assert_eq!(deleted, 1);
+        assert!(
+            notifications::unread_recipients(&mut tx, "notice.new", "notice.new:1")
+                .await
+                .expect("recipients")
+                .is_empty()
+        );
+        tx.commit().await.expect("commit");
+        assert_eq!(
+            remaining(&test, b).await,
+            [(
+                "notice.new".to_owned(),
+                Some("notice.new:1".to_owned()),
+                true
+            )]
+        );
+        assert_eq!(
+            remaining(&test, c).await,
+            [(
+                "other.kind".to_owned(),
+                Some("notice.new:1x".to_owned()),
+                false
+            )]
+        );
+        assert_eq!(remaining(&test, a).await.len(), 1);
+    }
+}

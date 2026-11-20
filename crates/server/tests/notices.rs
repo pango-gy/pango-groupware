@@ -1055,3 +1055,202 @@ async fn malformed_or_unknown_ids_are_not_found() {
         .await
         .expect_error(StatusCode::NOT_FOUND, "not_found");
 }
+
+// ── 공지가 사라지면 알림도 사라진다 ──────────────────────────────────────
+
+/// 그 구성원이 가진 `notice.new` 알림의 (제목, 읽음 여부).
+async fn notice_alerts(app: &TestApp, member: &TestMember) -> Vec<(String, bool)> {
+    let mut alerts: Vec<(String, bool)> = notifications_of(app, member.id)
+        .await
+        .into_iter()
+        .filter(|n| n.kind == "notice.new")
+        .map(|n| (n.title, n.read_at.is_some()))
+        .collect();
+    alerts.sort();
+    alerts
+}
+
+async fn read_all_notifications(app: &TestApp, member: &TestMember) {
+    app.post("/notifications/read-all")
+        .bearer(&member.token)
+        .send()
+        .await
+        .expect(StatusCode::OK);
+}
+
+async fn unread_notifications(app: &TestApp, member: &TestMember) -> i64 {
+    app.get("/notifications/unread-count")
+        .bearer(&member.token)
+        .send()
+        .await
+        .expect(StatusCode::OK)["unread"]
+        .as_i64()
+        .expect("count")
+}
+
+/// 알림에는 공지 제목이 들어 있다. 공지를 보관하면 더는 볼 수 없는 공지의 제목이 읽지 않은
+/// 알림으로 남아 있으면 안 된다. 이미 읽은 알림은 받은 기록이므로 그대로 둔다.
+#[tokio::test]
+async fn archiving_removes_unread_notifications_but_keeps_read_ones() {
+    let app = TestApp::new().await;
+    let o = org(&app).await;
+    let kept = id_of(&create(&app, &o.owner, &to_all("계속 게시")).await);
+    let gone = id_of(&create(&app, &o.owner, &to_all("인사 발령 (비공개 예정)")).await);
+    // team_member는 두 알림을 모두 읽었고, 나머지는 읽지 않았다.
+    read_all_notifications(&app, &o.team_member).await;
+    let both_unread = vec![
+        ("계속 게시".to_owned(), false),
+        ("인사 발령 (비공개 예정)".to_owned(), false),
+    ];
+    assert_eq!(notice_alerts(&app, &o.part_member).await, both_unread);
+    assert_eq!(unread_notifications(&app, &o.part_member).await, 2);
+
+    app.delete(&format!("/admin/notices/{gone}?version=1"))
+        .bearer(&o.owner)
+        .send()
+        .await
+        .expect(StatusCode::OK);
+
+    // 읽지 않은 사람: 보관된 공지의 알림만 사라진다.
+    let only_kept = vec![("계속 게시".to_owned(), false)];
+    for member in [
+        &o.part_member,
+        &o.hq_member,
+        &o.other_member,
+        &o.homeless,
+        &o.admin,
+    ] {
+        assert_eq!(
+            notice_alerts(&app, member).await,
+            only_kept,
+            "{}",
+            member.login_id
+        );
+    }
+    assert_eq!(unread_notifications(&app, &o.part_member).await, 1);
+    // 읽은 사람: 그대로 남는다.
+    assert_eq!(
+        notice_alerts(&app, &o.team_member).await,
+        vec![
+            ("계속 게시".to_owned(), true),
+            ("인사 발령 (비공개 예정)".to_owned(), true),
+        ]
+    );
+    // 다른 종류의 알림과 다른 공지는 건드리지 않는다.
+    assert!(visible_ids(&app, &o.part_member.token)
+        .await
+        .contains(&kept.to_string()));
+
+    // 다시 보관해도(자연 멱등) 더 지워지는 것이 없다.
+    app.delete(&format!("/admin/notices/{gone}?version=1"))
+        .bearer(&o.owner)
+        .send()
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(notice_alerts(&app, &o.part_member).await, only_kept);
+    assert_eq!(notice_alerts(&app, &o.team_member).await.len(), 2);
+}
+
+/// 대상을 좁히면, 더는 그 공지를 볼 수 없는 구성원의 읽지 않은 알림만 사라진다.
+#[tokio::test]
+async fn narrowing_the_audience_removes_unread_notifications_outside_it() {
+    let app = TestApp::new().await;
+    let o = org(&app).await;
+    let id = id_of(&create(&app, &o.owner, &to_all("조직 개편 안내")).await);
+    let other_notice = id_of(&create(&app, &o.owner, &to_all("다른 공지")).await);
+    // 대상 밖이 될 사람 중 other_member는 이미 읽었다.
+    read_all_notifications(&app, &o.other_member).await;
+    let titles = |alerts: Vec<(String, bool)>| -> Vec<String> {
+        alerts.into_iter().map(|(title, _)| title).collect()
+    };
+
+    // 전체 → 개발팀(하위 백엔드파트 포함)으로 좁힌다.
+    let mut narrowed = to_department("조직 개편 안내", o.team);
+    narrowed["version"] = json!(1);
+    app.patch(&format!("/admin/notices/{id}"))
+        .bearer(&o.owner)
+        .json(&narrowed)
+        .send()
+        .await
+        .expect(StatusCode::OK);
+
+    let both = vec!["다른 공지".to_owned(), "조직 개편 안내".to_owned()];
+    let only_other = vec!["다른 공지".to_owned()];
+    // 대상 안(개발팀, 그 하위 파트): 그대로.
+    for member in [&o.team_member, &o.part_member] {
+        assert_eq!(
+            titles(notice_alerts(&app, member).await),
+            both,
+            "{}",
+            member.login_id
+        );
+        assert_eq!(unread_notifications(&app, member).await, 2);
+        assert!(visible_ids(&app, &member.token)
+            .await
+            .contains(&id.to_string()));
+    }
+    // 관리자는 대상과 무관하게 볼 수 있으므로 그대로.
+    assert_eq!(titles(notice_alerts(&app, &o.admin).await), both);
+    // 대상 밖(상위 본부, 형제 부서, 부서 없음): 읽지 않은 것만 사라진다.
+    for member in [&o.hq_member, &o.homeless] {
+        assert_eq!(
+            titles(notice_alerts(&app, member).await),
+            only_other,
+            "{}",
+            member.login_id
+        );
+        assert_eq!(unread_notifications(&app, member).await, 1);
+        assert!(!visible_ids(&app, &member.token)
+            .await
+            .contains(&id.to_string()));
+    }
+    assert_eq!(
+        notice_alerts(&app, &o.other_member).await,
+        vec![
+            ("다른 공지".to_owned(), true),
+            ("조직 개편 안내".to_owned(), true),
+        ],
+        "읽은 알림은 남는다"
+    );
+    assert!(visible_ids(&app, &o.hq_member.token)
+        .await
+        .contains(&other_notice.to_string()));
+
+    // 대상을 바꾸지 않는 수정(제목만)은 알림을 건드리지 않는다.
+    let mut retitled = to_department("조직 개편 안내 (수정)", o.team);
+    retitled["version"] = json!(2);
+    app.patch(&format!("/admin/notices/{id}"))
+        .bearer(&o.owner)
+        .json(&retitled)
+        .send()
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(titles(notice_alerts(&app, &o.team_member).await), both);
+    assert_eq!(titles(notice_alerts(&app, &o.hq_member).await), only_other);
+
+    // 낡은 버전의 수정은 거부되고 알림도 그대로다.
+    let mut stale = to_department("조직 개편 안내", o.part);
+    stale["version"] = json!(1);
+    app.patch(&format!("/admin/notices/{id}"))
+        .bearer(&o.owner)
+        .json(&stale)
+        .send()
+        .await
+        .expect_error(StatusCode::CONFLICT, "version_conflict");
+    assert_eq!(titles(notice_alerts(&app, &o.team_member).await), both);
+
+    // 더 좁히면(개발팀 → 백엔드파트) 팀원의 읽지 않은 알림도 사라진다.
+    let mut narrower = to_department("조직 개편 안내 (수정)", o.part);
+    narrower["version"] = json!(3);
+    app.patch(&format!("/admin/notices/{id}"))
+        .bearer(&o.owner)
+        .json(&narrower)
+        .send()
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(
+        titles(notice_alerts(&app, &o.team_member).await),
+        only_other
+    );
+    assert_eq!(titles(notice_alerts(&app, &o.part_member).await), both);
+}

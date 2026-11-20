@@ -75,6 +75,62 @@ pub async fn insert(conn: &mut Conn, notification: &Notification) -> DbResult<bo
     Ok(result.rows_affected() == 1)
 }
 
+/// 한 번에 묶어 처리하는 구성원 수. SQLite의 바인드 변수 한도보다 충분히 작게 둔다.
+const MEMBER_CHUNK: usize = 500;
+
+/// 한 사건(`kind` + `dedupe_key`)의 알림 중 **아직 읽지 않은** 것을 받은 구성원.
+pub async fn unread_recipients(
+    conn: &mut Conn,
+    kind: &str,
+    dedupe_key: &str,
+) -> DbResult<Vec<MemberId>> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT member_id FROM notifications
+         WHERE kind = ? AND dedupe_key = ? AND read_at IS NULL ORDER BY member_id",
+    )
+    .bind(kind)
+    .bind(dedupe_key)
+    .fetch_all(conn)
+    .await?;
+    rows.iter()
+        .map(|(member_id,)| codec::parse("member_id", member_id))
+        .collect()
+}
+
+/// 한 사건의 **읽지 않은** 알림을 지우고 그 수를 돌려준다. `member_ids`가 있으면 그 구성원들의
+/// 것만 지운다. 읽은 알림은 받은 기록이므로 지우지 않는다.
+///
+/// 알림이 가리키던 대상을 받는 사람이 더는 볼 수 없게 됐을 때 쓴다(보관된 공지 등). 알림에는
+/// 대상의 제목이 들어 있기 때문이다.
+pub async fn delete_unread(
+    conn: &mut Conn,
+    kind: &str,
+    dedupe_key: &str,
+    member_ids: Option<&[MemberId]>,
+) -> DbResult<u64> {
+    const BASE: &str =
+        "DELETE FROM notifications WHERE kind = ? AND dedupe_key = ? AND read_at IS NULL";
+    let Some(member_ids) = member_ids else {
+        let result = sqlx::query(BASE)
+            .bind(kind)
+            .bind(dedupe_key)
+            .execute(conn)
+            .await?;
+        return Ok(result.rows_affected());
+    };
+    let mut deleted = 0;
+    for chunk in member_ids.chunks(MEMBER_CHUNK) {
+        let placeholders = vec!["?"; chunk.len()].join(", ");
+        let sql = format!("{BASE} AND member_id IN ({placeholders})");
+        let mut query = sqlx::query(&sql).bind(kind).bind(dedupe_key);
+        for id in chunk {
+            query = query.bind(id.to_string());
+        }
+        deleted += query.execute(&mut *conn).await?.rows_affected();
+    }
+    Ok(deleted)
+}
+
 /// 최신순 목록. `(항목, 다음 페이지 존재 여부)`.
 pub async fn list(
     conn: &mut Conn,

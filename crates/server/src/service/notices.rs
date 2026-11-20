@@ -7,13 +7,13 @@ use pango_api::notice::{
 use pango_api::{Page, PageQuery, Versioned};
 use pango_core::authz::{self, Actor, Audience, AudienceScope};
 use pango_core::error::ConflictReason;
-use pango_core::id::{DepartmentId, NoticeId};
+use pango_core::id::{DepartmentId, MemberId, NoticeId};
 use pango_core::member::MemberStatus;
 use pango_core::text::{Body, Title};
 use pango_core::DomainError;
 use pango_db::members::{self, Member, MemberFilter};
 use pango_db::notices::{self, Notice, NoticeCursor, NoticeFilter, NoticeListItem, NoticeView};
-use pango_db::{org, Conn};
+use pango_db::{notifications, org, Conn};
 
 use super::support::{
     audit, department_tree, found, notify, require_current_admin, require_updated, Audit,
@@ -43,6 +43,13 @@ impl Content {
     }
 }
 
+/// 게시 알림의 종류와, 공지 하나의 게시 알림을 묶는 키.
+const NEW_NOTICE: &str = "notice.new";
+
+fn new_notice_key(id: NoticeId) -> String {
+    format!("{NEW_NOTICE}:{id}")
+}
+
 /// 행위자가 볼 수 있는 공지 범위.
 async fn scope_of(conn: &mut Conn, actor: &Actor) -> ServiceResult<AudienceScope> {
     let ancestors = match actor.department_id {
@@ -50,6 +57,52 @@ async fn scope_of(conn: &mut Conn, actor: &Actor) -> ServiceResult<AudienceScope
         None => Vec::new(),
     };
     Ok(authz::audience_scope(actor, &ancestors))
+}
+
+/// 공지를 **더는 볼 수 없게 된** 구성원의 읽지 않은 게시 알림을 지운다. 지운 수를 돌려준다.
+///
+/// 게시 알림에는 공지 제목이 들어 있다. 공지를 보관하거나 대상을 좁혀도 알림이 남아 있으면,
+/// 볼 수 없게 된 공지의 제목이 알림함에 계속 보인다. 이미 읽은 알림은 받은 기록이므로 둔다.
+///
+/// - `audience`가 `None`이면(보관) 아무도 볼 수 없으므로 읽지 않은 알림을 전부 지운다.
+/// - `Some`이면 그 대상을 볼 수 없는 구성원의 것만 지운다. 볼 수 있는지는 열람과 같은 규칙
+///   ([`authz::audience_scope`])으로 정한다: 관리자는 전부, 그 외는 자기 부서와 상위 부서 대상.
+async fn withdraw_alerts_tx(
+    conn: &mut Conn,
+    id: NoticeId,
+    audience: Option<&Audience>,
+) -> ServiceResult<u64> {
+    let key = new_notice_key(id);
+    let Some(audience) = audience else {
+        return Ok(notifications::delete_unread(conn, NEW_NOTICE, &key, None).await?);
+    };
+    let recipients = notifications::unread_recipients(conn, NEW_NOTICE, &key).await?;
+    if recipients.is_empty() {
+        return Ok(0);
+    }
+    let tree = department_tree(conn).await?;
+    let people = members::find_many(conn, &recipients).await?;
+    let hidden: Vec<MemberId> = recipients
+        .into_iter()
+        .filter(|recipient| {
+            let Some(member) = people.iter().find(|member| member.id == *recipient) else {
+                return true;
+            };
+            let ancestors = member
+                .department_id
+                .map(|own| tree.ancestors_inclusive(own))
+                .unwrap_or_default();
+            // 공지 열람 범위는 역할과 소속 부서만으로 정해진다(조직장 관할은 쓰지 않는다).
+            let viewer = Actor {
+                member_id: member.id,
+                role: member.role,
+                department_id: member.department_id,
+                managed_departments: Default::default(),
+            };
+            !authz::audience_scope(&viewer, &ancestors).allows(audience)
+        })
+        .collect();
+    Ok(notifications::delete_unread(conn, NEW_NOTICE, &key, Some(&hidden)).await?)
 }
 
 fn visible_departments(scope: &AudienceScope) -> Option<Vec<DepartmentId>> {
@@ -277,7 +330,7 @@ pub async fn create(
             };
             notices::insert(conn, &notice, now).await?;
 
-            let dedupe_key = format!("notice.new:{}", notice.id);
+            let dedupe_key = new_notice_key(notice.id);
             let body = if notice.must_read {
                 "필독 공지가 게시되었습니다."
             } else {
@@ -292,7 +345,7 @@ pub async fn create(
                     now,
                     Notify {
                         to: member.id,
-                        kind: "notice.new",
+                        kind: NEW_NOTICE,
                         title: notice.title.clone(),
                         body: body.to_owned(),
                         link: Some(format!("/notices/{}", notice.id)),
@@ -328,6 +381,9 @@ fn audience_detail(notice: &Notice) -> serde_json::Value {
 }
 
 /// 공지 수정. 보관된 공지는 고칠 수 없다. 다시 알리지 않는다.
+///
+/// 대상이 바뀌면, 새 대상에서 벗어나 공지를 볼 수 없게 된 구성원의 읽지 않은 게시 알림을 같은
+/// 트랜잭션에서 지운다([`withdraw_alerts_tx`]).
 pub async fn update(
     state: &AppState,
     ctx: &AuthContext,
@@ -345,6 +401,7 @@ pub async fn update(
                 return Err(DomainError::Conflict(ConflictReason::NoticeArchived).into());
             }
             check_department(conn, &content.audience).await?;
+            let existing_audience = existing.audience;
             let updated = Notice {
                 title: content.title.clone(),
                 body: content.body.clone(),
@@ -355,6 +412,9 @@ pub async fn update(
                 ..existing
             };
             require_updated(notices::update(conn, &updated, now).await?)?;
+            if updated.audience != existing_audience {
+                withdraw_alerts_tx(conn, id, Some(&updated.audience)).await?;
+            }
             audit(
                 conn,
                 now,
@@ -373,6 +433,8 @@ pub async fn update(
 }
 
 /// 공지 보관(삭제 대신). 이미 보관됐으면 버전과 무관하게 그대로 성공한다(자연 멱등).
+///
+/// 보관된 공지는 아무도 열 수 없으므로, 읽지 않은 게시 알림을 같은 트랜잭션에서 지운다.
 pub async fn archive(
     state: &AppState,
     ctx: &AuthContext,
@@ -392,6 +454,7 @@ pub async fn archive(
                     ..existing
                 };
                 require_updated(notices::update(conn, &archived, now).await?)?;
+                withdraw_alerts_tx(conn, id, None).await?;
                 audit(
                     conn,
                     now,
