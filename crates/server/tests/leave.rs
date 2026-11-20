@@ -2626,3 +2626,58 @@ async fn admin_balances_still_applies_grants_that_became_due() {
     assert_eq!(admin_balances(&w.app, &owner).await, after);
     assert_eq!(stored_ledger(&w.app, w.kim.id).await.len(), 14);
 }
+
+#[tokio::test]
+async fn admin_creates_honour_idempotency_key() {
+    let w = world().await;
+    let kim = w.kim.id;
+    let create_type = |name: &str| {
+        w.app
+            .post("/admin/leave/types")
+            .bearer(&w.owner)
+            .header("idempotency-key", "type-create-1")
+            .json(&json!({
+                "code": "reward", "name": name, "deducts_balance": false, "allow_partial": true
+            }))
+            .send()
+    };
+    let first = create_type("포상휴가").await.expect(StatusCode::CREATED);
+    let again = create_type("포상휴가").await.expect(StatusCode::CREATED);
+    assert_eq!(first, again, "같은 키는 첫 응답을 그대로 돌려준다");
+    create_type("다른 이름")
+        .await
+        .expect_error(StatusCode::UNPROCESSABLE_ENTITY, "idempotency_key_reused");
+    assert_eq!(
+        w.app
+            .count("SELECT COUNT(*) FROM leave_types WHERE code = 'reward'")
+            .await,
+        1
+    );
+    assert_eq!(w.app.audit_entries("leave_type.create").await.len(), 1);
+
+    let adjust = |amount_q: i64| {
+        w.app
+            .post("/admin/leave/adjustments")
+            .bearer(&w.owner)
+            .header("idempotency-key", "adjust-kim-1")
+            .json(&json!({
+                "member_id": kim, "amount_q": amount_q,
+                "effective_on": "2026-03-02", "memo": "포상",
+            }))
+            .send()
+    };
+    let first = adjust(4).await.expect(StatusCode::CREATED);
+    let again = adjust(4).await.expect(StatusCode::CREATED);
+    assert_eq!(first, again);
+    adjust(8)
+        .await
+        .expect_error(StatusCode::UNPROCESSABLE_ENTITY, "idempotency_key_reused");
+    assert_eq!(
+        w.app
+            .count("SELECT COUNT(*) FROM leave_ledger WHERE kind = 'adjust'")
+            .await,
+        1,
+        "재전송해도 한 번만 조정한다"
+    );
+    assert_eq!(w.app.audit_entries("leave.adjust").await.len(), 1);
+}

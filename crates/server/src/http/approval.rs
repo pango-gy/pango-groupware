@@ -161,9 +161,11 @@ async fn admin_list_forms(
 async fn admin_create_form(
     State(state): State<AppState>,
     Auth(ctx): Auth,
-    ApiJson(request): ApiJson<CreateFormRequest>,
+    request: IdempotentJson<CreateFormRequest>,
 ) -> ServiceResult<(StatusCode, Json<FormDto>)> {
-    let form = approval::admin_create_form(&state, &ctx, &request).await?;
+    let form =
+        approval::admin_create_form(&state, &ctx, &request.body, request.idempotency.as_ref())
+            .await?;
     Ok((StatusCode::CREATED, Json(form)))
 }
 

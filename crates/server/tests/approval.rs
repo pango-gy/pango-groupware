@@ -2290,3 +2290,29 @@ async fn admin_reject_racing_with_the_final_approval_has_exactly_one_winner() {
     );
     assert!(!outcomes.is_empty());
 }
+
+#[tokio::test]
+async fn admin_form_create_honours_idempotency_key() {
+    let w = world().await;
+    let send = |name: &str| {
+        w.app
+            .post("/admin/approval/forms")
+            .bearer(&w.owner)
+            .header("idempotency-key", "form-create-1")
+            .json(&json!({ "code": "expense", "name": name }))
+            .send()
+    };
+    let first = send("지출 결의서").await.expect(StatusCode::CREATED);
+    let again = send("지출 결의서").await.expect(StatusCode::CREATED);
+    assert_eq!(first, again, "같은 키는 첫 응답을 그대로 돌려준다");
+    send("다른 양식")
+        .await
+        .expect_error(StatusCode::UNPROCESSABLE_ENTITY, "idempotency_key_reused");
+    assert_eq!(
+        w.app
+            .count("SELECT COUNT(*) FROM approval_forms WHERE code = 'expense'")
+            .await,
+        1
+    );
+    assert_eq!(w.app.audit_entries("approval_form.create").await.len(), 1);
+}

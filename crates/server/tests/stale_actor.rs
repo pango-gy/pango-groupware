@@ -164,8 +164,8 @@ async fn leave_admin_writes_recheck_the_role_inside_the_transaction() {
 
     s.demote().await;
     assert_denied!(s, "forbidden",
-        "adjust" => leave::admin_adjust(&s.app.state, &s.ctx, &adjust),
-        "create type" => leave::admin_create_type(&s.app.state, &s.ctx, &new_type),
+        "adjust" => leave::admin_adjust(&s.app.state, &s.ctx, &adjust, None),
+        "create type" => leave::admin_create_type(&s.app.state, &s.ctx, &new_type, None),
         "update type" => leave::admin_update_type(&s.app.state, &s.ctx, type_id, &edit_type),
         "cancel" => leave::admin_cancel_request(&s.app.state, &s.ctx, request_id),
         "accrual" => leave::admin_run_accrual(&s.app.state, &s.ctx),
@@ -173,7 +173,7 @@ async fn leave_admin_writes_recheck_the_role_inside_the_transaction() {
     // 계정이 정지된 경우는 인증 자체가 무효다.
     s.suspend().await;
     assert_denied!(s, "unauthenticated",
-        "adjust" => leave::admin_adjust(&s.app.state, &s.ctx, &adjust),
+        "adjust" => leave::admin_adjust(&s.app.state, &s.ctx, &adjust, None),
         "cancel" => leave::admin_cancel_request(&s.app.state, &s.ctx, request_id),
     );
 }
@@ -374,13 +374,13 @@ async fn approval_admin_writes_recheck_the_role_inside_the_transaction() {
 
     s.demote().await;
     assert_denied!(s, "forbidden",
-        "create form" => approval::admin_create_form(&s.app.state, &s.ctx, &new_form),
+        "create form" => approval::admin_create_form(&s.app.state, &s.ctx, &new_form, None),
         "update form" => approval::admin_update_form(&s.app.state, &s.ctx, form_id, &edit_form),
         "admin reject" => approval::admin_reject(&s.app.state, &s.ctx, document_id, &reject),
     );
     s.suspend().await;
     assert_denied!(s, "unauthenticated",
-        "create form" => approval::admin_create_form(&s.app.state, &s.ctx, &new_form),
+        "create form" => approval::admin_create_form(&s.app.state, &s.ctx, &new_form, None),
         "admin reject" => approval::admin_reject(&s.app.state, &s.ctx, document_id, &reject),
     );
     // 문서는 여전히 결재자의 차례다.

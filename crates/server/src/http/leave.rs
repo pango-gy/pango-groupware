@@ -120,9 +120,10 @@ async fn admin_balances(
 async fn admin_adjust(
     State(state): State<AppState>,
     Auth(ctx): Auth,
-    ApiJson(request): ApiJson<AdjustLeaveRequest>,
+    request: IdempotentJson<AdjustLeaveRequest>,
 ) -> ServiceResult<(StatusCode, Json<BalanceDto>)> {
-    let balance = leave::admin_adjust(&state, &ctx, &request).await?;
+    let balance =
+        leave::admin_adjust(&state, &ctx, &request.body, request.idempotency.as_ref()).await?;
     Ok((StatusCode::CREATED, Json(balance)))
 }
 
@@ -156,9 +157,10 @@ async fn admin_list_types(
 async fn admin_create_type(
     State(state): State<AppState>,
     Auth(ctx): Auth,
-    ApiJson(request): ApiJson<CreateLeaveTypeRequest>,
+    request: IdempotentJson<CreateLeaveTypeRequest>,
 ) -> ServiceResult<(StatusCode, Json<LeaveTypeDto>)> {
-    let created = leave::admin_create_type(&state, &ctx, &request).await?;
+    let created =
+        leave::admin_create_type(&state, &ctx, &request.body, request.idempotency.as_ref()).await?;
     Ok((StatusCode::CREATED, Json(created)))
 }
 

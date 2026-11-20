@@ -154,6 +154,7 @@ pub async fn admin_create_type(
     state: &AppState,
     ctx: &AuthContext,
     request: &CreateLeaveTypeRequest,
+    idempotency: Option<&Idempotency>,
 ) -> ServiceResult<LeaveTypeDto> {
     authz::require_admin(&ctx.actor)?;
     let now = state.now();
@@ -168,7 +169,7 @@ pub async fn admin_create_type(
         version: 1,
     };
     state
-        .write(async |conn: &mut Conn| {
+        .write_idempotent(ctx.member_id(), idempotency, async |conn: &mut Conn| {
             require_current_admin(conn, ctx).await?;
             if leave::find_type_by_code(conn, &leave_type.code)
                 .await?
@@ -177,10 +178,10 @@ pub async fn admin_create_type(
                 return Err(DomainError::Conflict(ConflictReason::AlreadyExists).into());
             }
             leave::insert_type(conn, &leave_type, now).await?;
-            audit_type(conn, now, ctx, "leave_type.create", &leave_type).await
+            audit_type(conn, now, ctx, "leave_type.create", &leave_type).await?;
+            Ok(type_dto(leave_type.clone()))
         })
-        .await?;
-    Ok(type_dto(leave_type))
+        .await
 }
 
 /// 휴가 종류 수정. 결재 중인 신청이 있는 종류는 끌 수 없다(`InUse`).
@@ -1137,6 +1138,7 @@ pub async fn admin_adjust(
     state: &AppState,
     ctx: &AuthContext,
     request: &AdjustLeaveRequest,
+    idempotency: Option<&Idempotency>,
 ) -> ServiceResult<BalanceDto> {
     authz::require_admin(&ctx.actor)?;
     let now = state.now();
@@ -1151,7 +1153,7 @@ pub async fn admin_adjust(
     let effective_on = plain_date("effective_on", request.effective_on)?;
     let memo = Reason::parse(&request.memo).map_err(|error| error.with_field("memo"))?;
     state
-        .write(async |conn: &mut Conn| {
+        .write_idempotent(ctx.member_id(), idempotency, async |conn: &mut Conn| {
             let actor = require_current_admin(conn, ctx).await?;
             let member = found(members::find(conn, request.member_id).await?)?;
             authz::edit_personal_records(&actor, &member.subject())?;

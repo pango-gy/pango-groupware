@@ -166,6 +166,7 @@ pub async fn admin_create_form(
     state: &AppState,
     ctx: &AuthContext,
     request: &CreateFormRequest,
+    idempotency: Option<&Idempotency>,
 ) -> ServiceResult<FormDto> {
     authz::require_admin(&ctx.actor)?;
     let now = state.now();
@@ -185,7 +186,7 @@ pub async fn admin_create_form(
         version: 1,
     };
     state
-        .write(async |conn: &mut Conn| {
+        .write_idempotent(ctx.member_id(), idempotency, async |conn: &mut Conn| {
             require_current_admin(conn, ctx).await?;
             if approval::find_form_by_code(conn, &form.code)
                 .await?
@@ -194,10 +195,10 @@ pub async fn admin_create_form(
                 return Err(DomainError::Conflict(ConflictReason::AlreadyExists).into());
             }
             approval::insert_form(conn, &form, now).await?;
-            audit_form(conn, now, ctx, "approval_form.create", &form).await
+            audit_form(conn, now, ctx, "approval_form.create", &form).await?;
+            Ok(form_dto(form.clone()))
         })
-        .await?;
-    Ok(form_dto(form))
+        .await
 }
 
 /// 양식 수정. `code`와 종류는 바꿀 수 없고, 시스템 양식은 끌 수 없다(`InUse`).
