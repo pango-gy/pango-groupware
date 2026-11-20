@@ -16,8 +16,8 @@ use crate::org_tree;
 use crate::session::use_session;
 use crate::text;
 use crate::ui::{
-    report_error, report_form_error, report_success, resource_view, Avatar, Badge, Button,
-    ButtonKind, Card, Checkbox, ConfirmModal, EmptyState, FormError, Icon, IconName, Modal,
+    loaded_or_empty, report_error, report_form_error, report_success, resource_view, Avatar, Badge,
+    Button, ButtonKind, Card, Checkbox, ConfirmModal, EmptyState, FormError, Icon, IconName, Modal,
     PageHeader, SecretReveal, SelectField, TextField, Tone,
 };
 
@@ -72,26 +72,6 @@ pub mod logic {
         } else {
             None
         }
-    }
-
-    /// 목록 조회 쿼리 `(이름, 값)`. 빈 값은 보내지 않는다.
-    pub fn member_query(
-        search: &str,
-        department: &str,
-        include_inactive: bool,
-    ) -> Vec<(&'static str, String)> {
-        let mut pairs = Vec::new();
-        let search = search.trim();
-        if !search.is_empty() {
-            pairs.push(("search", search.to_owned()));
-        }
-        if let Ok(id) = DepartmentId::parse(department) {
-            pairs.push(("department_id", id.to_string()));
-        }
-        if include_inactive {
-            pairs.push(("include_inactive", "true".to_owned()));
-        }
-        pairs
     }
 
     fn optional_text<T>(
@@ -610,21 +590,6 @@ pub mod logic {
             assert!(!needs_confirmation(Retired, Active));
             assert!(!needs_confirmation(Retired, Retired));
         }
-
-        #[test]
-        fn query_omits_empty_and_invalid_values() {
-            assert!(member_query("  ", "", false).is_empty());
-            assert!(member_query("", "not-an-id", false).is_empty());
-            let id = DepartmentId::new();
-            assert_eq!(
-                member_query(" 홍 ", &id.to_string(), true),
-                vec![
-                    ("search", "홍".to_owned()),
-                    ("department_id", id.to_string()),
-                    ("include_inactive", "true".to_owned()),
-                ]
-            );
-        }
     }
 }
 
@@ -646,22 +611,11 @@ impl From<IssuedCredentials> for Issued {
     }
 }
 
-fn loaded<T: Clone>(resource: &Resource<ApiResult<Vec<T>>>) -> Vec<T> {
-    match &*resource.read() {
-        Some(Ok(list)) => list.clone(),
-        _ => Vec::new(),
-    }
-}
-
 fn department_and_position(member: &MemberDetail) -> String {
-    [
-        member.summary.department_name.clone(),
-        member.summary.position_name.clone(),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>()
-    .join(" · ")
+    format::org_line(
+        member.summary.department_name.as_deref(),
+        member.summary.position_name.as_deref(),
+    )
 }
 
 #[component]
@@ -678,15 +632,15 @@ pub fn AdminMembers() -> Element {
         use_resource(|| async { api::get::<Vec<DepartmentDto>>("/departments").await });
     let positions = use_resource(|| async { api::get::<Vec<PositionDto>>("/positions").await });
     let mut members = use_resource(move || async move {
-        let pairs = logic::member_query(&search(), &department(), include_inactive());
+        let pairs = org_tree::member_query(&search(), &department(), include_inactive());
         api::get::<Vec<MemberDetail>>(&format!("/admin/members{}", api::query_string(&pairs))).await
     });
 
     let Some(me) = session.me() else {
         return rsx! {};
     };
-    let department_list = loaded(&departments);
-    let position_list = loaded(&positions);
+    let department_list = loaded_or_empty(&departments);
+    let position_list = loaded_or_empty(&positions);
     let department_filter = org_tree::department_options(&department_list, "전체 부서");
 
     rsx! {

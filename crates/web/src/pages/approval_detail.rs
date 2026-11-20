@@ -277,7 +277,7 @@ fn not_found() -> ApiError {
 
 #[component]
 pub fn ApprovalDetail(id: String) -> Element {
-    let mut session = use_session();
+    let session = use_session();
     let nav = navigator();
     let mut doc = use_resource(use_reactive!(|id| async move {
         // 경로 값은 그대로 서버 경로에 넣지 않는다. 형식이 틀리면 없는 문서다.
@@ -363,7 +363,7 @@ pub fn ApprovalDetail(id: String) -> Element {
                 report_error(&error);
                 doc.restart();
             }
-            Err(error) => dialog_error.set(session.handle(&error)),
+            Err(error) => dialog_error.set(error.message()),
         }
     };
     let mut open = move |act: Act| {

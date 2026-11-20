@@ -1,28 +1,29 @@
 //! 휴가 신청 폼.
 
 use dioxus::prelude::*;
-use pango_api::approval::LineSuggestion;
 use pango_api::leave::{BalanceDto, LeaveRequestDto, LeaveTypeDto};
 use pango_core::leave::LeaveUnit;
 
 use crate::api;
+use crate::company::use_company;
 use crate::route::Route;
 use crate::session::use_session;
 use crate::text;
-use crate::ui::approval_line::from_suggestion;
 use crate::ui::{
-    report_success, today, ApprovalLineEditor, ApproverEntry, Button, ButtonKind, Card, DateField,
-    ErrorState, FormError, PageHeader, SelectField, Spinner, TextArea,
+    report_success, today, use_line_draft, ApprovalLineEditor, ApproverEntry, Button, ButtonKind,
+    Card, DateField, ErrorState, FormError, PageHeader, SelectField, Spinner, TextArea,
 };
 
 use logic::Slot;
 
 #[component]
 pub fn LeaveNew() -> Element {
-    let mut session = use_session();
+    let session = use_session();
     let nav = navigator();
     let tz = session.zone();
     let today = today(tz);
+    // 근무 요일은 미리보기용이다. 읽기 전에는 월~금으로 계산한다.
+    let week = use_company().work_week();
     let me_id = session.me().map(|me| me.id);
 
     let key = use_signal(api::new_idempotency_key);
@@ -31,24 +32,12 @@ pub fn LeaveNew() -> Element {
     let mut start = use_signal(|| today.to_string());
     let mut end = use_signal(|| today.to_string());
     let mut reason = use_signal(String::new);
-    let mut line = use_signal(Vec::<ApproverEntry>::new);
-    let mut line_touched = use_signal(|| false);
+    let mut line = use_line_draft(me_id.into_iter().collect());
     let mut busy = use_signal(|| false);
     let mut server_error = use_signal(|| None::<(Slot, String)>);
 
     let mut types = use_resource(|| async { api::get::<Vec<LeaveTypeDto>>("/leave/types").await });
     let balance = use_resource(|| async { api::get::<BalanceDto>("/leave/balance").await });
-    let suggestion = use_resource(move || async move {
-        let result = api::get::<LineSuggestion>("/approval/line-suggestion").await;
-        if let Ok(found) = &result {
-            // 사용자가 이미 고쳤다면 추천으로 덮어쓰지 않는다.
-            if !*line_touched.peek() {
-                let exclude: Vec<_> = me_id.into_iter().collect();
-                line.set(from_suggestion(&exclude, &found.steps));
-            }
-        }
-        result
-    });
 
     let type_list: Vec<LeaveTypeDto> = match &*types.read() {
         Some(Ok(list)) => logic::usable_types(list),
@@ -60,8 +49,8 @@ pub fn LeaveNew() -> Element {
         Some(Ok(dto)) => Some(dto.balance.remaining.quarters()),
         _ => None,
     };
-    let preview = logic::preview(&start(), &end(), unit(), chosen.as_ref(), remaining);
-    let line_problem = crate::ui::approval_line::line_problem(&line());
+    let preview = logic::preview(&start(), &end(), unit(), chosen.as_ref(), remaining, week);
+    let line_problem = crate::ui::approval_line::line_problem(&line.steps());
     let reason_problem = logic::reason_problem(&reason());
     let can_submit =
         chosen.is_some() && preview.is_ok() && line_problem.is_none() && reason_problem.is_none();
@@ -85,7 +74,8 @@ pub fn LeaveNew() -> Element {
             &start(),
             &end(),
             &reason(),
-            &line(),
+            &line.steps(),
+            week,
         ) {
             Ok(request) => request,
             Err(problem) => {
@@ -103,7 +93,7 @@ pub fn LeaveNew() -> Element {
                 return;
             }
             Err(error) => {
-                let message = session.handle(&error);
+                let message = error.message();
                 server_error.set(Some((
                     logic::error_slot(&error.code, error.field.as_deref()),
                     message,
@@ -138,7 +128,7 @@ pub fn LeaveNew() -> Element {
     };
     let types_state = match &*types.read() {
         None => logic::Load::Loading,
-        Some(Err(error)) => logic::Load::Failed(session.handle(error)),
+        Some(Err(error)) => logic::Load::Failed(error.message()),
         Some(Ok(_)) => logic::Load::Ready,
     };
 
@@ -237,16 +227,15 @@ pub fn LeaveNew() -> Element {
                     }
                 }
                 Card { title: "결재선",
-                    if suggestion.read().is_none() {
+                    if !line.ready() {
                         Spinner {}
                     } else {
                         ApprovalLineEditor {
-                            steps: line(),
+                            steps: line.steps(),
                             exclude: me_id.into_iter().collect::<Vec<_>>(),
                             disabled: busy(),
                             error: logic::line_error(error_for(Slot::Line), line_problem),
                             onchange: move |next: Vec<ApproverEntry>| {
-                                line_touched.set(true);
                                 line.set(next);
                                 server_error.set(None);
                             },
@@ -299,7 +288,7 @@ fn LeaveSummary(preview: Result<logic::Preview, logic::Problem>) -> Element {
                     if preview.short_of_balance() {
                         span { "지금 잔여보다 많습니다. 휴가 시작일 기준 잔여로 서버가 다시 확인합니다." }
                     }
-                    small { class: "field-hint", "주말을 뺀 미리보기입니다. 공휴일은 신청할 때 서버가 반영합니다." }
+                    small { class: "field-hint", "근무일이 아닌 날을 뺀 미리보기입니다. 공휴일은 신청할 때 서버가 반영합니다." }
                 }
             }
         }
@@ -371,7 +360,7 @@ pub(crate) mod logic {
                 Self::TooLong => "한 번에 1년 넘게 신청할 수 없습니다.",
                 Self::PartialAcrossDays => "반차·반반차는 하루만 신청할 수 있습니다.",
                 Self::PartialNotAllowed => "이 휴가 종류는 종일로만 쓸 수 있습니다.",
-                Self::NoWorkingDays => "선택한 기간이 모두 주말입니다.",
+                Self::NoWorkingDays => "선택한 기간에 근무일이 없습니다.",
                 Self::BlankReason => "사유를 입력해 주세요.",
                 Self::ReasonTooLong => "사유는 1,000자까지 쓸 수 있습니다.",
                 Self::Line(message) => message,
@@ -396,7 +385,7 @@ pub(crate) mod logic {
     /// 미리보기 결과.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct Preview {
-        /// 주말을 뺀 근무일 수.
+        /// 근무 요일이 아닌 날을 뺀 근무일 수.
         pub working_days: u32,
         pub amount: LeaveAmount,
         /// 연차에서 차감하는 종류일 때, 신청 후 잔여(1/4일). 잔여를 아직 모르면 `None`.
@@ -483,13 +472,15 @@ pub(crate) mod logic {
     }
 
     /// 날짜·단위·잔여로 사용 일수와 신청 후 잔여를 미리 계산한다.
-    /// 주말만 빼며, 공휴일은 서버가 신청할 때 반영한다(이 값은 미리보기일 뿐이다).
+    /// 회사 근무 요일(`week`)이 아닌 날만 빼며, 공휴일은 서버가 신청할 때 반영한다
+    /// (이 값은 미리보기일 뿐이다).
     pub fn preview(
         start: &str,
         end: &str,
         unit: LeaveUnit,
         leave_type: Option<&LeaveTypeDto>,
         remaining: Option<i32>,
+        week: WorkWeek,
     ) -> Result<Preview, Problem> {
         let leave_type = leave_type.ok_or(Problem::NoType)?;
         if unit.is_partial() && !leave_type.allow_partial {
@@ -504,7 +495,7 @@ pub(crate) mod logic {
             return Err(Problem::PartialAcrossDays);
         }
         let range = DateRange::new(start, end).map_err(|_| Problem::TooLong)?;
-        let calendar = WorkCalendar::new(WorkWeek::MON_TO_FRI, []);
+        let calendar = WorkCalendar::new(week, []);
         let span = LeaveSpan::new(range, unit, &calendar).map_err(|_| Problem::NoWorkingDays)?;
         let working_days = u32::try_from(span.working_dates().len()).unwrap_or(u32::MAX);
         let amount = span.amount();
@@ -541,8 +532,9 @@ pub(crate) mod logic {
         end: &str,
         reason: &str,
         line: &[ApproverEntry],
+        week: WorkWeek,
     ) -> Result<CreateLeaveRequest, Problem> {
-        preview(start, end, unit, leave_type, None)?;
+        preview(start, end, unit, leave_type, None, week)?;
         if let Some(problem) = reason_problem(reason) {
             return Err(problem);
         }
@@ -630,6 +622,7 @@ pub(crate) mod logic {
                 LeaveUnit::FullDay,
                 Some(&annual),
                 Some(40),
+                WorkWeek::MON_TO_FRI,
             )
             .expect("ok");
             assert_eq!(p.working_days, 2);
@@ -642,6 +635,7 @@ pub(crate) mod logic {
                 LeaveUnit::PmHalf,
                 Some(&annual),
                 Some(1),
+                WorkWeek::MON_TO_FRI,
             )
             .expect("ok");
             assert_eq!(summary_text(&half), "0.5일 사용, 신청 후 잔여 -0.25일");
@@ -652,9 +646,53 @@ pub(crate) mod logic {
                 LeaveUnit::AmQuarter,
                 Some(&annual),
                 None,
+                WorkWeek::MON_TO_FRI,
             )
             .expect("ok");
             assert_eq!(summary_text(&quarter), "0.25일 사용");
+        }
+
+        #[test]
+        fn preview_uses_the_company_work_week() {
+            let annual = leave_type("연차", true, true, 0);
+            // 월~토 근무: 03-06(금) ~ 03-09(월)은 토요일까지 3일.
+            let six_days = WorkWeek::from_bits(0b011_1111).expect("week");
+            let p = preview(
+                "2026-03-06",
+                "2026-03-09",
+                LeaveUnit::FullDay,
+                Some(&annual),
+                None,
+                six_days,
+            )
+            .expect("ok");
+            assert_eq!(p.working_days, 3);
+            // 일요일 하루만 고르면 근무일이 없다.
+            assert_eq!(
+                preview(
+                    "2026-03-08",
+                    "2026-03-08",
+                    LeaveUnit::FullDay,
+                    Some(&annual),
+                    None,
+                    six_days,
+                )
+                .err(),
+                Some(Problem::NoWorkingDays)
+            );
+            // 토요일은 월~금이면 근무일이 아니다.
+            assert_eq!(
+                preview(
+                    "2026-03-07",
+                    "2026-03-07",
+                    LeaveUnit::FullDay,
+                    Some(&annual),
+                    None,
+                    WorkWeek::MON_TO_FRI,
+                )
+                .err(),
+                Some(Problem::NoWorkingDays)
+            );
         }
 
         #[test]
@@ -666,6 +704,7 @@ pub(crate) mod logic {
                 LeaveUnit::FullDay,
                 Some(&sick),
                 Some(0),
+                WorkWeek::MON_TO_FRI,
             )
             .expect("ok");
             assert_eq!(p.remaining_after, None);
@@ -678,7 +717,7 @@ pub(crate) mod logic {
             let annual = leave_type("연차", true, true, 0);
             let full_only = leave_type("경조", false, false, 0);
             let check = |start, end, unit, t: Option<&LeaveTypeDto>| {
-                preview(start, end, unit, t, Some(40)).err()
+                preview(start, end, unit, t, Some(40), WorkWeek::MON_TO_FRI).err()
             };
             assert_eq!(
                 check("2026-03-02", "2026-03-02", LeaveUnit::FullDay, None),
@@ -810,6 +849,7 @@ pub(crate) mod logic {
                 "2026-03-03",
                 "  가족 여행  ",
                 &line,
+                WorkWeek::MON_TO_FRI,
             )
             .expect("valid");
             assert_eq!(request.reason, "가족 여행");
@@ -822,6 +862,7 @@ pub(crate) mod logic {
                 "2026-03-02",
                 " \n ",
                 &line,
+                WorkWeek::MON_TO_FRI,
             );
             assert_eq!(blank.err(), Some(Problem::BlankReason));
             let long = "가".repeat(1_001);
@@ -832,6 +873,7 @@ pub(crate) mod logic {
                 "2026-03-02",
                 &long,
                 &line,
+                WorkWeek::MON_TO_FRI,
             );
             assert_eq!(too_long.err(), Some(Problem::ReasonTooLong));
             let no_line = to_request(
@@ -841,6 +883,7 @@ pub(crate) mod logic {
                 "2026-03-02",
                 "사유",
                 &[],
+                WorkWeek::MON_TO_FRI,
             );
             assert_eq!(no_line.err().map(Problem::slot), Some(Slot::Line));
         }

@@ -7,51 +7,166 @@ use pango_api::Empty;
 use crate::api::{self, ApiError, ApiResult};
 use crate::route::Route;
 
-/// 현재 로그인한 구성원. 앱 전체에서 `use_session()`으로 읽는다.
+/// 로그인 상태. 첫 `/me` 조회 결과로 정해지고, 이후 다시 읽을 때마다 [`next_state`]로 바뀐다.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionState {
+    /// 첫 `/me` 조회 중.
+    Loading,
+    /// 서버가 로그인 세션이 없다고 답했다(401).
+    SignedOut,
+    SignedIn(Box<Me>),
+    /// 서버에 닿지 못했거나 서버가 실패했다(오프라인, 서버 재시작 등). 쿠키 세션은 살아 있을 수
+    /// 있으므로 로그인 화면으로 보내지 않는다. 로그인을 다시 하면 서버 세션이 하나 더 생긴다.
+    Unreachable(String),
+}
+
+/// `/me` 조회 결과로 다음 상태를 정한다.
+///
+/// 로그아웃은 서버가 401로 답했을 때만이다. 이미 로그인된 상태에서 다시 읽다가 실패하면
+/// (네트워크 오류·5xx) 지금 상태를 그대로 둔다.
+pub fn next_state(current: &SessionState, result: ApiResult<Me>) -> SessionState {
+    match result {
+        Ok(me) => SessionState::SignedIn(Box::new(me)),
+        Err(error) if error.is_unauthenticated() => SessionState::SignedOut,
+        Err(_) if matches!(current, SessionState::SignedIn(_)) => current.clone(),
+        Err(error) => SessionState::Unreachable(error.message()),
+    }
+}
+
+/// API 오류가 로그인 상태에 주는 영향.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorEffect {
+    /// 세션이 끝났다. 로그인 화면으로 보낸다.
+    SignOut,
+    /// 권한이 바뀌었을 수 있다(조직장 임명·관리자 해제). 내 정보를 다시 읽는다.
+    Recheck,
+    None,
+}
+
+pub fn error_effect(error: &ApiError) -> ErrorEffect {
+    if error.is_unauthenticated() {
+        ErrorEffect::SignOut
+    } else if error.status == 403 && error.code == "forbidden" {
+        ErrorEffect::Recheck
+    } else {
+        ErrorEffect::None
+    }
+}
+
+/// 403을 받고 내 정보를 다시 읽는 최소 간격. 403이 이어져도 이 간격에 한 번만 읽는다.
+pub const RECHECK_INTERVAL_MS: i64 = 30_000;
+/// 다른 앱에 갔다가 돌아왔을 때 내 정보를 다시 읽는 기준(마지막으로 읽은 뒤 지난 시간).
+pub const VISIBLE_REFRESH_MS: i64 = 5 * 60_000;
+
+/// 마지막으로 읽기 시작한 시각(`last`, ms)에서 `interval`이 지났는지. 읽은 적이 없으면 `true`.
+/// 시계가 뒤로 갔으면(`now < last`) 간격을 알 수 없으므로 지난 것으로 본다.
+pub fn refresh_due(last: Option<i64>, now: i64, interval: i64) -> bool {
+    match last {
+        None => true,
+        Some(last) => now < last || now.saturating_sub(last) >= interval,
+    }
+}
+
+/// 현재 로그인 상태. 앱 전체에서 `use_session()`으로 읽는다.
 #[derive(Clone, Copy)]
 pub struct Session {
-    me: Signal<Option<Me>>,
-    /// 첫 `/me` 조회가 끝났는지. 끝나기 전에는 로그인 화면으로 보내지 않는다.
-    loaded: Signal<bool>,
+    state: Signal<SessionState>,
+    /// 마지막으로 `/me`를 읽기 시작한 시각(브라우저 시계, ms).
+    last_refresh: Signal<Option<i64>>,
 }
 
 impl Session {
+    pub fn state(&self) -> SessionState {
+        self.state.read().clone()
+    }
+
     pub fn me(&self) -> Option<Me> {
-        self.me.read().clone()
+        match &*self.state.read() {
+            SessionState::SignedIn(me) => Some((**me).clone()),
+            _ => None,
+        }
     }
 
     /// 회사 시간대. 로그인 전에는 화면이 그려지지 않으므로 UTC는 실제로 쓰이지 않는다.
     pub fn zone(&self) -> chrono_tz::Tz {
-        crate::format::member_zone(self.me.read().as_ref())
+        crate::format::member_zone(self.me().as_ref())
     }
 
-    pub fn is_loaded(&self) -> bool {
-        *self.loaded.read()
-    }
-
+    /// 로그인·로그아웃 직후. 서버가 이미 답했으므로 그대로 반영한다.
     pub fn set(&mut self, me: Option<Me>) {
-        self.me.set(me);
-        self.loaded.set(true);
+        self.state.set(match me {
+            Some(me) => SessionState::SignedIn(Box::new(me)),
+            None => SessionState::SignedOut,
+        });
     }
 
     /// 서버에서 내 정보를 다시 읽는다.
     pub async fn refresh(&mut self) {
-        match api::get::<Me>("/me").await {
-            Ok(me) => self.set(Some(me)),
-            // 네트워크 오류로 로그아웃시키지 않는다. 인증 실패일 때만 비운다.
-            Err(error) if error.is_unauthenticated() => self.set(None),
-            Err(_) => self.loaded.set(true),
+        self.last_refresh.set(Some(now_ms()));
+        let result = api::get::<Me>("/me").await;
+        let current = self.state.peek().clone();
+        let next = next_state(&current, result);
+        if current != next {
+            self.state.set(next);
         }
     }
 
-    /// API 오류를 처리한다. 세션이 만료됐으면 로그인 화면으로 가도록 상태를 비운다.
-    /// 화면에 보여 줄 문구를 돌려준다.
-    pub fn handle(&mut self, error: &ApiError) -> String {
-        if error.is_unauthenticated() {
-            self.set(None);
-        }
-        error.message()
+    /// 서버에 닿지 못했을 때 "다시 시도". 읽는 동안 불러오는 중으로 보인다.
+    pub fn retry(mut self) {
+        self.state.set(SessionState::Loading);
+        spawn(async move { self.refresh().await });
     }
+
+    /// API 오류를 로그인 상태에 반영한다. [`crate::api`]가 모든 실패 응답마다 부른다
+    /// (요청 future 안이므로 렌더 중이 아니다).
+    pub fn observe(mut self, error: &ApiError) {
+        match error_effect(error) {
+            ErrorEffect::SignOut => {
+                if !matches!(*self.state.peek(), SessionState::SignedOut) {
+                    self.state.set(SessionState::SignedOut);
+                }
+            }
+            ErrorEffect::Recheck => {
+                if refresh_due(*self.last_refresh.peek(), now_ms(), RECHECK_INTERVAL_MS) {
+                    // 오류를 받은 화면이 곧 사라질 수 있으므로 앱 수명의 작업으로 읽는다.
+                    dioxus::dioxus_core::spawn_forever(async move { self.refresh().await });
+                }
+            }
+            ErrorEffect::None => {}
+        }
+    }
+
+    /// 화면이 다시 보일 때. 오래 읽지 않았으면 내 정보를 다시 읽는다.
+    async fn refresh_if_stale(&mut self) {
+        if refresh_due(*self.last_refresh.peek(), now_ms(), VISIBLE_REFRESH_MS) {
+            self.refresh().await;
+        }
+    }
+}
+
+/// 브라우저 시계(ms).
+fn now_ms() -> i64 {
+    js_sys::Date::now() as i64
+}
+
+/// 문서의 보임 상태가 바뀔 때까지 기다린다. 바뀐 뒤 보이는 상태면 `true`.
+/// 문서가 없는 환경(네이티브)에서는 끝나지 않는다.
+async fn visibility_change() -> bool {
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        return std::future::pending().await;
+    };
+    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+        let options = web_sys::AddEventListenerOptions::new();
+        options.set_once(true);
+        // 등록에 실패하면 이 기다림은 끝나지 않는다(다시 읽기만 빠진다).
+        let _ = document.add_event_listener_with_callback_and_add_event_listener_options(
+            "visibilitychange",
+            &resolve,
+            &options,
+        );
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+    document.visibility_state() == web_sys::VisibilityState::Visible
 }
 
 /// 로그아웃 요청 결과를 화면에 어떻게 반영할지.
@@ -90,10 +205,18 @@ pub async fn logout(mut session: Session, nav: dioxus::router::Navigator) {
 
 pub fn provide_session() -> Session {
     let mut session = use_context_provider(|| Session {
-        me: Signal::new(None),
-        loaded: Signal::new(false),
+        state: Signal::new(SessionState::Loading),
+        last_refresh: Signal::new(None),
     });
-    use_future(move || async move { session.refresh().await });
+    use_future(move || async move {
+        session.refresh().await;
+        // 권한(조직장·관리자)은 다른 사람이 바꾼다. 앱으로 돌아올 때 오래됐으면 다시 읽는다.
+        loop {
+            if visibility_change().await {
+                session.refresh_if_stale().await;
+            }
+        }
+    });
     session
 }
 
@@ -174,6 +297,115 @@ mod tests {
             field: None,
             reason: None,
         }
+    }
+
+    fn me() -> Me {
+        Me {
+            id: pango_core::id::MemberId::new(),
+            login_id: "me".into(),
+            name: "나".into(),
+            email: None,
+            phone: None,
+            role: pango_core::authz::Role::Member,
+            department_id: None,
+            department_name: None,
+            position_id: None,
+            position_name: None,
+            capabilities: pango_core::authz::Capabilities {
+                admin: false,
+                manage_roles: false,
+                team: false,
+            },
+            must_change_password: false,
+            company_name: "회사".into(),
+            timezone: "Asia/Seoul".into(),
+        }
+    }
+
+    #[test]
+    fn boot_signs_out_only_on_401() {
+        let loading = SessionState::Loading;
+        let signed_in = me();
+        assert_eq!(
+            next_state(&loading, Ok(signed_in.clone())),
+            SessionState::SignedIn(Box::new(signed_in))
+        );
+        assert_eq!(
+            next_state(&loading, Err(error(401, "unauthenticated"))),
+            SessionState::SignedOut
+        );
+        for failure in [
+            error(0, "network_error"),
+            error(500, "internal"),
+            error(502, "unexpected_response"),
+            error(401, "invalid_credentials"),
+        ] {
+            assert_eq!(
+                next_state(&loading, Err(failure.clone())),
+                SessionState::Unreachable(failure.message()),
+                "{failure:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn refresh_failure_keeps_a_signed_in_user() {
+        let signed_in = SessionState::SignedIn(Box::new(me()));
+        assert_eq!(
+            next_state(&signed_in, Err(error(0, "network_error"))),
+            signed_in
+        );
+        assert_eq!(
+            next_state(&signed_in, Err(error(401, "unauthenticated"))),
+            SessionState::SignedOut
+        );
+        let unreachable = SessionState::Unreachable("x".into());
+        assert_eq!(
+            next_state(&unreachable, Err(error(0, "network_error"))),
+            SessionState::Unreachable(error(0, "network_error").message())
+        );
+        let mut changed = me();
+        changed.capabilities.team = true;
+        assert_eq!(
+            next_state(&signed_in, Ok(changed.clone())),
+            SessionState::SignedIn(Box::new(changed))
+        );
+    }
+
+    #[test]
+    fn only_401_and_403_forbidden_touch_the_session() {
+        assert_eq!(
+            error_effect(&error(401, "unauthenticated")),
+            ErrorEffect::SignOut
+        );
+        assert_eq!(error_effect(&error(403, "forbidden")), ErrorEffect::Recheck);
+        assert_eq!(
+            error_effect(&error(403, "cross_origin_rejected")),
+            ErrorEffect::None
+        );
+        assert_eq!(
+            error_effect(&error(401, "invalid_credentials")),
+            ErrorEffect::None
+        );
+        assert_eq!(error_effect(&error(404, "not_found")), ErrorEffect::None);
+        assert_eq!(error_effect(&error(0, "network_error")), ErrorEffect::None);
+    }
+
+    #[test]
+    fn refresh_is_debounced_by_interval() {
+        let interval = RECHECK_INTERVAL_MS;
+        assert!(refresh_due(None, 0, interval), "읽은 적 없음");
+        assert!(!refresh_due(Some(1_000), 1_000, interval));
+        assert!(!refresh_due(Some(1_000), 1_000 + interval - 1, interval));
+        assert!(refresh_due(Some(1_000), 1_000 + interval, interval), "경계");
+        assert!(refresh_due(Some(1_000), 999, interval), "시계가 뒤로 감");
+        assert!(refresh_due(Some(i64::MIN), i64::MAX, interval), "넘침 없음");
+        assert!(!refresh_due(
+            Some(0),
+            VISIBLE_REFRESH_MS - 1,
+            VISIBLE_REFRESH_MS
+        ));
+        assert!(refresh_due(Some(0), VISIBLE_REFRESH_MS, VISIBLE_REFRESH_MS));
     }
 
     #[test]

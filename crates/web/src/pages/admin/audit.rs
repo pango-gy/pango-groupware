@@ -107,7 +107,7 @@ pub fn AdminAudit() -> Element {
         }
         {resource_view(entries, move |page: Page<AuditEntryDto>| {
             let cursor = more.cursor(&page);
-            let items: Vec<AuditEntryDto> = page.items.into_iter().chain(more.items()).collect();
+            let items: Vec<AuditEntryDto> = more.all(page.items, |item| item.id);
             rsx! {
                 if items.is_empty() {
                     EmptyState { title: "조건에 맞는 기록이 없습니다.", icon: IconName::List }

@@ -1,11 +1,11 @@
 //! 관리자 화면.
 
-mod attendance;
+pub(crate) mod attendance;
 mod audit;
 mod forms;
 mod home;
-mod leave;
-pub(crate) mod members;
+pub(crate) mod leave;
+mod members;
 mod notices;
 mod org;
 mod policy;

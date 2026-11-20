@@ -8,6 +8,7 @@ use pango_core::attendance::MAX_BREAK_TIERS;
 use pango_core::text::{CompanyName, LabelName};
 
 use crate::api;
+use crate::company::refresh_company;
 use crate::format;
 use crate::session::use_session;
 use crate::ui::{
@@ -65,10 +66,13 @@ fn PolicyEditor(dto: CompanySettingsDto, onreload: EventHandler<()>) -> Element 
             data: input,
         };
         let result = api::put::<_, CompanySettingsDto>("/admin/settings", &request).await;
-        busy.set(false);
+        // 저장에 성공했거나 버전이 어긋났으면 다시 읽는다. 다시 읽으면 이 편집기는 새 버전으로
+        // 바뀌므로(`key`) 그때까지 버튼을 막아 둔다(다시 읽는 사이 두 번째 저장 방지).
         match result {
             Ok(_) => {
                 report_success("근무 정책을 저장했습니다.");
+                // 근무 요일·시간은 다른 화면도 쓴다(휴가 달력 등).
+                refresh_company();
                 // 회사 이름·시간대는 내 정보(`/me`)에도 실려 있다.
                 session.refresh().await;
                 onreload.call(());
@@ -78,7 +82,8 @@ fn PolicyEditor(dto: CompanySettingsDto, onreload: EventHandler<()>) -> Element 
                 onreload.call(());
             }
             Err(failure) => {
-                let message = session.handle(&failure);
+                busy.set(false);
+                let message = failure.message();
                 match failure.field {
                     Some(field) => {
                         errors.write().insert(field, message);

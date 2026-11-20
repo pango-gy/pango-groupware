@@ -4,7 +4,6 @@
 //! 오늘 카드(`TodayBody`)는 홈도 함께 쓴다.
 
 use dioxus::prelude::*;
-use pango_api::approval::LineSuggestion;
 use pango_api::attendance::{
     AttendanceEventDto, AttendanceRecordDto, CorrectionDto, MonthRecords, MonthlySummaryDto,
     TodayResponse,
@@ -15,16 +14,17 @@ use pango_core::id::{AttendanceRecordId, MemberId};
 
 use crate::api;
 use crate::calendar::YearMonth;
+use crate::company::use_company;
 use crate::format;
 use crate::route::Route;
 use crate::session::{use_session, use_toasts};
 use crate::text;
-use crate::ui::approval_line::{from_suggestion, line_problem};
+use crate::ui::approval_line::line_problem;
 use crate::ui::{
-    report_error, report_success, resource_view, today, use_more_pages, ApprovalLineEditor,
-    ApproverEntry, Badge, Button, ButtonKind, Card, ConfirmModal, EmptyState, FormError, IconName,
-    LoadMore, Modal, MonthSwitcher, PageHeader, SelectField, Spinner, Stat, TextArea, TextField,
-    Tone,
+    report_error, report_success, resource_view, use_line_draft, use_more_pages,
+    ApprovalLineEditor, ApproverEntry, Badge, Button, ButtonKind, Card, ConfirmModal, EmptyState,
+    FormError, IconName, LoadMore, Modal, MonthSwitcher, PageHeader, SelectField, Spinner, Stat,
+    TextArea, TextField, Tone,
 };
 
 use logic::{CorrectionSlot, CorrectionTarget, DayRow, MonthEndpoint, TodayStage};
@@ -216,7 +216,9 @@ pub fn MonthAttendance(
 ) -> Element {
     let session = use_session();
     let tz = session.zone();
-    let mut month = use_signal(move || YearMonth::of(today(tz)));
+    // 근무일 전환 시각 전(예: 새벽 4시)이면 아직 어제 근무일이다.
+    let work_today = use_company().work_today(tz);
+    let mut month = use_signal(move || YearMonth::of(work_today));
     let mut opened = use_signal(|| None::<(AttendanceRecordId, String)>);
     let mut correcting = use_signal(|| None::<CorrectionTarget>);
 
@@ -233,7 +235,7 @@ pub fn MonthAttendance(
 
     // 정정 요청은 본인 기록에만 올릴 수 있다(조직장·관리자가 남의 달을 볼 때는 숨긴다).
     let own = member_id().is_none() && oncorrect.is_some();
-    let current_day = today(tz);
+    let current_day = work_today;
 
     let open = move |row: &DayRow| {
         let target = row.record_id.map(|id| (id, row.date_label.clone()));
@@ -398,29 +400,19 @@ fn CorrectionModal(
     onclose: EventHandler<()>,
     onsubmitted: EventHandler<()>,
 ) -> Element {
-    let mut session = use_session();
+    let session = use_session();
     let tz = session.zone();
     let zone_name = session.me().map(|me| me.timezone).unwrap_or_default();
     let me_id = session.me().map(|me| me.id);
-    let initial = logic::CorrectionForm::for_record(target.record.as_ref(), tz);
+    // 기록이 없는 날은 회사 근무 시간으로 채워 둔다.
+    let defaults = use_company().default_times(target.date);
+    let initial = logic::CorrectionForm::for_record(target.record.as_ref(), tz, defaults);
     let mut form = use_signal(move || initial);
     // 창을 열 때 한 번 만든다. 두 번 눌러도 요청은 하나만 생긴다.
     let key = use_signal(api::new_idempotency_key);
-    let mut line = use_signal(Vec::<ApproverEntry>::new);
-    let mut line_touched = use_signal(|| false);
+    let mut line = use_line_draft(me_id.into_iter().collect());
     let mut busy = use_signal(|| false);
     let mut problem = use_signal(|| None::<(CorrectionSlot, String)>);
-    let suggestion = use_resource(move || async move {
-        let result = api::get::<LineSuggestion>("/approval/line-suggestion").await;
-        if let Ok(found) = &result {
-            // 사용자가 이미 고쳤다면 추천으로 덮어쓰지 않는다.
-            if !*line_touched.peek() {
-                let exclude: Vec<_> = me_id.into_iter().collect();
-                line.set(from_suggestion(&exclude, &found.steps));
-            }
-        }
-        result
-    });
 
     let work_date = target.date;
     let submit = move |event: FormEvent| async move {
@@ -428,7 +420,7 @@ fn CorrectionModal(
         if busy() {
             return;
         }
-        let request = match logic::correction_request(work_date, &form(), &line(), tz) {
+        let request = match logic::correction_request(work_date, &form(), &line.steps(), tz) {
             Ok(request) => request,
             Err(issue) => {
                 problem.set(Some((issue.slot(), issue.message().to_owned())));
@@ -448,7 +440,6 @@ fn CorrectionModal(
             Err(failure) => {
                 match logic::correction_failure_slot(&failure.code, failure.field.as_deref()) {
                     Some(slot) => {
-                        session.handle(&failure);
                         problem.set(Some((
                             slot,
                             text::correction_error_message(
@@ -472,7 +463,7 @@ fn CorrectionModal(
         }
     };
     let current = form();
-    let line_now = line();
+    let line_now = line.steps();
     let line_message = {
         let from_problem = message_for(CorrectionSlot::Line);
         if from_problem.is_empty() {
@@ -543,7 +534,7 @@ fn CorrectionModal(
                 }
                 div { class: "field",
                     p { class: "field-hint", "마지막 결재자는 내 조직장 또는 관리자여야 합니다. 추천 결재선을 쓰면 이 조건을 맞춥니다." }
-                    if suggestion.read().is_none() {
+                    if !line.ready() {
                         Spinner {}
                     } else {
                         ApprovalLineEditor {
@@ -552,7 +543,6 @@ fn CorrectionModal(
                             disabled: busy(),
                             error: line_message,
                             onchange: move |next: Vec<ApproverEntry>| {
-                                line_touched.set(true);
                                 line.set(next);
                                 problem.set(None);
                             },
@@ -571,7 +561,7 @@ fn CorrectionModal(
 /// 내 정정 요청 내역(최신 접수순). 결재 중인 요청은 취소(= 결재 문서 회수)할 수 있다.
 #[component]
 fn CorrectionHistory(revision: ReadSignal<u32>) -> Element {
-    let mut session = use_session();
+    let session = use_session();
     let mut toasts = use_toasts();
     let tz = session.zone();
     let more = use_more_pages::<CorrectionDto>();
@@ -595,7 +585,6 @@ fn CorrectionHistory(revision: ReadSignal<u32>) -> Element {
         match result {
             Ok(_) => report_success("정정 요청을 취소했습니다. 결재 문서도 회수했습니다."),
             Err(error) => {
-                session.handle(&error);
                 toasts.error(text::correction_error_message(
                     &error.code,
                     error.field.as_deref(),
@@ -612,7 +601,7 @@ fn CorrectionHistory(revision: ReadSignal<u32>) -> Element {
             {resource_view(first, move |page: Page<CorrectionDto>| {
                 let next = more.cursor(&page);
                 let has_more = next.is_some();
-                let items: Vec<CorrectionDto> = page.items.into_iter().chain(more.items()).collect();
+                let items: Vec<CorrectionDto> = more.all(page.items, |item| item.id);
                 if items.is_empty() {
                     return rsx! {
                         EmptyState {
@@ -1166,8 +1155,8 @@ pub(crate) mod logic {
     }
 
     /// 그날에 정정을 요청할 수 있어 보이는지: 오늘까지, [`CORRECTION_WINDOW_DAYS`]일 전까지.
-    /// `today`는 브라우저 시계로 본 회사 시간대의 오늘이라 근무일 전환 시각 근처에서는
-    /// 서버와 하루 어긋날 수 있다. 최종 판정은 서버가 한다.
+    /// `today`는 회사의 근무일 전환 시각을 반영한 오늘 근무일이다(브라우저 시계 기준이라
+    /// 시계가 틀리면 서버와 어긋날 수 있다). 최종 판정은 서버가 한다.
     pub fn can_request_correction(date: NaiveDate, today: NaiveDate) -> bool {
         let earliest = today.checked_sub_days(Days::new(CORRECTION_WINDOW_DAYS));
         date <= today && earliest.is_some_and(|earliest| date >= earliest)
@@ -1184,16 +1173,25 @@ pub(crate) mod logic {
     }
 
     impl CorrectionForm {
-        /// 지금 기록이 있으면 그 값으로 채운다(보통 한 칸만 고친다).
-        pub fn for_record(record: Option<&AttendanceRecordDto>, tz: Tz) -> Self {
+        /// 지금 기록이 있으면 그 값으로 채운다(보통 한 칸만 고친다). 기록이 없으면
+        /// `defaults`(회사 근무 시작·종료 시각, `datetime-local` 값)로 채운다.
+        pub fn for_record(
+            record: Option<&AttendanceRecordDto>,
+            tz: Tz,
+            defaults: (String, String),
+        ) -> Self {
+            let (default_in, default_out) = defaults;
             Self {
                 clock_in: record
                     .map(|r| format::local_input(r.clock_in_at, tz))
-                    .unwrap_or_default(),
-                clock_out: record
-                    .and_then(|r| r.clock_out_at)
-                    .map(|at| format::local_input(at, tz))
-                    .unwrap_or_default(),
+                    .unwrap_or(default_in),
+                clock_out: match record {
+                    Some(r) => r
+                        .clock_out_at
+                        .map(|at| format::local_input(at, tz))
+                        .unwrap_or_default(),
+                    None => default_out,
+                },
                 work_type: record.map_or(WorkType::Office, |r| r.work_type),
                 reason: String::new(),
             }
@@ -1680,12 +1678,20 @@ pub(crate) mod logic {
         #[test]
         fn correction_form_starts_from_the_current_record() {
             let tz = seoul();
-            let blank = CorrectionForm::for_record(None, tz);
+            let none = || (String::new(), String::new());
+            let blank = CorrectionForm::for_record(None, tz, none());
             assert_eq!(blank.clock_in, "");
             assert_eq!(blank.clock_out, "");
             assert_eq!(blank.work_type, WorkType::Office);
+            let hours = || ("2026-03-02T09:00".to_owned(), "2026-03-02T18:00".to_owned());
+            let default = CorrectionForm::for_record(None, tz, hours());
+            assert_eq!(
+                default.clock_in, "2026-03-02T09:00",
+                "기록이 없으면 근무 시간"
+            );
+            assert_eq!(default.clock_out, "2026-03-02T18:00");
             let open = record("2026-03-02", "2026-03-02T00:05:00Z", None);
-            let form = CorrectionForm::for_record(Some(&open), tz);
+            let form = CorrectionForm::for_record(Some(&open), tz, hours());
             assert_eq!(form.clock_in, "2026-03-02T09:05");
             assert_eq!(form.clock_out, "");
             assert_eq!(form.work_type, WorkType::Remote);

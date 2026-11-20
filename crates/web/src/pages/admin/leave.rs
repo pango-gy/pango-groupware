@@ -15,20 +15,21 @@ use crate::route::Route;
 use crate::session::{use_session, use_toasts};
 use crate::text;
 use crate::ui::{
-    report_error, report_success, resource_view, today, use_more_pages, Badge, Button, ButtonKind,
-    Card, Checkbox, ConfirmModal, DateField, EmptyState, FormError, IconName, LoadMore, Modal,
-    PageHeader, SelectField, Tabs, TextArea, TextField, Tone,
+    report_error, report_success, resource_view, today, use_initial_tab, use_more_pages, Badge,
+    Button, ButtonKind, Card, Checkbox, ConfirmModal, DateField, EmptyState, FormError, IconName,
+    LoadMore, Modal, PageHeader, SelectField, Tabs, TextArea, TextField, Tone,
 };
 
 const TAB_BALANCES: &str = "balances";
-const TAB_REQUESTS: &str = "requests";
+/// 신청 내역 탭. 관리 홈의 "휴가 신청" 타일이 이 탭으로 연다.
+pub(crate) const TAB_REQUESTS: &str = "requests";
 const TAB_TYPES: &str = "types";
 
 #[component]
 pub fn AdminLeave() -> Element {
     let tz = use_session().zone();
     let today = today(tz);
-    let mut tab = use_signal(|| TAB_BALANCES.to_owned());
+    let mut tab = use_initial_tab(Route::AdminLeave {}, TAB_BALANCES);
     let mut running = use_signal(|| false);
     let mut last_run = use_signal(|| None::<AccrualRunResult>);
     let mut balances =
@@ -157,12 +158,13 @@ fn AdjustModal(
     onclose: EventHandler<()>,
     ondone: EventHandler<()>,
 ) -> Element {
-    let mut session = use_session();
     let mut days = use_signal(String::new);
     let mut effective_on = use_signal(|| today.to_string());
     let mut memo = use_signal(String::new);
     let mut error = use_signal(String::new);
     let mut busy = use_signal(|| false);
+    // 창을 열 때 한 번 만든다. 다시 눌러도(응답을 못 받고 재시도해도) 조정은 한 번만 된다.
+    let mut key = use_signal(api::new_idempotency_key);
 
     let parsed = logic::parse_adjust_days(&days());
     let days_error = match (&parsed, days().trim().is_empty()) {
@@ -186,15 +188,16 @@ fn AdjustModal(
         };
         busy.set(true);
         error.set(String::new());
-        match api::post::<_, BalanceDto>("/admin/leave/adjustments", &request).await {
+        match api::post_once::<_, BalanceDto>("/admin/leave/adjustments", &request, &key()).await {
             Ok(balance) => {
+                key.set(api::new_idempotency_key());
                 report_success(format!(
                     "조정했습니다. 잔여 {}",
                     format::leave_days(balance.balance.remaining.quarters())
                 ));
                 ondone.call(());
             }
-            Err(failure) => error.set(session.handle(&failure)),
+            Err(failure) => error.set(failure.message()),
         }
         busy.set(false);
     };
@@ -291,7 +294,7 @@ fn RequestsTab() -> Element {
         }
         {resource_view(first, move |page: Page<LeaveRequestDto>| {
             let next = more.cursor(&page);
-            let items: Vec<LeaveRequestDto> = logic::merge_pages(page.items, more.items());
+            let items: Vec<LeaveRequestDto> = more.all(page.items, |item| item.id);
             rsx! {
                 if items.is_empty() {
                     EmptyState { title: "조건에 맞는 신청이 없습니다.", icon: IconName::Calendar }
@@ -424,13 +427,13 @@ fn TypeModal(
     onclose: EventHandler<()>,
     ondone: EventHandler<()>,
 ) -> Element {
-    let mut session = use_session();
     let mut toasts = use_toasts();
     let initial = logic::TypeForm::from_existing(existing.as_ref());
     let mut form = use_signal(|| initial);
     let mut error = use_signal(String::new);
     let mut busy = use_signal(|| false);
-    let key = use_signal(api::new_idempotency_key);
+    // 창을 열 때 한 번 만들고 성공하면 바꾼다. 재시도해도 종류는 하나만 생긴다.
+    let mut key = use_signal(api::new_idempotency_key);
     let creating = existing.is_none();
     let existing_id = existing.as_ref().map(|t| t.id.to_string());
     let version = existing.as_ref().map(|t| t.version);
@@ -471,6 +474,7 @@ fn TypeModal(
             };
             match result {
                 Ok(_) => {
+                    key.set(api::new_idempotency_key());
                     report_success(if creating {
                         "휴가 종류를 추가했습니다."
                     } else {
@@ -479,12 +483,10 @@ fn TypeModal(
                     ondone.call(());
                 }
                 Err(Some(failure)) if failure.code == "version_conflict" => {
-                    session.handle(&failure);
                     toasts.error(failure.message());
                     ondone.call(());
                 }
                 Err(Some(failure)) => {
-                    session.handle(&failure);
                     error.set(logic::type_error_message(
                         &failure.code,
                         failure.field.as_deref(),
@@ -717,20 +719,6 @@ pub(crate) mod logic {
             path.push_str(&format!("&status={}", status.as_str()));
         }
         api::with_cursor(path, cursor)
-    }
-
-    /// 첫 페이지 뒤에 더 읽은 항목을 붙인다. 그 사이 목록이 바뀌어 겹친 항목은 한 번만.
-    pub fn merge_pages(
-        first: Vec<LeaveRequestDto>,
-        more: Vec<LeaveRequestDto>,
-    ) -> Vec<LeaveRequestDto> {
-        let mut items = first;
-        for item in more {
-            if !items.iter().any(|existing| existing.id == item.id) {
-                items.push(item);
-            }
-        }
-        items
     }
 
     /// 관리자는 시작한 휴가도 취소할 수 있다. 끝난 신청(반려·취소)만 제외.
@@ -990,18 +978,8 @@ pub(crate) mod logic {
         }
 
         #[test]
-        fn pages_merge_without_duplicates() {
-            let a = request("a");
-            let b = request("b");
-            let merged = merge_pages(vec![a.clone(), b.clone()], vec![b, request("c")]);
-            assert_eq!(
-                merged
-                    .iter()
-                    .map(|r| r.member_name.as_str())
-                    .collect::<Vec<_>>(),
-                ["a", "b", "c"]
-            );
-            assert!(admin_cancel_message(&a).contains("a님"));
+        fn cancel_message_names_the_member() {
+            assert!(admin_cancel_message(&request("a")).contains("a님"));
         }
 
         #[test]

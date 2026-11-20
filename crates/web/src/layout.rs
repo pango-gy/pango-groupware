@@ -2,12 +2,14 @@
 
 use dioxus::prelude::*;
 use pango_api::auth::Me;
+use pango_core::authz::Capabilities;
 
 use crate::badges::{self, provide_badges, use_badges};
+use crate::company::use_company;
 use crate::route::Route;
-use crate::session::{self, use_session};
+use crate::session::{self, use_session, SessionState};
 use crate::text;
-use crate::ui::{Avatar, Icon, IconName, Spinner};
+use crate::ui::{Avatar, EmptyState, ErrorState, Icon, IconName, Spinner};
 
 /// 메뉴 한 줄.
 #[derive(Clone, PartialEq)]
@@ -81,7 +83,10 @@ fn is_active(current: &Route, target: &Route) -> bool {
 #[component]
 fn NavLink(item: NavItem, #[props(default)] compact: bool) -> Element {
     let current = use_route::<Route>();
-    let count = use_badges().for_route(&item.to);
+    let badges = use_badges();
+    let count = badges.for_route(&item.to);
+    // 하단 탭의 "더보기"는 숫자 대신 점으로 알린다(공지·알림이 그 안에 있다).
+    let dot = compact && item.to == (Route::More {}) && badges.more_dot();
     let active = is_active(&current, &item.to);
     let class = match (compact, active) {
         (true, true) => "tabbar-item tabbar-item-active",
@@ -98,6 +103,10 @@ fn NavLink(item: NavItem, #[props(default)] compact: bool) -> Element {
                     span { class: "sr-only", "읽지 않음 " }
                     "{badges::count_text(count)}"
                 }
+            }
+            if dot {
+                span { class: "tabbar-dot", "aria-hidden": "true" }
+                span { class: "sr-only", ", 읽지 않은 공지·알림 있음" }
             }
         }
     }
@@ -186,47 +195,190 @@ fn TabBar() -> Element {
 }
 
 /// 로그인이 필요한 화면의 공통 틀. 로그인 상태가 아니면 로그인 화면으로 보낸다.
+///
+/// 서버에 닿지 못했으면(오프라인·서버 재시작) 로그인 화면으로 보내지 않고 다시 시도를 보여 준다.
+/// 권한이 없는 화면(관리·팀)은 내용 대신 안내를 보여 준다. 권한은 403을 받거나 앱으로 돌아올 때
+/// 다시 읽으므로(`session`), 관리자에서 해제되면 이 안내로 바뀐다.
 #[component]
 pub fn Shell() -> Element {
     let session = use_session();
     let nav = navigator();
+    let route = use_route::<Route>();
     let badges = provide_badges();
-    let me = session.me();
-    let loaded = session.is_loaded();
+    let company = use_company();
 
-    // 로그인 상태가 정해지면 배지를 한 번 읽는다.
+    // 로그인 상태가 정해지면 배지와 회사 근무 설정을 한 번 읽는다.
     use_effect(move || {
         if session.me().is_some() {
             spawn(badges.refresh());
+            if !company.is_loaded() {
+                spawn(company.refresh());
+            }
         }
     });
 
-    use_effect(move || {
-        if !session.is_loaded() {
-            return;
+    use_effect(move || match gate(&session.state()) {
+        Gate::Login => {
+            nav.replace(Route::Login {});
         }
-        match session.me() {
-            None => {
-                nav.replace(Route::Login {});
-            }
-            Some(me) if me.must_change_password => {
-                nav.replace(Route::ChangePassword {});
-            }
-            Some(_) => {}
+        Gate::ChangePassword => {
+            nav.replace(Route::ChangePassword {});
         }
+        Gate::Wait | Gate::Unreachable(_) | Gate::Show(_) => {}
     });
 
-    let Some(me) = me.filter(|me| loaded && !me.must_change_password) else {
-        return rsx! { div { class: "boot", Spinner {} } };
+    let me = match gate(&session.state()) {
+        Gate::Show(me) => *me,
+        Gate::Unreachable(message) => {
+            return rsx! {
+                main { class: "auth",
+                    ErrorState { message, onretry: move |_| session.retry() }
+                }
+            };
+        }
+        Gate::Wait | Gate::Login | Gate::ChangePassword => {
+            return rsx! { div { class: "boot", Spinner {} } };
+        }
     };
+    let allowed = route_allowed(&route, &me.capabilities);
     rsx! {
         div { class: "shell",
             Sidebar { me: me.clone() }
             div { class: "shell-main",
                 TopBar { me }
-                main { class: "content", Outlet::<Route> {} }
+                main { class: "content",
+                    if allowed {
+                        Outlet::<Route> {}
+                    } else {
+                        EmptyState {
+                            title: "권한이 없습니다",
+                            hint: "이 화면을 볼 권한이 없습니다. 권한이 바뀌었다면 관리자에게 문의해 주세요.",
+                            icon: IconName::Shield,
+                            Link { class: "btn btn-secondary", to: Route::Home {}, "홈으로" }
+                        }
+                    }
+                }
             }
             TabBar {}
+        }
+    }
+}
+
+/// 로그인 상태에 따라 셸이 할 일.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Gate {
+    /// 아직 모른다(첫 조회 중).
+    Wait,
+    Login,
+    ChangePassword,
+    /// 서버에 닿지 못했다. 이 문구와 다시 시도를 보여 준다.
+    Unreachable(String),
+    Show(Box<Me>),
+}
+
+pub fn gate(state: &SessionState) -> Gate {
+    match state {
+        SessionState::Loading => Gate::Wait,
+        SessionState::SignedOut => Gate::Login,
+        SessionState::Unreachable(message) => Gate::Unreachable(message.clone()),
+        SessionState::SignedIn(me) if me.must_change_password => Gate::ChangePassword,
+        SessionState::SignedIn(me) => Gate::Show(me.clone()),
+    }
+}
+
+/// 이 화면을 메뉴에 보여 주는 권한이 있는지. [`nav_sections`]와 같은 기준이다.
+/// 서버가 매 요청 다시 판정하므로 이것은 안내용이다.
+pub fn route_allowed(route: &Route, capabilities: &Capabilities) -> bool {
+    match route {
+        Route::Team {} => capabilities.team || capabilities.admin,
+        Route::AdminHome {}
+        | Route::AdminMembers {}
+        | Route::AdminOrg {}
+        | Route::AdminAttendance {}
+        | Route::AdminLeave {}
+        | Route::AdminApprovalForms {}
+        | Route::AdminNotices {}
+        | Route::AdminPolicy {}
+        | Route::AdminAudit {} => capabilities.admin,
+        _ => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pango_core::authz::Role;
+
+    fn me(capabilities: Capabilities, must_change_password: bool) -> Me {
+        Me {
+            id: pango_core::id::MemberId::new(),
+            login_id: "me".into(),
+            name: "나".into(),
+            email: None,
+            phone: None,
+            role: Role::Member,
+            department_id: None,
+            department_name: None,
+            position_id: None,
+            position_name: None,
+            capabilities,
+            must_change_password,
+            company_name: "회사".into(),
+            timezone: "Asia/Seoul".into(),
+        }
+    }
+
+    const MEMBER: Capabilities = Capabilities {
+        admin: false,
+        manage_roles: false,
+        team: false,
+    };
+
+    #[test]
+    fn gate_sends_to_login_only_when_signed_out() {
+        assert_eq!(gate(&SessionState::Loading), Gate::Wait);
+        assert_eq!(gate(&SessionState::SignedOut), Gate::Login);
+        assert_eq!(
+            gate(&SessionState::Unreachable("끊김".into())),
+            Gate::Unreachable("끊김".into())
+        );
+        let forced = me(MEMBER, true);
+        assert_eq!(
+            gate(&SessionState::SignedIn(Box::new(forced))),
+            Gate::ChangePassword
+        );
+        let normal = me(MEMBER, false);
+        assert_eq!(
+            gate(&SessionState::SignedIn(Box::new(normal.clone()))),
+            Gate::Show(Box::new(normal))
+        );
+    }
+
+    #[test]
+    fn admin_and_team_routes_need_their_capability() {
+        let head = Capabilities {
+            team: true,
+            ..MEMBER
+        };
+        let admin = Capabilities {
+            admin: true,
+            ..MEMBER
+        };
+        assert!(route_allowed(&Route::Home {}, &MEMBER));
+        assert!(route_allowed(&Route::Profile {}, &MEMBER));
+        assert!(!route_allowed(&Route::Team {}, &MEMBER));
+        assert!(route_allowed(&Route::Team {}, &head));
+        assert!(route_allowed(&Route::Team {}, &admin));
+        for item in admin_nav() {
+            assert!(!route_allowed(&item.to, &MEMBER), "{}", item.label);
+            assert!(!route_allowed(&item.to, &head), "{}", item.label);
+            assert!(route_allowed(&item.to, &admin), "{}", item.label);
+        }
+        // 메뉴에 보이는 항목은 모두 열 수 있다.
+        for caps in [MEMBER, head, admin] {
+            for (_, items) in nav_sections(&me(caps, false)) {
+                assert!(items.iter().all(|item| route_allowed(&item.to, &caps)));
+            }
         }
     }
 }

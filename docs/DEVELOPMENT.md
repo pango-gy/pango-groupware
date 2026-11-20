@@ -71,7 +71,8 @@ cargo clippy -p pango-web --target wasm32-unknown-unknown -- -D warnings
 | 경로 | `route.rs`의 `Route` (이미 전체 경로가 정의돼 있음) |
 | 메뉴 | `layout.rs`의 `main_nav` / `team_nav` / `admin_nav` |
 | 화면 | `pages/<이름>.rs`, 관리자 화면은 `pages/admin/<이름>.rs` |
-| 공용 컴포넌트 | `ui/mod.rs` (`Button`, `Card`, `Badge`, `TextField`, `SelectField`, `TextArea`, `Modal`, `Tabs`, `Stat`, `EmptyState`, `PageHeader`, `MonthSwitcher`, `MonthCalendar`, `MemberPicker`, `resource_view`) |
+| 공용 컴포넌트 | `ui/mod.rs` (`Button`, `Card`, `Badge`, `TextField`, `SelectField`, `TextArea`, `Modal`, `Tabs`, `Stat`, `StatLink`, `EmptyState`, `ErrorState`, `PageHeader`, `MonthSwitcher`, `MonthCalendar`, `MemberPicker`, `resource_view`, `loaded_or_empty`, `use_more_pages`, `use_initial_tab`), 결재선은 `ui/approval_line.rs` (`ApprovalLineEditor`, `use_line_draft`) |
+| 로그인·회사 설정 | `session.rs` (`use_session`: 로그인 상태), `company.rs` (`use_company`: 근무 요일·근무일 전환 시각) |
 | 문구 | `text.rs` (오류 코드·상태 값 → 한국어). 화면 파일에 상태 값 문구를 흩어 놓지 않는다 |
 | 표시 변환 | `format.rs` (시각·날짜·시간 길이), `calendar.rs` (달력 계산) |
 | 스타일 | `assets/style.css`. 색·간격은 토큰(`var(--…)`)만 사용 |
@@ -81,6 +82,8 @@ cargo clippy -p pango-web --target wasm32-unknown-unknown -- -D warnings
 - 서버 호출은 `api::get/post/post_once/patch/put/delete`만 쓴다. 요청/응답 타입은 `pango-api`의 것을 그대로 쓴다.
 - 조회는 `use_resource` + `resource_view`로 세 상태(불러오는 중·실패·성공)를 처리한다. 빈 목록은 `EmptyState`.
 - 변경 요청은 진행 중 `busy`로 버튼을 막고, 실패는 `report_error`, 성공은 `report_success` 후 목록을 `restart()`한다.
+- 401(세션 만료)·403(권한 변경)은 `api`가 한곳에서 로그인 상태에 반영한다. 화면은 오류 문구(`error.message()`)만 보여 준다.
+- 다른 화면의 특정 탭으로 보낼 때는 경로를 늘리지 않고 `StatLink { tab }` / `use_initial_tab`을 쓴다.
 - 생성 폼은 폼을 열 때 `api::new_idempotency_key()`를 하나 만들어 `post_once`에 쓴다(두 번 눌러도 한 번만 생성).
 - 수정 폼은 읽어 온 `version`을 그대로 보낸다. `version_conflict`는 문구로 안내하고 다시 불러온다.
 - 권한에 따라 버튼을 숨기되, **숨김은 편의일 뿐**이다. 서버 오류(403/404)도 정상 흐름으로 처리한다.

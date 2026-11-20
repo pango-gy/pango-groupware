@@ -1,6 +1,6 @@
 //! 화면 문구. 서버의 코드 값(오류 코드, 상태 값)을 한국어로 바꾸는 곳은 여기뿐이다.
 
-use pango_api::leave::LedgerKind;
+use pango_api::leave::{LedgerEntryDto, LedgerKind};
 use pango_core::approval::{
     DocumentKind, DocumentStatus, EventKind, Mailbox, StepKind, StepStatus,
 };
@@ -547,6 +547,28 @@ pub fn ledger_kind_label(kind: LedgerKind) -> &'static str {
         LedgerKind::Use => "사용",
         LedgerKind::Restore => "복원",
         LedgerKind::Adjust => "조정",
+    }
+}
+
+/// 원장 한 줄의 설명(사용 가능 기간, 적용일 등). 종류마다 다르다.
+pub fn ledger_detail(entry: &LedgerEntryDto) -> String {
+    let ymd = crate::format::date_ymd;
+    match entry.kind {
+        LedgerKind::Grant => match (entry.valid_from, entry.expires_on) {
+            (Some(from), Some(until)) => format!("{} ~ {} 사용 가능", ymd(from), ymd(until)),
+            (Some(from), None) => format!("{}부터 사용 가능 · 소멸 없음", ymd(from)),
+            (None, Some(until)) => format!("{}까지 사용 가능", ymd(until)),
+            (None, None) => "소멸 없음".into(),
+        },
+        LedgerKind::Use => entry
+            .effective_on
+            .map(|d| format!("{} 휴가", ymd(d)))
+            .unwrap_or_else(|| "휴가 사용".into()),
+        LedgerKind::Restore => "신청 취소·반려로 복원".into(),
+        LedgerKind::Adjust => entry
+            .effective_on
+            .map(|d| format!("{} 적용 · 관리자 조정", ymd(d)))
+            .unwrap_or_else(|| "관리자 조정".into()),
     }
 }
 

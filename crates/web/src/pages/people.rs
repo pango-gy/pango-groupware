@@ -7,10 +7,11 @@ use dioxus::prelude::*;
 use pango_api::org::{DepartmentDto, MemberSummary};
 
 use crate::api;
+use crate::format;
 use crate::org_tree::{self, DepartmentRow};
-use crate::pages::admin::members::logic::member_query;
 use crate::ui::{
-    resource_view, Avatar, Card, EmptyState, IconName, PageHeader, SelectField, TextField,
+    loaded_or_empty, resource_view, Avatar, Card, EmptyState, IconName, PageHeader, SelectField,
+    TextField,
 };
 
 #[component]
@@ -21,14 +22,11 @@ pub fn People() -> Element {
     let departments =
         use_resource(|| async { api::get::<Vec<DepartmentDto>>("/departments").await });
     let members = use_resource(move || async move {
-        let pairs = member_query(&search(), &department(), false);
+        let pairs = org_tree::member_query(&search(), &department(), false);
         api::get::<Vec<MemberSummary>>(&format!("/members{}", api::query_string(&pairs))).await
     });
 
-    let department_list: Vec<DepartmentDto> = match &*departments.read() {
-        Some(Ok(list)) => list.clone(),
-        _ => Vec::new(),
-    };
+    let department_list = loaded_or_empty(&departments);
     let department_options = org_tree::department_options(&department_list, "전체 부서");
     let rows = org_tree::department_tree(&department_list);
 
@@ -71,11 +69,7 @@ pub fn People() -> Element {
                                         div { class: "list-row-main",
                                             strong { "{member.name}" }
                                             small {
-                                                {[member.department_name.clone(), member.position_name.clone()]
-                                                    .into_iter()
-                                                    .flatten()
-                                                    .collect::<Vec<_>>()
-                                                    .join(" · ")}
+                                                {format::org_line(member.department_name.as_deref(), member.position_name.as_deref())}
                                             }
                                         }
                                         div { class: "list-row-side people-contact",

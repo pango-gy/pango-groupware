@@ -4,7 +4,7 @@ pub mod approval_line;
 mod icon;
 mod member_picker;
 
-pub use approval_line::{ApprovalLineEditor, ApproverEntry};
+pub use approval_line::{use_line_draft, ApprovalLineEditor, ApproverEntry};
 pub use icon::{Icon, IconName};
 pub use member_picker::{MemberPicker, PickedMember};
 
@@ -12,7 +12,8 @@ use dioxus::prelude::*;
 
 use crate::api::{ApiError, ApiResult};
 use crate::format;
-use crate::session::{use_toasts, Session, ToastKind, Toasts};
+use crate::route::Route;
+use crate::session::{use_toasts, Toast, ToastKind, Toasts};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ButtonKind {
@@ -171,16 +172,23 @@ pub fn resource_view<T: Clone + 'static>(
     mut resource: Resource<ApiResult<T>>,
     render: impl FnOnce(T) -> Element,
 ) -> Element {
-    // 훅이 아닌 조회를 쓴다(이 함수는 렌더 중 여러 번, 조건부로 불릴 수 있다).
-    let mut session = consume_context::<Session>();
+    // 세션 만료·권한 변경은 요청 future가 이미 반영했다(`api`). 여기서는 그리기만 한다.
     let state = resource.read().clone();
     match state {
         None => rsx! { Spinner {} },
         Some(Ok(value)) => render(value),
         Some(Err(error)) => {
-            let message = session.handle(&error);
-            rsx! { ErrorState { message, onretry: move |_| resource.restart() } }
+            rsx! { ErrorState { message: error.message(), onretry: move |_| resource.restart() } }
         }
+    }
+}
+
+/// 목록 조회 결과. 아직 읽는 중이거나 실패했으면 빈 목록이다(선택 상자·필터의 보조 목록용.
+/// 본 목록은 [`resource_view`]로 세 상태를 그린다).
+pub fn loaded_or_empty<T: Clone>(resource: &Resource<ApiResult<Vec<T>>>) -> Vec<T> {
+    match &*resource.read() {
+        Some(Ok(list)) => list.clone(),
+        _ => Vec::new(),
     }
 }
 
@@ -312,21 +320,51 @@ pub fn SelectField(
     }
 }
 
-/// 화면 위에 뜨는 대화 상자. 바깥을 누르거나 닫기 버튼으로 닫는다.
+/// 화면 위에 뜨는 대화 상자. 바깥을 누르거나 닫기 버튼·Esc로 닫는다.
+///
+/// 열리면 초점을 대화 상자로 옮기고, Tab·Shift+Tab은 대화 상자 안에서만 돈다. 닫히면 연 버튼
+/// (열기 전 초점)으로 초점을 돌려준다.
 #[component]
 pub fn Modal(
     #[props(into)] title: String,
     onclose: EventHandler<()>,
     children: Element,
 ) -> Element {
+    let id = use_hook(dialog::next_id);
+    // 첫 렌더는 대화 상자가 그려지기 전이라 아직 연 버튼에 초점이 있다.
+    let opener = use_hook(dialog::active_element);
+    {
+        let id = id.clone();
+        use_effect(move || dialog::focus(&id));
+    }
+    use_drop(move || dialog::restore(opener.as_ref()));
+    let keydown = {
+        let id = id.clone();
+        move |event: KeyboardEvent| match event.key() {
+            Key::Escape => {
+                event.stop_propagation();
+                onclose.call(());
+            }
+            Key::Tab => {
+                let backward = event.modifiers().contains(Modifiers::SHIFT);
+                if dialog::trap_tab(&id, backward) {
+                    event.prevent_default();
+                }
+            }
+            _ => {}
+        }
+    };
     rsx! {
         div { class: "modal-backdrop", onclick: move |_| onclose.call(()),
             div {
+                id: "{id}",
                 class: "modal",
                 role: "dialog",
                 "aria-modal": "true",
                 "aria-label": "{title}",
+                tabindex: "-1",
                 onclick: move |event| event.stop_propagation(),
+                onkeydown: keydown,
                 header { class: "modal-header",
                     h2 { class: "modal-title", "{title}" }
                     button {
@@ -339,6 +377,114 @@ pub fn Modal(
                 }
                 div { class: "modal-body", {children} }
             }
+        }
+    }
+}
+
+/// Tab을 눌렀을 때 초점을 어디로 둘지.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabMove {
+    /// 브라우저 기본 이동에 맡긴다(대화 상자 안에서 다음·이전 칸으로 간다).
+    Browser,
+    /// 이 순서의 칸으로 옮긴다(끝에서 처음으로, 처음에서 끝으로 돈다).
+    Focus(usize),
+    /// 옮길 칸이 없다. 대화 상자 밖으로 나가지 않게 그대로 둔다.
+    Stay,
+}
+
+/// 대화 상자 안의 초점 칸 `count`개 중 지금 `current`에 있을 때 Tab(`backward`면 Shift+Tab).
+/// 지금 초점이 칸이 아니면(대화 상자 자체 등) 앞으로는 첫 칸, 뒤로는 마지막 칸이다.
+pub fn tab_move(count: usize, current: Option<usize>, backward: bool) -> TabMove {
+    let Some(last) = count.checked_sub(1) else {
+        return TabMove::Stay;
+    };
+    match (current, backward) {
+        (None, false) => TabMove::Focus(0),
+        (None, true) => TabMove::Focus(last),
+        (Some(0), true) => TabMove::Focus(last),
+        (Some(index), false) if index >= last => TabMove::Focus(0),
+        (Some(index), true) if index > last => TabMove::Focus(last),
+        _ => TabMove::Browser,
+    }
+}
+
+/// 대화 상자의 초점 처리(브라우저 DOM). 계산은 [`tab_move`]가 한다.
+mod dialog {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use wasm_bindgen::JsCast;
+    use web_sys::HtmlElement;
+
+    use super::{tab_move, TabMove};
+
+    /// 초점을 받을 수 있는 칸.
+    const FOCUSABLE: &str =
+        "a[href], button:not([disabled]), input:not([disabled]):not([type=\"hidden\"]), \
+        select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex=\"-1\"])";
+
+    /// 겹쳐 뜬 대화 상자도 서로 구분하는 요소 ID.
+    pub fn next_id() -> String {
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        format!("dialog-{}", NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+
+    fn document() -> Option<web_sys::Document> {
+        web_sys::window()?.document()
+    }
+
+    pub fn active_element() -> Option<HtmlElement> {
+        document()?.active_element()?.dyn_into::<HtmlElement>().ok()
+    }
+
+    fn element(id: &str) -> Option<HtmlElement> {
+        document()?
+            .get_element_by_id(id)?
+            .dyn_into::<HtmlElement>()
+            .ok()
+    }
+
+    /// 열릴 때: 대화 상자 자체에 초점(화면 낭독기가 제목을 읽고, Tab은 첫 칸부터).
+    /// 입력 칸에 바로 두지 않는 것은 모바일에서 키보드가 바로 올라오지 않게 하려는 것이다.
+    pub fn focus(id: &str) {
+        if let Some(dialog) = element(id) {
+            let _ = dialog.focus();
+        }
+    }
+
+    /// 닫힐 때: 연 버튼이 아직 화면에 있으면 그리로 돌려준다.
+    pub fn restore(opener: Option<&HtmlElement>) {
+        if let Some(opener) = opener.filter(|el| el.is_connected()) {
+            let _ = opener.focus();
+        }
+    }
+
+    /// Tab을 대화 상자 안에 가둔다. 초점을 직접 옮겼으면(기본 동작을 막아야 하면) `true`.
+    pub fn trap_tab(id: &str, backward: bool) -> bool {
+        let Some(dialog) = element(id) else {
+            return false;
+        };
+        let Ok(nodes) = dialog.query_selector_all(FOCUSABLE) else {
+            return false;
+        };
+        let items: Vec<HtmlElement> = (0..nodes.length())
+            .filter_map(|index| nodes.item(index))
+            .filter_map(|node| node.dyn_into::<HtmlElement>().ok())
+            // 숨겨진 칸(`display: none` 등)은 건너뛴다.
+            .filter(|el| el.get_client_rects().length() > 0)
+            .collect();
+        let active = active_element();
+        let current = active
+            .as_ref()
+            .and_then(|active| items.iter().position(|el| el == active));
+        match tab_move(items.len(), current, backward) {
+            TabMove::Browser => false,
+            TabMove::Focus(index) => {
+                if let Some(target) = items.get(index) {
+                    let _ = target.focus();
+                }
+                true
+            }
+            TabMove::Stay => true,
         }
     }
 }
@@ -393,19 +539,66 @@ pub fn Stat(
 }
 
 /// 누르면 다른 화면으로 가는 숫자 타일(홈·관리 홈의 "처리할 일").
+///
+/// `tab`을 주면 그 화면을 이 탭으로 연다([`use_initial_tab`]).
 #[component]
 pub fn StatLink(
-    to: crate::route::Route,
+    to: Route,
     #[props(into)] label: String,
     #[props(into)] value: String,
     #[props(into, default)] hint: String,
     #[props(default)] tone: Tone,
+    #[props(default)] tab: Option<&'static str>,
 ) -> Element {
+    let pending = use_context::<PendingTab>();
+    let target = to.clone();
     rsx! {
-        Link { class: "stat-link", to,
+        Link {
+            class: "stat-link",
+            to,
+            onclick: move |_| pending.open(target.clone(), tab),
             Stat { label, value, hint, tone }
         }
     }
+}
+
+/// 다른 화면으로 가면서 열어 둘 탭. 경로를 늘리지 않고, 받는 화면이 처음 그릴 때 한 번 쓴다.
+#[derive(Clone, Copy)]
+pub struct PendingTab(Signal<Option<(Route, &'static str)>>);
+
+impl PendingTab {
+    /// `route`로 가면서 `tab`을 열게 한다. `tab`이 없으면 남아 있던 요청을 지운다.
+    pub fn open(mut self, route: Route, tab: Option<&'static str>) {
+        self.0.set(tab.map(|tab| (route, tab)));
+    }
+}
+
+pub fn provide_pending_tab() -> PendingTab {
+    use_context_provider(|| PendingTab(Signal::new(None)))
+}
+
+/// 열 탭: 이 화면(`route`)으로 오면서 요청한 탭이 있으면 그것, 없으면 `default`.
+pub fn initial_tab(
+    pending: Option<&(Route, &'static str)>,
+    route: &Route,
+    default: &'static str,
+) -> &'static str {
+    match pending {
+        Some((target, tab)) if target == route => tab,
+        _ => default,
+    }
+}
+
+/// 탭 상태. 처음 값은 [`initial_tab`]이고, 요청은 그린 뒤(렌더 밖에서) 지운다.
+pub fn use_initial_tab(route: Route, default: &'static str) -> Signal<String> {
+    let mut pending = use_context::<PendingTab>();
+    let tab = use_signal(|| initial_tab(pending.0.peek().as_ref(), &route, default).to_owned());
+    use_effect(move || {
+        if pending.0.peek().is_some() {
+            pending.0.set(None);
+        }
+    });
+    tab
 }
 
 /// 폼 상단에 띄우는 오류 문구.
@@ -418,27 +611,52 @@ pub fn FormError(#[props(into)] message: String) -> Element {
 }
 
 /// 전역 토스트 표시 영역. 앱 최상단에 한 번만 둔다.
+///
+/// 알림 영역(`aria-live`)은 처음부터 있어야 화면 낭독기가 새 내용을 읽으므로 두 영역을 늘 둔다.
+/// 성공은 차례를 기다려(`polite`), 실패는 바로(`assertive`) 읽는다. 토스트는 버튼이라 눌러서나
+/// 키보드(Enter·Space)로 닫을 수 있다.
 #[component]
 pub fn ToastHost() -> Element {
-    let mut toasts = use_toasts();
+    let toasts = use_toasts();
+    let (errors, others): (Vec<Toast>, Vec<Toast>) = toasts
+        .items()
+        .into_iter()
+        .partition(|toast| toast.kind == ToastKind::Error);
     rsx! {
-        div { class: "toasts", "aria-live": "polite",
-            for toast in toasts.items() {
-                div {
-                    key: "{toast.id}",
-                    class: if toast.kind == ToastKind::Error { "toast toast-error" } else { "toast" },
-                    onclick: move |_| toasts.dismiss(toast.id),
-                    "{toast.message}"
+        div { class: "toasts",
+            div { class: "toast-region", role: "status", "aria-live": "polite",
+                for toast in others {
+                    ToastItem { key: "{toast.id}", toast }
+                }
+            }
+            div { class: "toast-region", role: "alert", "aria-live": "assertive",
+                for toast in errors {
+                    ToastItem { key: "{toast.id}", toast }
                 }
             }
         }
     }
 }
 
-/// 요청 실패를 토스트로 알린다(세션 만료 처리 포함). 이벤트 핸들러 안에서 부른다.
+#[component]
+fn ToastItem(toast: Toast) -> Element {
+    let mut toasts = use_toasts();
+    let id = toast.id;
+    rsx! {
+        button {
+            class: if toast.kind == ToastKind::Error { "toast toast-error" } else { "toast" },
+            r#type: "button",
+            onclick: move |_| toasts.dismiss(id),
+            "{toast.message}"
+            span { class: "sr-only", " (눌러서 닫기)" }
+        }
+    }
+}
+
+/// 요청 실패를 토스트로 알린다. 이벤트 핸들러 안에서 부른다.
+/// 세션 만료·권한 변경은 요청이 실패할 때 `api`가 이미 반영했다.
 pub fn report_error(error: &ApiError) {
-    let message = consume_context::<Session>().handle(error);
-    consume_context::<Toasts>().error(message);
+    consume_context::<Toasts>().error(error.message());
 }
 
 pub fn report_success(message: impl Into<String>) {
@@ -630,6 +848,19 @@ pub fn use_more_pages<T: 'static>() -> MorePages<T> {
     }
 }
 
+/// `first` 뒤에 `more`를 붙인다. `key`가 이미 있는 항목은 건너뛴다(페이지 사이에 새 항목이
+/// 생겨 한 칸씩 밀리면 같은 항목이 두 페이지에 걸쳐 온다).
+pub fn merge_unique<T, K: PartialEq>(first: Vec<T>, more: Vec<T>, key: impl Fn(&T) -> K) -> Vec<T> {
+    let mut items = first;
+    for item in more {
+        let id = key(&item);
+        if !items.iter().any(|existing| key(existing) == id) {
+            items.push(item);
+        }
+    }
+    items
+}
+
 /// 다음에 불러올 커서. 이어 붙인 페이지가 있으면 그 커서가, 없으면 첫 페이지의 커서가 기준이다.
 pub fn next_cursor(first: Option<&str>, later: Option<Option<String>>) -> Option<String> {
     match later {
@@ -646,8 +877,10 @@ impl<T: Clone + serde::de::DeserializeOwned + 'static> MorePages<T> {
         self.generation.set(next);
     }
 
-    pub fn items(&self) -> Vec<T> {
-        self.items.read().clone()
+    /// 첫 페이지 뒤에 이어 붙인 항목까지 모두. 읽는 사이 목록이 바뀌어 겹친 항목은 한 번만
+    /// 나온다([`merge_unique`]).
+    pub fn all<K: PartialEq>(&self, first: Vec<T>, key: impl Fn(&T) -> K) -> Vec<T> {
+        merge_unique(first, self.items.read().clone(), key)
     }
 
     pub fn busy(&self) -> bool {
@@ -847,6 +1080,67 @@ pub fn YearSwitcher(year: i32, min: i32, max: i32, onchange: EventHandler<i32>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tab_wraps_inside_the_dialog() {
+        assert_eq!(
+            tab_move(0, None, false),
+            TabMove::Stay,
+            "칸이 없으면 그대로"
+        );
+        assert_eq!(tab_move(0, None, true), TabMove::Stay);
+        // 대화 상자 자체에 초점이 있을 때(처음 열림).
+        assert_eq!(tab_move(3, None, false), TabMove::Focus(0));
+        assert_eq!(tab_move(3, None, true), TabMove::Focus(2));
+        // 중간에서는 브라우저가 옮긴다.
+        assert_eq!(tab_move(3, Some(0), false), TabMove::Browser);
+        assert_eq!(tab_move(3, Some(1), true), TabMove::Browser);
+        // 끝에서 돈다.
+        assert_eq!(tab_move(3, Some(2), false), TabMove::Focus(0));
+        assert_eq!(tab_move(3, Some(0), true), TabMove::Focus(2));
+        // 한 칸뿐이면 그 칸에 머문다.
+        assert_eq!(tab_move(1, Some(0), false), TabMove::Focus(0));
+        assert_eq!(tab_move(1, Some(0), true), TabMove::Focus(0));
+        // 목록이 줄어 위치가 범위를 벗어났으면 끝으로 본다.
+        assert_eq!(tab_move(2, Some(5), false), TabMove::Focus(0));
+        assert_eq!(tab_move(2, Some(5), true), TabMove::Focus(1));
+    }
+
+    #[test]
+    fn pending_tab_applies_only_to_its_screen() {
+        let pending = (Route::AdminLeave {}, "requests");
+        assert_eq!(
+            initial_tab(Some(&pending), &Route::AdminLeave {}, "balances"),
+            "requests"
+        );
+        assert_eq!(
+            initial_tab(Some(&pending), &Route::AdminAttendance {}, "records"),
+            "records",
+            "다른 화면으로 온 요청"
+        );
+        assert_eq!(
+            initial_tab(None, &Route::AdminLeave {}, "balances"),
+            "balances"
+        );
+    }
+
+    #[test]
+    fn later_pages_skip_items_already_shown() {
+        let merged = merge_unique(vec![(1, "a"), (2, "b")], vec![(2, "b2"), (3, "c")], |x| x.0);
+        assert_eq!(
+            merged,
+            vec![(1, "a"), (2, "b"), (3, "c")],
+            "먼저 온 것을 둔다"
+        );
+        assert_eq!(
+            merge_unique(Vec::<(u8, u8)>::new(), vec![], |x| x.0),
+            vec![]
+        );
+        assert_eq!(
+            merge_unique(vec![], vec![(1, 1), (1, 2)], |x| x.0),
+            vec![(1, 1)]
+        );
+    }
 
     #[test]
     fn next_cursor_prefers_the_latest_page() {

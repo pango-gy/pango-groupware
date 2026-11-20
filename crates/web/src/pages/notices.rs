@@ -32,7 +32,7 @@ pub fn Notices() -> Element {
         PageHeader { title: "공지" }
         {resource_view(first, move |page: Page<NoticeSummary>| {
             let cursor = more.cursor(&page);
-            let items: Vec<NoticeSummary> = page.items.into_iter().chain(more.items()).collect();
+            let items: Vec<NoticeSummary> = more.all(page.items, |item| item.id);
             rsx! {
                 if items.is_empty() {
                     EmptyState { title: "게시된 공지가 없습니다.", icon: IconName::Megaphone }

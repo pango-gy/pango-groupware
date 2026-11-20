@@ -92,8 +92,17 @@ async fn send<T: DeserializeOwned>(
         None => builder.build(),
     }
     .map_err(|_| ApiError::network())?;
-    let response = request.send().await.map_err(|_| ApiError::network())?;
-    decode(response).await
+    let result = match request.send().await {
+        Ok(response) => decode(response).await,
+        Err(_) => Err(ApiError::network()),
+    };
+    if let Err(error) = &result {
+        // 세션 만료(401)·권한 변경(403)을 한곳에서 반영한다. 요청 future 안이라 렌더 중이 아니다.
+        if let Some(session) = dioxus::prelude::try_consume_context::<crate::session::Session>() {
+            session.observe(error);
+        }
+    }
+    result
 }
 
 fn to_json<B: Serialize>(body: &B) -> ApiResult<Option<String>> {

@@ -194,7 +194,7 @@ pub fn AdminApprovalForms() -> Element {
     let docs = use_resource(move || async move {
         let current = logic::parse_status(&status());
         more.reset();
-        api::get::<Page<DocumentSummary>>(&admin_documents_path(current, None)).await
+        api::get::<Page<DocumentSummary>>(&admin_documents_path(current, None, None)).await
     });
 
     let tz = session.zone();
@@ -263,7 +263,7 @@ pub fn AdminApprovalForms() -> Element {
                 let next = more.cursor(&page);
                 let has_more = next.is_some();
                 let current = logic::parse_status(&status());
-                let items: Vec<DocumentSummary> = page.items.into_iter().chain(more.items()).collect();
+                let items: Vec<DocumentSummary> = more.all(page.items, |item| item.id);
                 rsx! {
                     if items.is_empty() {
                         EmptyState { title: "조건에 맞는 문서가 없습니다.", icon: IconName::Inbox }
@@ -278,7 +278,7 @@ pub fn AdminApprovalForms() -> Element {
                             busy: more.busy(),
                             onclick: move |_| {
                                 if let Some(cursor) = next.clone() {
-                                    spawn(more.load(cursor, move |c| admin_documents_path(current, Some(c))));
+                                    spawn(more.load(cursor, move |c| admin_documents_path(current, None, Some(c))));
                                 }
                             },
                         }
@@ -309,7 +309,6 @@ fn FormEditor(
     onclose: EventHandler<()>,
     onsaved: EventHandler<()>,
 ) -> Element {
-    let mut session = use_session();
     let initial = logic::initial_input(form.as_ref());
     let mut code = use_signal(|| initial.code.clone());
     let mut name = use_signal(|| initial.name.clone());
@@ -320,7 +319,8 @@ fn FormEditor(
     let mut attempted = use_signal(|| false);
     let mut error = use_signal(String::new);
     let mut busy = use_signal(|| false);
-    let key = use_signal(api::new_idempotency_key);
+    // 창을 열 때 한 번 만들고 성공하면 바꾼다. 재시도해도 양식은 하나만 생긴다.
+    let mut key = use_signal(api::new_idempotency_key);
 
     let original: Option<(FormId, i64)> = form.as_ref().map(|f| (f.id, f.version));
     let system = form.as_ref().is_some_and(logic::is_system);
@@ -365,6 +365,7 @@ fn FormEditor(
         busy.set(false);
         match result {
             Ok(_) => {
+                key.set(api::new_idempotency_key());
                 report_success(if creating {
                     "양식을 만들었습니다."
                 } else {
@@ -379,7 +380,7 @@ fn FormEditor(
             Err(failure) => error.set(
                 logic::form_conflict_message(&failure.code)
                     .map(str::to_owned)
-                    .unwrap_or_else(|| session.handle(&failure)),
+                    .unwrap_or_else(|| failure.message()),
             ),
         }
     };
