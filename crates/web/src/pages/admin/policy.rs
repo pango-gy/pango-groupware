@@ -26,8 +26,8 @@ pub fn AdminPolicy() -> Element {
     let mut settings =
         use_resource(|| async { api::get::<CompanySettingsDto>("/admin/settings").await });
     rsx! {
-        PageHeader { title: "근무 정책", subtitle: "회사 기본 정보, 근무 시간, 공휴일을 관리합니다." }
-        Card { title: "근무 정책",
+        PageHeader { title: "근무 정책", description: "회사 기본 정보, 근무 시간, 공휴일을 관리해요." }
+        Card { title: "회사와 근무 시간",
             {resource_view(settings, move |dto: CompanySettingsDto| rsx! {
                 PolicyEditor { key: "{dto.version}", dto, onreload: move |_| settings.restart() }
             })}
@@ -70,7 +70,7 @@ fn PolicyEditor(dto: CompanySettingsDto, onreload: EventHandler<()>) -> Element 
         // 바뀌므로(`key`) 그때까지 버튼을 막아 둔다(다시 읽는 사이 두 번째 저장 방지).
         match result {
             Ok(_) => {
-                report_success("근무 정책을 저장했습니다.");
+                report_success("근무 정책을 저장했어요.");
                 // 근무 요일·시간은 다른 화면도 쓴다(휴가 달력 등).
                 refresh_company();
                 // 회사 이름·시간대는 내 정보(`/me`)에도 실려 있다.
@@ -163,7 +163,7 @@ fn PolicyEditor(dto: CompanySettingsDto, onreload: EventHandler<()>) -> Element 
                     kind: "number",
                     value: current.late_grace_minutes.clone(),
                     required: true,
-                    hint: "시작 시각에서 이만큼 늦어도 지각이 아닙니다.",
+                    hint: "시작 시각에서 이만큼 늦어도 지각이 아니에요.",
                     error: error_of("late_grace_minutes"),
                     oninput: move |value| form.write().late_grace_minutes = value,
                 }
@@ -172,7 +172,7 @@ fn PolicyEditor(dto: CompanySettingsDto, onreload: EventHandler<()>) -> Element 
                     kind: "time",
                     value: current.day_cutoff.clone(),
                     required: true,
-                    hint: "이 시각 전의 기록은 전날 근무로 봅니다.",
+                    hint: "이 시각 전의 기록은 전날 근무로 봐요.",
                     error: error_of("day_cutoff"),
                     oninput: move |value| form.write().day_cutoff = value,
                 }
@@ -183,7 +183,7 @@ fn PolicyEditor(dto: CompanySettingsDto, onreload: EventHandler<()>) -> Element 
                     kind: "time",
                     value: current.half_day_split.clone(),
                     required: true,
-                    hint: "오전 반차와 오후 반차를 나누는 시각입니다.",
+                    hint: "오전 반차와 오후 반차를 나누는 시각이에요.",
                     error: error_of("half_day_split"),
                     oninput: move |value| form.write().half_day_split = value,
                 }
@@ -198,7 +198,7 @@ fn PolicyEditor(dto: CompanySettingsDto, onreload: EventHandler<()>) -> Element 
             }
             fieldset { class: "fieldset",
                 legend { class: "field-label", "휴게 시간" }
-                p { class: "field-hint", "근무 구간이 기준 이상이면 휴게 시간을 뺍니다. 가장 높은 단계 하나만 적용합니다." }
+                p { class: "field-hint", "근무 구간이 기준 이상이면 휴게 시간을 빼요. 가장 높은 단계 하나만 적용해요." }
                 for (index , tier) in current.break_tiers.iter().enumerate() {
                     div { key: "{index}", class: "tier-row",
                         input {
@@ -246,7 +246,7 @@ fn PolicyEditor(dto: CompanySettingsDto, onreload: EventHandler<()>) -> Element 
                 if tier_count < MAX_BREAK_TIERS {
                     div {
                         Button {
-                            kind: ButtonKind::Secondary,
+                            kind: ButtonKind::Grey,
                             small: true,
                             onclick: move |_| form.write().break_tiers.push(TierRow::default()),
                             "단계 추가"
@@ -282,7 +282,7 @@ fn PolicyEditor(dto: CompanySettingsDto, onreload: EventHandler<()>) -> Element 
                     span { class: "field-error", role: "alert", "{workdays_error}" }
                 }
             }
-            div { class: "card-actions",
+            div { class: "panel-actions",
                 Button { submit: true, busy: busy(), "저장" }
             }
         }
@@ -328,7 +328,7 @@ fn HolidaysCard() -> Element {
         adding.set(true);
         match api::put::<_, HolidayDto>(&format!("/admin/holidays/{date}"), &input).await {
             Ok(_) => {
-                report_success("공휴일을 저장했습니다.");
+                report_success("공휴일을 저장했어요.");
                 new_date.set(String::new());
                 new_name.set(String::new());
                 if date.year() == year() {
@@ -348,7 +348,7 @@ fn HolidaysCard() -> Element {
         deleting.set(true);
         match api::delete::<Empty>(&format!("/admin/holidays/{}", holiday.date)).await {
             Ok(_) => {
-                report_success("공휴일을 삭제했습니다.");
+                report_success("공휴일을 삭제했어요.");
                 dialog.set(HolidayDialog::Closed);
                 holidays.restart();
             }
@@ -373,7 +373,7 @@ fn HolidaysCard() -> Element {
                     onchange: move |next| year.set(next),
                 }
             },
-            form { class: "holiday-add", onsubmit: add,
+            form { class: "toolbar", onsubmit: add,
                 TextField {
                     label: "날짜",
                     kind: "date",
@@ -381,30 +381,32 @@ fn HolidaysCard() -> Element {
                     required: true,
                     oninput: move |value| new_date.set(value),
                 }
-                TextField {
-                    label: "이름",
-                    value: new_name(),
-                    required: true,
-                    placeholder: "예: 창립기념일",
-                    maxlength: LabelName::RULE.max_chars as i64,
-                    oninput: move |value| new_name.set(value),
+                div { class: "toolbar-wide",
+                    TextField {
+                        label: "이름",
+                        value: new_name(),
+                        required: true,
+                        placeholder: "예: 창립기념일",
+                        maxlength: LabelName::RULE.max_chars as i64,
+                        oninput: move |value| new_name.set(value),
+                    }
                 }
-                div { class: "holiday-add-actions",
-                    Button { submit: true, busy: adding(), "추가" }
+                div { class: "toolbar-end",
                     Button {
-                        kind: ButtonKind::Secondary,
+                        kind: ButtonKind::Grey,
                         onclick: move |_| dialog.set(HolidayDialog::Import),
                         "일괄 등록"
                     }
+                    Button { kind: ButtonKind::Weak, submit: true, busy: adding(), "추가" }
                 }
             }
             FormError { message: add_error() }
-            p { class: "field-hint", "이미 등록된 날짜를 다시 추가하면 이름이 바뀝니다." }
+            p { class: "field-hint panel-note", "이미 등록된 날짜를 다시 추가하면 이름이 바뀌어요." }
             {resource_view(holidays, move |list: Vec<HolidayDto>| rsx! {
                 if list.is_empty() {
-                    EmptyState { title: "{current_year}년에 등록된 공휴일이 없습니다.", icon: IconName::Calendar }
+                    EmptyState { title: "{current_year}년에 등록된 공휴일이 없어요.", icon: IconName::Calendar }
                 } else {
-                    ul { class: "list holiday-list",
+                    ul { class: "list",
                         for holiday in list {
                             li { key: "{holiday.date}", class: "list-row",
                                 span { class: "list-row-main",
@@ -413,7 +415,7 @@ fn HolidaysCard() -> Element {
                                 }
                                 span { class: "row-actions",
                                     Button {
-                                        kind: ButtonKind::Secondary,
+                                        kind: ButtonKind::Grey,
                                         small: true,
                                         onclick: {
                                             let holiday = holiday.clone();
@@ -422,7 +424,7 @@ fn HolidaysCard() -> Element {
                                         "이름 변경"
                                     }
                                     Button {
-                                        kind: ButtonKind::Ghost,
+                                        kind: ButtonKind::Danger,
                                         small: true,
                                         onclick: {
                                             let holiday = holiday.clone();
@@ -450,7 +452,7 @@ fn HolidaysCard() -> Element {
                 ConfirmModal {
                     title: "공휴일 삭제",
                     message: format!(
-                        "{} ‘{}’을(를) 삭제합니다. 근태·휴가 계산에서 근무일로 바뀝니다.",
+                        "{} ‘{}’을(를) 삭제해요. 근태·휴가 계산에서 근무일로 바뀌어요.",
                         format::date_ymd(holiday.date),
                         holiday.name
                     ),
@@ -497,7 +499,7 @@ fn HolidayRename(
         busy.set(true);
         match api::put::<_, HolidayDto>(&format!("/admin/holidays/{date}"), &input).await {
             Ok(_) => {
-                report_success("이름을 바꿨습니다.");
+                report_success("이름을 바꿨어요.");
                 onsaved.call(());
             }
             Err(failure) => report_error(&failure),
@@ -517,8 +519,8 @@ fn HolidayRename(
                     maxlength: LabelName::RULE.max_chars as i64,
                     oninput: move |value| name.set(value),
                 }
-                div { class: "card-actions",
-                    Button { kind: ButtonKind::Secondary, onclick: move |_| onclose.call(()), "취소" }
+                div { class: "modal-actions",
+                    Button { kind: ButtonKind::Grey, onclick: move |_| onclose.call(()), "취소" }
                     Button { submit: true, busy: busy(), "저장" }
                 }
             }
@@ -549,7 +551,7 @@ fn HolidayImport(onclose: EventHandler<()>, onsaved: EventHandler<()>) -> Elemen
         let request = HolidayImportRequest { items };
         match api::post::<_, HolidayImportResult>("/admin/holidays/import", &request).await {
             Ok(result) => {
-                report_success(format!("공휴일 {}개를 등록했습니다.", result.imported));
+                report_success(format!("공휴일 {}개를 등록했어요.", result.imported));
                 onsaved.call(());
             }
             Err(failure) => report_error(&failure),
@@ -563,7 +565,7 @@ fn HolidayImport(onclose: EventHandler<()>, onsaved: EventHandler<()>) -> Elemen
                 p { class: "field-hint",
                     "한 줄에 하나씩 "
                     code { "YYYY-MM-DD 이름" }
-                    " 형식으로 입력합니다. 최대 {MAX_IMPORT}개, 이미 있는 날짜는 이름이 바뀝니다."
+                    " 형식으로 입력해요. 최대 {MAX_IMPORT}개, 이미 있는 날짜는 이름이 바뀌어요."
                 }
                 if !errors.read().is_empty() {
                     ul { class: "form-error import-errors", role: "alert",
@@ -580,8 +582,8 @@ fn HolidayImport(onclose: EventHandler<()>, onsaved: EventHandler<()>) -> Elemen
                     maxlength: 10_000,
                     oninput: move |value| text.set(value),
                 }
-                div { class: "card-actions",
-                    Button { kind: ButtonKind::Secondary, onclick: move |_| onclose.call(()), "취소" }
+                div { class: "modal-actions",
+                    Button { kind: ButtonKind::Grey, onclick: move |_| onclose.call(()), "취소" }
                     Button { submit: true, busy: busy(), "등록" }
                 }
             }
@@ -871,7 +873,7 @@ pub mod logic {
         }
         if lines.len() > MAX_IMPORT {
             return Err(vec![format!(
-                "한 번에 {MAX_IMPORT}개까지 등록할 수 있습니다. (지금 {}개)",
+                "한 번에 {MAX_IMPORT}개까지 등록할 수 있어요. (지금 {}개)",
                 lines.len()
             )]);
         }
@@ -901,9 +903,7 @@ pub mod logic {
                 }
             };
             if let Some(first) = seen.insert(date, number) {
-                errors.push(format!(
-                    "{number}번째 줄: {first}번째 줄과 날짜가 같습니다."
-                ));
+                errors.push(format!("{number}번째 줄: {first}번째 줄과 날짜가 같아요."));
                 continue;
             }
             items.push(HolidayImportItem {
@@ -917,7 +917,7 @@ pub mod logic {
         let hidden = errors.len().saturating_sub(MAX_REPORTED_ERRORS);
         errors.truncate(MAX_REPORTED_ERRORS);
         if hidden > 0 {
-            errors.push(format!("그 밖에 {hidden}개 줄에 오류가 있습니다."));
+            errors.push(format!("그 밖에 {hidden}개 줄에 오류가 있어요."));
         }
         Err(errors)
     }
@@ -1117,7 +1117,7 @@ pub mod logic {
                     "2번째 줄: 날짜는 YYYY-MM-DD 형식으로 입력해 주세요.",
                     "4번째 줄: 날짜는 YYYY-MM-DD 형식으로 입력해 주세요.",
                     "5번째 줄: 날짜와 이름을 띄어 써 주세요.",
-                    "6번째 줄: 1번째 줄과 날짜가 같습니다.",
+                    "6번째 줄: 1번째 줄과 날짜가 같아요.",
                     "7번째 줄: 이름에 쓸 수 없는 문자가 들어 있습니다.",
                 ]
             );
@@ -1144,7 +1144,7 @@ pub mod logic {
             assert_eq!(
                 parse_holiday_lines(&many.join("\n")),
                 Err(vec![
-                    "한 번에 100개까지 등록할 수 있습니다. (지금 101개)".to_owned()
+                    "한 번에 100개까지 등록할 수 있어요. (지금 101개)".to_owned()
                 ])
             );
 
@@ -1153,7 +1153,7 @@ pub mod logic {
             assert_eq!(errors.len(), MAX_REPORTED_ERRORS + 1);
             assert_eq!(
                 errors[MAX_REPORTED_ERRORS],
-                "그 밖에 20개 줄에 오류가 있습니다."
+                "그 밖에 20개 줄에 오류가 있어요."
             );
 
             let script = "2026-01-01 <script>alert(1)</script>";

@@ -8,12 +8,13 @@ use pango_core::id::MemberId;
 
 use crate::api;
 use crate::calendar::YearMonth;
+use crate::company::use_company;
 use crate::pages::attendance::{logic as attendance_logic, MonthAttendance};
 use crate::pages::leave::RequestRow;
 use crate::session::use_session;
 use crate::ui::{
-    resource_view, today, Avatar, Badge, Button, ButtonKind, Card, EmptyState, IconName,
-    MonthSwitcher, PageHeader, Spinner, Stat, Tabs, TextField,
+    now, resource_view, today, workday_bar, Avatar, Badge, Button, ButtonKind, Card, EmptyState,
+    IconName, Meta, MonthSwitcher, PageHeader, Skeleton, Stat, Tabs, TextField, WorkdayBar,
 };
 
 use logic::TeamTab;
@@ -37,13 +38,19 @@ pub fn Team() -> Element {
         return rsx! {
             PageHeader { title: "팀 현황" }
             EmptyState {
-                title: "팀 현황은 조직장과 관리자만 볼 수 있습니다.",
-                hint: "부서장으로 지정되면 이 화면을 쓸 수 있습니다.",
+                title: "팀 현황은 조직장과 관리자만 볼 수 있어요.",
+                hint: "부서장으로 지정되면 이 화면을 쓸 수 있어요.",
                 icon: IconName::Team,
             }
         };
     }
 
+    // 하루 막대의 근무 시간대·축 시작은 회사 설정을 쓴다(읽기 전에는 09:00~18:00, 자정).
+    let company = use_company();
+    let hours = company.work_hours();
+    let cutoff = company.day_cutoff();
+    let hours_text = attendance_logic::expected_hours(hours.0, hours.1);
+    let at = now();
     let shown_date = date().unwrap_or_else(|| match &*attendance.read() {
         Some(Ok(team)) => team.date.to_string(),
         _ => String::new(),
@@ -54,7 +61,7 @@ pub fn Team() -> Element {
     };
 
     rsx! {
-        PageHeader { title: "팀 현황" }
+        PageHeader { title: "팀 현황", description: "관할 부서의 출근과 휴가를 한눈에 봐요." }
         Tabs {
             tabs: TeamTab::ALL
                 .iter()
@@ -65,39 +72,53 @@ pub fn Team() -> Element {
         }
         {match tab() {
             TeamTab::Today => rsx! {
-                div { class: "att-filters",
-                    TextField {
-                        label: "날짜",
-                        kind: "date",
-                        value: shown_date,
-                        oninput: move |value: String| date.set(logic::date_choice(&value)),
-                    }
-                    if date().is_some() {
-                        Button { kind: ButtonKind::Secondary, onclick: move |_| date.set(None), "오늘로" }
-                    }
-                }
-                {resource_view(attendance, move |team: TeamAttendance| rsx! {
-                    Card {
-                        if !team.is_working_day {
-                            p { class: "today-meta", "근무일이 아닌 날입니다." }
+                Card {
+                    div { class: "toolbar",
+                        TextField {
+                            label: "날짜",
+                            kind: "date",
+                            value: shown_date,
+                            oninput: move |value: String| date.set(logic::date_choice(&value)),
                         }
-                        div { class: "att-stats",
-                            for tile in logic::team_tiles(&team) {
+                        if date().is_some() {
+                            div { class: "toolbar-end",
+                                Button { kind: ButtonKind::Grey, onclick: move |_| date.set(None), "오늘로" }
+                            }
+                        }
+                    }
+                    // 불러오는 중·실패는 아래 목록 패널이 한 번만 알린다.
+                    if let Some(Ok(team)) = &*attendance.read() {
+                        if !team.is_working_day {
+                            p { class: "text-sub panel-note", "근무일이 아닌 날이에요." }
+                        }
+                        div { class: "stats",
+                            for tile in logic::team_tiles(team) {
                                 Stat { key: "{tile.label}", label: tile.label, value: tile.value, tone: tile.tone }
                             }
                         }
                     }
+                }
+                {resource_view(attendance, move |team: TeamAttendance| rsx! {
                     Card { title: "구성원별 현황",
                         if team.members.is_empty() {
-                            EmptyState { title: "관할 부서에 재직 중인 구성원이 없습니다.", icon: IconName::People }
+                            EmptyState { title: "관할 부서에 재직 중인 구성원이 없어요.", icon: IconName::People }
                         } else {
                             ul { class: "list",
-                                for (entry , cells) in team.members.iter().map(|entry| {
+                                for (entry , cells , bar) in team.members.iter().map(|entry| {
                                     let cells = attendance_logic::record_cells(team.date, entry.record.as_ref(), &entry.evaluation, tz);
-                                    (entry, cells)
+                                    let bar = workday_bar::day_bar(&attendance_logic::day_input(
+                                        team.date,
+                                        entry.record.as_ref(),
+                                        &entry.evaluation,
+                                        hours,
+                                        cutoff,
+                                        at,
+                                        tz,
+                                    ));
+                                    (entry, cells, bar)
                                 }) {
                                     li { key: "{entry.member_id}", class: "list-row",
-                                        Avatar { name: entry.name.clone() }
+                                        Avatar { name: entry.name.clone(), seed: entry.member_id.to_string() }
                                         div { class: "list-row-main",
                                             button {
                                                 class: "link-btn",
@@ -106,11 +127,14 @@ pub fn Team() -> Element {
                                                     let (id, name) = (entry.member_id, entry.name.clone());
                                                     move |_| pick(id, name.clone())
                                                 },
-                                                strong { "{entry.name}" }
+                                                "{entry.name}"
                                                 span { class: "sr-only", " 월 근태 보기" }
                                             }
-                                            small {
-                                                {logic::member_line(entry.department_name.as_deref(), &cells)}
+                                            Meta { items: logic::member_meta(entry.department_name.as_deref(), &cells) }
+                                            WorkdayBar {
+                                                bar,
+                                                compact: true,
+                                                summary: attendance_logic::bar_summary(&hours_text, &cells),
                                             }
                                         }
                                         div { class: "list-row-side",
@@ -126,7 +150,7 @@ pub fn Team() -> Element {
             TeamTab::Members => rsx! {
                 {resource_view(members, move |list: Vec<MemberSummary>| rsx! {
                     if list.is_empty() {
-                        EmptyState { title: "관할 부서에 재직 중인 구성원이 없습니다.", icon: IconName::People }
+                        EmptyState { title: "관할 부서에 재직 중인 구성원이 없어요.", icon: IconName::People }
                     } else {
                         Card { title: "팀원",
                             div { class: "chip-group", role: "group", "aria-label": "팀원 선택",
@@ -148,12 +172,12 @@ pub fn Team() -> Element {
                     }
                 })}
                 if let Some((member_id, name)) = selected() {
-                    h2 { class: "att-section-title", "{name}님의 근태" }
+                    h2 { class: "section-title", "{name}님의 근태" }
                     MonthAttendance { member_id: Some(member_id), revision: 0_u32 }
                 } else if members.read().is_none() {
-                    Spinner {}
+                    Skeleton {}
                 } else {
-                    EmptyState { title: "팀원을 고르면 그 달의 근태를 볼 수 있습니다.", icon: IconName::Person }
+                    EmptyState { title: "팀원을 고르면 그 달의 근태를 볼 수 있어요.", icon: IconName::Person }
                 }
             },
             TeamTab::Leave => rsx! { TeamLeave {} },
@@ -177,7 +201,7 @@ fn TeamLeave() -> Element {
             },
             {resource_view(requests, |list: Vec<LeaveRequestDto>| rsx! {
                 if list.is_empty() {
-                    EmptyState { title: "이 달에 잡힌 팀 휴가가 없습니다.", icon: IconName::Calendar }
+                    EmptyState { title: "이 달에 잡힌 팀 휴가가 없어요.", icon: IconName::Calendar }
                 } else {
                     ul { class: "list",
                         for item in list {
@@ -263,17 +287,20 @@ mod logic {
         selected.is_some_and(|(chosen, _)| *chosen == id)
     }
 
-    /// 구성원 줄의 보조 문구: `개발팀 · 09:02 – 18:10`.
-    pub fn member_line(department: Option<&str>, cells: &RecordCells) -> String {
+    /// 구성원 줄의 보조 정보: 부서(있으면), 출퇴근 시각.
+    pub fn member_meta(department: Option<&str>, cells: &RecordCells) -> Vec<String> {
         let times = if cells.clock_in == EMPTY {
             "출근 기록 없음".to_owned()
         } else {
             format!("{} – {}", cells.clock_in, cells.clock_out)
         };
-        match department.map(str::trim).filter(|name| !name.is_empty()) {
-            Some(name) => format!("{name} · {times}"),
-            None => times,
-        }
+        department
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+            .into_iter()
+            .chain([times])
+            .collect()
     }
 
     fn tile(label: &'static str, count: usize, tone: Tone) -> Tile {
@@ -421,7 +448,7 @@ mod logic {
         }
 
         #[test]
-        fn member_line_describes_times() {
+        fn member_meta_lists_department_and_times() {
             let cells = |clock_in: &str, clock_out: &str| RecordCells {
                 work_type: EMPTY.into(),
                 clock_in: clock_in.into(),
@@ -430,14 +457,17 @@ mod logic {
                 status: "예정",
                 tone: Tone::Neutral,
             };
-            assert_eq!(member_line(None, &cells(EMPTY, EMPTY)), "출근 기록 없음");
             assert_eq!(
-                member_line(Some("개발팀"), &cells("09:02", EMPTY)),
-                "개발팀 · 09:02 – -"
+                member_meta(None, &cells(EMPTY, EMPTY)),
+                vec!["출근 기록 없음"]
             );
             assert_eq!(
-                member_line(Some(" "), &cells("09:02", "18:10")),
-                "09:02 – 18:10"
+                member_meta(Some("개발팀"), &cells("09:02", EMPTY)),
+                vec!["개발팀", "09:02 – -"]
+            );
+            assert_eq!(
+                member_meta(Some(" "), &cells("09:02", "18:10")),
+                vec!["09:02 – 18:10"]
             );
         }
 

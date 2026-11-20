@@ -16,7 +16,7 @@ use crate::session::{use_session, use_toasts};
 use crate::text;
 use crate::ui::{
     report_success, resource_view, today, Badge, Button, ButtonKind, Card, ConfirmModal,
-    EmptyState, Icon, IconName, MonthCalendar, MonthSwitcher, PageHeader, Stat, Tabs, Tone,
+    EmptyState, Icon, IconName, Meta, MonthCalendar, MonthSwitcher, PageHeader, Stat, Tabs, Tone,
     YearSwitcher,
 };
 
@@ -40,6 +40,7 @@ pub fn Leave() -> Element {
     rsx! {
         PageHeader {
             title: "휴가",
+            description: "남은 연차와 신청 내역을 확인해요.",
             actions: rsx! {
                 Link { class: "btn btn-primary", to: Route::LeaveNew {},
                     Icon { name: IconName::Plus }
@@ -47,7 +48,7 @@ pub fn Leave() -> Element {
                 }
             },
         }
-        Card { class: "leave-balance",
+        Card {
             {resource_view(balance, |dto: BalanceDto| rsx! { BalanceSummary { dto } })}
         }
         Tabs { tabs, active: tab(), onselect: move |key| tab.set(key) }
@@ -64,13 +65,13 @@ pub fn Leave() -> Element {
 pub(crate) fn BalanceHeadline(dto: BalanceDto) -> Element {
     let expiring = dto.expiring_soon.quarters();
     rsx! {
-        div { class: "leave-balance-main",
-            span { class: "leave-balance-label", "남은 연차" }
-            strong { class: "leave-balance-value", {format::leave_days(dto.balance.remaining.quarters())} }
+        div { class: "figure",
+            span { class: "figure-label", "남은 연차" }
+            strong { class: "figure-value tnum", {format::leave_days(dto.balance.remaining.quarters())} }
             if expiring > 0 {
                 p { class: "leave-expiring",
                     Badge { tone: Tone::Warning, "곧 소멸" }
-                    " 30일 안에 {format::leave_days(expiring)}이 사라집니다."
+                    " 30일 안에 {format::leave_days(expiring)}이 사라져요."
                 }
             }
         }
@@ -82,7 +83,7 @@ fn BalanceSummary(dto: BalanceDto) -> Element {
     let balance = dto.balance;
     rsx! {
         BalanceHeadline { dto }
-        div { class: "leave-stats",
+        div { class: "stats",
             Stat { label: "부여", value: format::leave_days(balance.granted.quarters()) }
             Stat { label: "사용", value: format::leave_days(balance.used.quarters()) }
             Stat { label: "소멸", value: format::leave_days(balance.expired.quarters()) }
@@ -112,7 +113,7 @@ fn RequestsTab(today: NaiveDate, onchanged: EventHandler<()>) -> Element {
         let path = format!("/leave/requests/{id}/cancel");
         match api::post::<_, LeaveRequestDto>(&path, &pango_api::Empty {}).await {
             Ok(_) => {
-                report_success("휴가 신청을 취소했습니다.");
+                report_success("휴가 신청을 취소했어요.");
                 confirm.set(None);
                 requests.restart();
                 onchanged.call(());
@@ -131,35 +132,37 @@ fn RequestsTab(today: NaiveDate, onchanged: EventHandler<()>) -> Element {
     };
 
     rsx! {
-        div { class: "leave-toolbar",
-            YearSwitcher {
-                year: year(),
-                min: min_year,
-                max: max_year,
-                onchange: move |value| year.set(logic::clamp_year(value, (min_year, max_year))),
-            }
-        }
-        {resource_view(requests, move |list: Vec<LeaveRequestDto>| rsx! {
-            if list.is_empty() {
-                EmptyState {
-                    title: "이 해에 신청한 휴가가 없습니다.",
-                    icon: IconName::Calendar,
+        Card {
+            div { class: "toolbar",
+                YearSwitcher {
+                    year: year(),
+                    min: min_year,
+                    max: max_year,
+                    onchange: move |value| year.set(logic::clamp_year(value, (min_year, max_year))),
                 }
-            } else {
-                Card {
-                    ul { class: "list",
-                        for item in list {
-                            RequestRow {
-                                key: "{item.id}",
-                                cancelable: logic::can_cancel(&item, today),
-                                item: item.clone(),
-                                oncancel: move |item| confirm.set(Some(item)),
+            }
+            {resource_view(requests, move |list: Vec<LeaveRequestDto>| rsx! {
+                if list.is_empty() {
+                    EmptyState {
+                        title: "이 해에 신청한 휴가가 없어요.",
+                        icon: IconName::Calendar,
+                    }
+                } else {
+                    Fragment {
+                        ul { class: "list",
+                            for item in list {
+                                RequestRow {
+                                    key: "{item.id}",
+                                    cancelable: logic::can_cancel(&item, today),
+                                    item: item.clone(),
+                                    oncancel: move |item| confirm.set(Some(item)),
+                                }
                             }
                         }
                     }
                 }
-            }
-        })}
+            })}
+        }
         if let Some(target) = confirm() {
             ConfirmModal {
                 title: "휴가 신청 취소",
@@ -190,9 +193,9 @@ pub(crate) fn RequestRow(
 ) -> Element {
     let period = logic::period_label(item.start_date, item.end_date);
     rsx! {
-        li { class: "list-row leave-row",
+        li { class: "list-row list-row-top",
             div { class: "list-row-main",
-                div { class: "leave-row-title",
+                div { class: "row-title",
                     if show_member {
                         strong { "{item.member_name}" }
                         span { "{item.leave_type_name}" }
@@ -201,10 +204,14 @@ pub(crate) fn RequestRow(
                     }
                     Badge { tone: text::leave_status_tone(item.status), {text::leave_status_label(item.status)} }
                 }
-                small {
-                    "{period} · {text::leave_unit_label(item.unit)} · {format::leave_days(item.amount.quarters())}"
+                Meta {
+                    items: vec![
+                        period,
+                        text::leave_unit_label(item.unit).to_owned(),
+                        format::leave_days(item.amount.quarters()),
+                    ],
                 }
-                p { class: "leave-row-reason", "{item.reason}" }
+                p { class: "row-reason", "{item.reason}" }
             }
             div { class: "list-row-side",
                 if document_link {
@@ -215,7 +222,7 @@ pub(crate) fn RequestRow(
                 }
                 if cancelable {
                     Button {
-                        kind: ButtonKind::Secondary,
+                        kind: ButtonKind::Grey,
                         small: true,
                         onclick: {
                             let item = item.clone();
@@ -249,7 +256,7 @@ fn CalendarTab(today: NaiveDate) -> Element {
     let current = month();
     rsx! {
         Card { class: "leave-calendar",
-            div { class: "leave-toolbar",
+            div { class: "toolbar",
                 MonthSwitcher {
                     month: current,
                     onchange: move |next: YearMonth| {
@@ -259,7 +266,7 @@ fn CalendarTab(today: NaiveDate) -> Element {
                 }
                 p { class: "leave-legend",
                     span { class: "calendar-chip leave-chip", "승인" }
-                    span { class: "calendar-chip leave-chip leave-chip-pending", "결재 중 · 대기" }
+                    span { class: "calendar-chip leave-chip leave-chip-pending", "결재 중" }
                 }
             }
             {resource_view(entries, move |list: Vec<LeaveCalendarEntry>| {
@@ -330,7 +337,7 @@ fn DayCell(
                     class: if person.pending { "calendar-chip leave-chip leave-chip-pending" } else { "calendar-chip leave-chip" },
                     "{person.member_name} {text::leave_unit_short(person.unit)}"
                     if person.pending {
-                        " · 대기"
+                        span { class: "sr-only", " 결재 중" }
                     }
                 }
             }
@@ -348,9 +355,9 @@ fn DayCell(
 fn DayAgenda(date: NaiveDate, people: Vec<logic::DayEntry>) -> Element {
     rsx! {
         section { class: "leave-agenda", "aria-live": "polite",
-            h3 { class: "leave-agenda-title", "{format::date_md(date)}" }
+            h3 { class: "sub-title", "{format::date_md(date)}" }
             if people.is_empty() {
-                p { class: "field-hint", "이날 휴가인 사람이 없습니다." }
+                p { class: "field-hint", "이날 휴가인 사람이 없어요." }
             } else {
                 ul { class: "list",
                     for person in people {
@@ -380,7 +387,7 @@ fn LedgerTab(tz: Tz) -> Element {
             let lines = logic::ledger_lines(&entries, tz);
             rsx! {
                 if lines.is_empty() {
-                    EmptyState { title: "아직 내역이 없습니다.", icon: IconName::List }
+                    EmptyState { title: "아직 내역이 없어요.", icon: IconName::List }
                 } else {
                     Card {
                         ul { class: "list",
@@ -388,10 +395,10 @@ fn LedgerTab(tz: Tz) -> Element {
                                 li { key: "{line.key}", class: "list-row",
                                     Badge { tone: line.tone, "{line.label}" }
                                     div { class: "list-row-main",
-                                        strong { class: "leave-amount", "{line.amount}" }
+                                        strong { class: "tnum", "{line.amount}" }
                                         small { "{line.detail}" }
                                         if let Some(memo) = &line.memo {
-                                            p { class: "leave-row-reason", "{memo}" }
+                                            p { class: "row-reason", "{memo}" }
                                         }
                                     }
                                     div { class: "list-row-side", small { "{line.recorded}" } }
@@ -448,11 +455,11 @@ pub(crate) mod logic {
         let period = period_label(request.start_date, request.end_date);
         match request.status {
             LeaveRequestStatus::Pending => format!(
-                "{period} {} 신청을 취소합니다. 결재 문서도 함께 회수됩니다.",
+                "{period} {} 신청을 취소해요. 결재 문서도 함께 회수돼요.",
                 request.leave_type_name
             ),
             _ => format!(
-                "{period} {} 휴가를 취소합니다. 사용한 연차는 복원됩니다.",
+                "{period} {} 휴가를 취소해요. 사용한 연차는 복원돼요.",
                 request.leave_type_name
             ),
         }

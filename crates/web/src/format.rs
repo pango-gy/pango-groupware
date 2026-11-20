@@ -156,17 +156,6 @@ pub fn parse_local_input(raw: &str, tz: Tz) -> Result<Timestamp, LocalInputError
     }
 }
 
-/// 소속 한 줄 `개발팀 · 팀장`. 없는 값·빈 값은 빼고, 둘 다 없으면 빈 문자열.
-pub fn org_line(department: Option<&str>, position: Option<&str>) -> String {
-    [department, position]
-        .into_iter()
-        .flatten()
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join(" · ")
-}
-
 /// 이름의 첫 글자(아바타용).
 pub fn initial(name: &str) -> String {
     name.trim()
@@ -357,15 +346,6 @@ mod tests {
         assert_eq!(elapsed_minutes(start, ts("2026-03-02T00:00:59Z")), 0);
         assert_eq!(elapsed_minutes(start, ts("2026-03-02T03:12:00Z")), 192);
         assert_eq!(elapsed_minutes(start, ts("2026-03-01T23:00:00Z")), 0);
-    }
-
-    #[test]
-    fn org_line_skips_missing_parts() {
-        assert_eq!(org_line(Some("개발팀"), Some("팀장")), "개발팀 · 팀장");
-        assert_eq!(org_line(Some("개발팀"), None), "개발팀");
-        assert_eq!(org_line(None, Some("팀장")), "팀장");
-        assert_eq!(org_line(None, None), "");
-        assert_eq!(org_line(Some("  "), Some("팀장")), "팀장", "빈 이름");
     }
 
     #[test]

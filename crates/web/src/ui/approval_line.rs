@@ -125,10 +125,10 @@ pub fn line_problem(steps: &[ApproverEntry]) -> Option<&'static str> {
         return Some("결재자를 한 명 이상 지정해 주세요.");
     }
     if steps.len() > MAX_STEPS {
-        return Some("결재선은 10단계까지 지정할 수 있습니다.");
+        return Some("결재선은 10단계까지 지정할 수 있어요.");
     }
     if steps.last().map(|step| step.kind) != Some(StepKind::Approve) {
-        return Some("마지막 단계는 결재여야 합니다.");
+        return Some("마지막 단계는 결재여야 해요.");
     }
     None
 }
@@ -221,8 +221,7 @@ pub fn ApprovalLineEditor(
                 match fetch_suggestion(&exclude).await {
                     Ok(next) => {
                         if next.is_empty() {
-                            toasts
-                                .success("추천할 결재선이 없습니다. 결재자를 직접 지정해 주세요.");
+                            toasts.success("추천할 결재선이 없어요. 결재자를 직접 지정해 주세요.");
                         } else {
                             onchange.call(next);
                         }
@@ -239,7 +238,7 @@ pub fn ApprovalLineEditor(
             div { class: "line-editor-head",
                 span { class: "field-label", "결재선 ({count} / {MAX_STEPS})" }
                 Button {
-                    kind: ButtonKind::Ghost,
+                    kind: ButtonKind::Weak,
                     small: true,
                     busy: loading(),
                     disabled,
@@ -254,7 +253,7 @@ pub fn ApprovalLineEditor(
                     for (index , step) in steps.iter().enumerate() {
                         li { key: "{step.approver_id}", class: "line-step",
                             span { class: "line-step-order", "aria-hidden": "true", "{index + 1}" }
-                            Avatar { name: step.approver_name.clone() }
+                            Avatar { name: step.approver_name.clone(), seed: step.approver_id.to_string() }
                             span { class: "line-step-name",
                                 span { class: "sr-only", "{index + 1}번째 " }
                                 "{step.approver_name}"
@@ -318,7 +317,7 @@ pub fn ApprovalLineEditor(
                 }
             }
             if full {
-                p { class: "field-hint", "결재자는 최대 {MAX_STEPS}명까지 지정할 수 있습니다." }
+                p { class: "field-hint", "결재자는 최대 {MAX_STEPS}명까지 지정할 수 있어요." }
             } else if !disabled {
                 MemberPicker {
                     label: "결재자 추가",
@@ -335,7 +334,7 @@ pub fn ApprovalLineEditor(
             if !error.is_empty() {
                 p { class: "field-error", role: "alert", "{error}" }
             }
-            p { class: "field-hint", "위에서부터 순서대로 처리합니다. 마지막 단계는 결재여야 합니다." }
+            p { class: "field-hint", "위에서부터 순서대로 처리해요. 마지막 단계는 결재여야 해요." }
         }
     }
 }

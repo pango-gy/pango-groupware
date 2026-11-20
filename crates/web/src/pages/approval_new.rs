@@ -72,22 +72,22 @@ pub(crate) mod logic {
         match (*field, reason) {
             ("steps", ValidationReason::Empty) => "결재자를 지정해 주세요.".into(),
             ("steps", ValidationReason::TooLong { .. }) => {
-                format!("결재자는 최대 {MAX_STEPS}명까지 지정할 수 있습니다.")
+                format!("결재자는 최대 {MAX_STEPS}명까지 지정할 수 있어요.")
             }
-            ("steps", ValidationReason::Duplicate) => "중복된 결재자가 있습니다.".into(),
+            ("steps", ValidationReason::Duplicate) => "중복된 결재자가 있어요.".into(),
             ("steps", ValidationReason::Inconsistent) => {
                 if steps.iter().any(|step| step.approver_id == drafter) {
-                    "본인은 결재자로 지정할 수 없습니다.".into()
+                    "본인은 결재자로 지정할 수 없어요.".into()
                 } else {
-                    "마지막 단계는 결재여야 합니다.".into()
+                    "마지막 단계는 결재여야 해요.".into()
                 }
             }
             ("references", ValidationReason::TooLong { .. }) => {
-                format!("참조자는 최대 {MAX_REFERENCES}명까지 지정할 수 있습니다.")
+                format!("참조자는 최대 {MAX_REFERENCES}명까지 지정할 수 있어요.")
             }
-            ("references", ValidationReason::Duplicate) => "중복된 참조자가 있습니다.".into(),
+            ("references", ValidationReason::Duplicate) => "중복된 참조자가 있어요.".into(),
             ("references", ValidationReason::Inconsistent) => {
-                "본인이나 결재자는 참조자로 지정할 수 없습니다.".into()
+                "본인이나 결재자는 참조자로 지정할 수 없어요.".into()
             }
             _ => field_message(error),
         }
@@ -372,9 +372,9 @@ pub fn DocumentForm(
             Saving::Draft
         }));
         let done_message = if submit {
-            "상신했습니다."
+            "상신했어요."
         } else {
-            "임시 저장했습니다."
+            "임시 저장했어요."
         };
         match editing {
             None => {
@@ -433,7 +433,7 @@ pub fn DocumentForm(
     };
 
     rsx! {
-        div { class: "form doc-form",
+        div { class: "page-form",
             FormError { message: error() }
             Card { title: "문서",
                 div { class: "form",
@@ -443,9 +443,9 @@ pub fn DocumentForm(
                             p { class: "field-static", "{detail.form_name}" }
                         }
                     } else if forms_failed {
-                        p { class: "form-error", role: "alert", "양식을 불러오지 못했습니다. 새로 고쳐 주세요." }
+                        p { class: "form-error", role: "alert", "양식을 불러오지 못했어요. 새로 고쳐 주세요." }
                     } else if draftable.is_empty() && forms.read().is_some() {
-                        p { class: "form-error", role: "alert", "기안할 수 있는 양식이 없습니다. 관리자에게 문의해 주세요." }
+                        p { class: "form-error", role: "alert", "기안할 수 있는 양식이 없어요. 관리자에게 문의해 주세요." }
                     } else {
                         SelectField {
                             label: "양식",
@@ -520,7 +520,7 @@ pub fn DocumentForm(
             }
             Card { title: "참조",
                 if references().is_empty() {
-                    p { class: "field-hint", "참조자는 문서를 열람만 합니다. 없어도 됩니다." }
+                    p { class: "field-hint", "참조자는 문서를 열람만 해요. 없어도 돼요." }
                 } else {
                     ul { class: "chips",
                         for reference in references() {
@@ -555,16 +555,16 @@ pub fn DocumentForm(
             div { class: "form-actions",
                 if is_edit {
                     Button {
-                        kind: ButtonKind::Ghost,
+                        kind: ButtonKind::Grey,
                         disabled: current_saving.is_some(),
                         onclick: move |_| oncancel.call(()),
                         "취소"
                     }
                 } else {
-                    Link { class: "btn btn-ghost", to: Route::ApprovalList {}, "취소" }
+                    Link { class: "btn btn-grey", to: Route::ApprovalList {}, "취소" }
                 }
                 Button {
-                    kind: ButtonKind::Secondary,
+                    kind: ButtonKind::Weak,
                     busy: current_saving == Some(Saving::Draft),
                     disabled: current_saving.is_some(),
                     onclick: move |_| {
@@ -634,7 +634,7 @@ mod tests {
         assert_eq!(check(&[], &[]).line, "결재자를 지정해 주세요.");
         assert_eq!(
             check(&[step(StepKind::Approve), step(StepKind::Agree)], &[]).line,
-            "마지막 단계는 결재여야 합니다."
+            "마지막 단계는 결재여야 해요."
         );
         let mine = ApproverEntry {
             approver_id: me,
@@ -642,12 +642,12 @@ mod tests {
         };
         assert_eq!(
             check(&[mine], &[]).line,
-            "본인은 결재자로 지정할 수 없습니다."
+            "본인은 결재자로 지정할 수 없어요."
         );
         let twice = step(StepKind::Approve);
         assert_eq!(
             check(&[twice.clone(), twice], &[]).line,
-            "중복된 결재자가 있습니다."
+            "중복된 결재자가 있어요."
         );
         let many: Vec<_> = (0..=MAX_STEPS).map(|_| step(StepKind::Approve)).collect();
         assert!(check(&many, &[]).line.contains("최대"));
@@ -661,12 +661,12 @@ mod tests {
         assert!(problems.line.is_empty());
         assert_eq!(
             problems.references,
-            "본인이나 결재자는 참조자로 지정할 수 없습니다."
+            "본인이나 결재자는 참조자로 지정할 수 없어요."
         );
         let r = reference();
         assert_eq!(
             check(&[step(StepKind::Approve)], &[r.clone(), r]).references,
-            "중복된 참조자가 있습니다."
+            "중복된 참조자가 있어요."
         );
     }
 

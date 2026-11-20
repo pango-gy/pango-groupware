@@ -12,7 +12,7 @@ use crate::route::Route;
 use crate::session::use_session;
 use crate::ui::{
     now, report_error, resource_view, use_more_pages, Badge, Button, ButtonKind, Card, EmptyState,
-    Icon, IconName, LoadMore, PageHeader, Tone,
+    Icon, IconName, LoadMore, Meta, PageHeader, Tone,
 };
 
 use logic::{apply_receipt, audience_text, is_missing, LIST_PATH};
@@ -29,13 +29,13 @@ pub fn Notices() -> Element {
     let at = now();
 
     rsx! {
-        PageHeader { title: "공지" }
+        PageHeader { title: "공지", description: "회사에서 알리는 소식이에요. 필독 공지는 읽으면 확인이 남아요." }
         {resource_view(first, move |page: Page<NoticeSummary>| {
             let cursor = more.cursor(&page);
             let items: Vec<NoticeSummary> = more.all(page.items, |item| item.id);
             rsx! {
                 if items.is_empty() {
-                    EmptyState { title: "게시된 공지가 없습니다.", icon: IconName::Megaphone }
+                    EmptyState { title: "게시된 공지가 없어요.", icon: IconName::Megaphone }
                 } else {
                     Card {
                         ul { class: "list",
@@ -47,7 +47,7 @@ pub fn Notices() -> Element {
                                     pinned: notice.pinned,
                                     must_read: notice.must_read,
                                     read: notice.read,
-                                    meta: format!("{} · {}", notice.author_name, format::short_when(notice.published_at, at, tz)),
+                                    meta: vec![notice.author_name.clone(), format::short_when(notice.published_at, at, tz)],
                                 }
                             }
                         }
@@ -97,7 +97,8 @@ pub(crate) fn NoticeRow(
     pinned: bool,
     must_read: bool,
     read: bool,
-    meta: String,
+    /// 제목 아래 보조 정보(작성자, 게시 시각 등).
+    meta: Vec<String>,
 ) -> Element {
     rsx! {
         li { class: "list-row",
@@ -107,16 +108,14 @@ pub(crate) fn NoticeRow(
                     "aria-hidden": "true",
                 }
                 span { class: "list-row-main",
-                    span { class: "notice-title",
+                    span { class: "row-title",
                         NoticeFlags { pinned, must_read }
                         strong { "{title}" }
                     }
-                    small {
-                        if !read {
-                            span { class: "sr-only", "읽지 않음, " }
-                        }
-                        "{meta}"
+                    if !read {
+                        span { class: "sr-only", "읽지 않음" }
                     }
+                    Meta { items: meta }
                 }
             }
         }
@@ -143,46 +142,53 @@ pub fn NoticeDetail(id: String) -> Element {
     let tz = session.zone();
 
     rsx! {
-        Link { class: "back-link", to: Route::Notices {}, "← 공지 목록" }
+        Link { class: "back-link", to: Route::Notices {},
+            Icon { name: IconName::Chevron }
+            "공지 목록"
+        }
         {resource_view(notice, move |found: Option<NoticeDto>| {
             let Some(notice_dto) = found else {
                 return rsx! {
                     EmptyState {
-                        title: "공지를 찾을 수 없습니다.",
-                        hint: "삭제되었거나 볼 수 없는 공지입니다.",
+                        title: "공지를 찾을 수 없어요.",
+                        hint: "삭제되었거나 볼 수 없는 공지예요.",
                         icon: IconName::Megaphone,
-                        Link { class: "btn btn-secondary", to: Route::Notices {}, "공지 목록으로" }
+                        Link { class: "btn btn-grey", to: Route::Notices {}, "공지 목록으로" }
                     }
                 };
             };
             let summary = &notice_dto.summary;
             rsx! {
-                Card { class: "notice-detail",
+                Card {
                     header { class: "notice-head",
-                        div { class: "notice-title",
+                        div { class: "badge-row",
                             NoticeFlags { pinned: summary.pinned, must_read: summary.must_read }
                         }
-                        h1 { class: "notice-heading", "{summary.title}" }
-                        p { class: "notice-meta",
-                            "{summary.author_name} · {format::datetime(summary.published_at, tz)} · {audience_text(summary)}"
+                        h1 { class: "page-title", "{summary.title}" }
+                        Meta {
+                            items: vec![
+                                summary.author_name.clone(),
+                                format::datetime(summary.published_at, tz),
+                                audience_text(summary).to_string(),
+                            ],
                         }
                     }
                     div { class: "notice-body", "{notice_dto.body}" }
                     if summary.must_read {
                         if let Some(read_at) = notice_dto.read_at {
-                            div { class: "must-read must-read-done", role: "status",
+                            div { class: "callout callout-success must-read", role: "status",
                                 Icon { name: IconName::Check }
                                 span {
-                                    strong { "확인했습니다" }
+                                    strong { "확인했어요" }
                                     small { " {format::datetime(read_at, tz)}" }
                                 }
                             }
                         } else {
-                            div { class: "must-read", role: "alert",
+                            div { class: "callout callout-warning must-read", role: "alert",
                                 Icon { name: IconName::Alert }
-                                span { "필독 공지입니다. 읽음 확인이 아직 저장되지 않았습니다." }
+                                span { "필독 공지예요. 읽음 확인이 아직 저장되지 않았어요." }
                                 Button {
-                                    kind: ButtonKind::Secondary,
+                                    kind: ButtonKind::Grey,
                                     small: true,
                                     onclick: move |_| notice.restart(),
                                     "다시 확인"

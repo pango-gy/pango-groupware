@@ -77,8 +77,8 @@ pub fn NotFound(segments: Vec<String>) -> Element {
     let _ = segments;
     rsx! {
         main { class: "auth",
-            EmptyState { title: "페이지를 찾을 수 없습니다.", icon: IconName::Alert,
-                Link { class: "btn btn-secondary", to: Route::Home {}, "홈으로" }
+            EmptyState { title: "페이지를 찾을 수 없어요.", icon: IconName::Alert,
+                Link { class: "btn btn-grey", to: Route::Home {}, "홈으로" }
             }
         }
     }

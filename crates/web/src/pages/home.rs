@@ -14,7 +14,8 @@ use crate::pages::notices::NoticeRow;
 use crate::route::Route;
 use crate::session::use_session;
 use crate::ui::{
-    now, resource_view, today, Card, EmptyState, Icon, IconName, PageHeader, Stat, StatLink,
+    now, resource_view, today, Badge, Card, EmptyState, IconName, PageHeader, PanelLink, Stat,
+    StatLink, Tone,
 };
 
 #[component]
@@ -25,17 +26,17 @@ pub fn Home() -> Element {
     let name = session.me().map(|me| me.name).unwrap_or_default();
     let at = now();
     let title = logic::greeting(&name, logic::local_hour(at, tz));
-    let subtitle = format::date_md(today(tz));
+    let description = format::date_md(today(tz));
 
     rsx! {
-        PageHeader { title, subtitle }
+        PageHeader { title, description }
         {resource_view(home, move |data: HomeResponse| {
             let has_team = data.team_today.is_some();
             rsx! {
-                div { class: "home-grid",
-                    Card { title: "오늘 근무", class: "today-card home-span",
-                        TodayBody { state: data.today.clone(), onchange: move |_| home.restart() }
-                    }
+                Card { title: "오늘 근무", class: "today-card",
+                    TodayBody { state: data.today.clone(), onchange: move |_| home.restart() }
+                }
+                div { class: "grid-2",
                     LeaveCard { balance: data.leave, upcoming: data.upcoming_leaves.clone() }
                     ApprovalCard { counts: data.approval }
                     NoticesCard {
@@ -60,13 +61,15 @@ fn LeaveCard(balance: BalanceDto, upcoming: Vec<pango_api::leave::LeaveRequestDt
         Card {
             title: "휴가",
             action: rsx! {
-                Link { class: "card-link", to: Route::Leave {}, "휴가 현황" }
+                PanelLink { to: Route::Leave {}, label: "휴가 현황" }
             },
-            class: "home-card",
-            BalanceHeadline { dto: balance }
-            h3 { class: "home-subtitle", "다가오는 휴가" }
+            div { class: "home-balance",
+                BalanceHeadline { dto: balance }
+                Link { class: "btn btn-weak", to: Route::LeaveNew {}, "휴가 신청" }
+            }
+            h3 { class: "sub-title home-sub", "다가오는 휴가" }
             if shown.is_empty() {
-                p { class: "field-hint", "30일 안에 잡힌 휴가가 없습니다." }
+                p { class: "field-hint", "30일 안에 잡힌 휴가가 없어요." }
             } else {
                 ul { class: "list",
                     for item in shown {
@@ -74,13 +77,7 @@ fn LeaveCard(balance: BalanceDto, upcoming: Vec<pango_api::leave::LeaveRequestDt
                     }
                 }
                 if hidden > 0 {
-                    p { class: "field-hint", "외 {hidden}건은 휴가 화면에서 볼 수 있습니다." }
-                }
-            }
-            div { class: "card-actions",
-                Link { class: "btn btn-primary home-action", to: Route::LeaveNew {},
-                    Icon { name: IconName::Plus }
-                    "휴가 신청"
+                    p { class: "field-hint", "외 {hidden}건은 휴가 화면에서 볼 수 있어요." }
                 }
             }
         }
@@ -93,10 +90,9 @@ fn ApprovalCard(counts: pango_api::approval::ApprovalCounts) -> Element {
         Card {
             title: "결재",
             action: rsx! {
-                Link { class: "card-link", to: Route::ApprovalList {}, "결재함" }
+                PanelLink { to: Route::ApprovalList {}, label: "결재함" }
             },
-            class: "home-card",
-            div { class: "home-stats",
+            div { class: "stats",
                 for tile in logic::approval_tiles(&counts) {
                     StatLink {
                         key: "{tile.label}",
@@ -108,7 +104,7 @@ fn ApprovalCard(counts: pango_api::approval::ApprovalCounts) -> Element {
                 }
             }
             if logic::approval_all_clear(&counts) {
-                p { class: "field-hint", "처리할 결재가 없습니다." }
+                p { class: "field-hint home-sub", "처리할 결재가 없어요." }
             }
         }
     }
@@ -120,13 +116,16 @@ fn NoticesCard(notices: Vec<HomeNotice>, unread: u32, wide: bool) -> Element {
     let at = now();
     rsx! {
         Card {
-            title: logic::notices_title(unread),
+            title: "공지",
             action: rsx! {
-                Link { class: "card-link", to: Route::Notices {}, "전체 보기" }
+                if unread > 0 {
+                    Badge { tone: Tone::Info, {logic::unread_badge(unread)} }
+                }
+                PanelLink { to: Route::Notices {}, label: "전체 보기" }
             },
-            class: if wide { "home-card home-span" } else { "home-card" },
+            class: if wide { "grid-span" } else { "" },
             if notices.is_empty() {
-                EmptyState { title: "게시된 공지가 없습니다.", icon: IconName::Megaphone }
+                EmptyState { title: "게시된 공지가 없어요.", icon: IconName::Megaphone }
             } else {
                 ul { class: "list",
                     for notice in notices {
@@ -137,7 +136,7 @@ fn NoticesCard(notices: Vec<HomeNotice>, unread: u32, wide: bool) -> Element {
                             pinned: notice.pinned,
                             must_read: notice.must_read,
                             read: notice.read,
-                            meta: format::short_when(notice.published_at, at, tz),
+                            meta: vec![format::short_when(notice.published_at, at, tz)],
                         }
                     }
                 }
@@ -152,16 +151,15 @@ fn TeamCard(team: TeamToday) -> Element {
         Card {
             title: "팀 현황",
             action: rsx! {
-                Link { class: "card-link", to: Route::Team {}, "자세히" }
+                PanelLink { to: Route::Team {}, label: "자세히" }
             },
-            class: "home-card",
             if team.total == 0 {
-                EmptyState { title: "관할 부서에 재직 중인 구성원이 없습니다.", icon: IconName::People }
+                EmptyState { title: "관할 부서에 재직 중인 구성원이 없어요.", icon: IconName::People }
             } else {
                 if !team.is_working_day {
-                    p { class: "today-meta home-note", "오늘은 근무일이 아닙니다." }
+                    p { class: "text-sub panel-note", "오늘은 근무일이 아니에요." }
                 }
-                div { class: "home-stats",
+                div { class: "stats",
                     for tile in logic::team_tiles(&team) {
                         Stat { key: "{tile.label}", label: tile.label, value: tile.value, tone: tile.tone }
                     }
@@ -195,9 +193,9 @@ mod logic {
     /// 인사말. 이름이 비었으면 이름 없이.
     pub fn greeting(name: &str, hour: u32) -> String {
         let phrase = match hour {
-            5..=11 => "좋은 아침입니다",
-            12..=17 => "좋은 오후입니다",
-            _ => "오늘도 수고 많으셨습니다",
+            5..=11 => "좋은 아침이에요",
+            12..=17 => "좋은 오후예요",
+            _ => "오늘도 수고 많으셨어요",
         };
         match name.trim() {
             "" => phrase.to_owned(),
@@ -227,13 +225,9 @@ mod logic {
         counts.todo == 0 && counts.in_progress_drafted == 0 && counts.unread_reference == 0
     }
 
-    /// 공지 카드 제목: 안 읽은 공지가 있으면 수를 붙인다.
-    pub fn notices_title(unread: u32) -> String {
-        if unread == 0 {
-            "공지".to_owned()
-        } else {
-            format!("공지 · 안 읽음 {}", badges::count_text(unread))
-        }
+    /// 공지 카드 제목 옆 배지 문구(안 읽은 공지가 있을 때만 보인다).
+    pub fn unread_badge(unread: u32) -> String {
+        format!("안 읽음 {}", badges::count_text(unread))
     }
 
     /// 팀 카드가 없으면 공지 카드가 줄을 혼자 차지한다(빈 칸이 생기지 않게).
@@ -282,14 +276,14 @@ mod logic {
             let tz = crate::format::zone("Asia/Seoul");
             // 2026-03-02 23:30 UTC = 03-03 08:30 KST
             assert_eq!(local_hour(ts("2026-03-02T23:30:00Z"), tz), 8);
-            assert_eq!(greeting("홍길동", 5), "홍길동님, 좋은 아침입니다");
-            assert_eq!(greeting("홍길동", 11), "홍길동님, 좋은 아침입니다");
-            assert_eq!(greeting("홍길동", 12), "홍길동님, 좋은 오후입니다");
-            assert_eq!(greeting("홍길동", 17), "홍길동님, 좋은 오후입니다");
-            assert_eq!(greeting("홍길동", 18), "홍길동님, 오늘도 수고 많으셨습니다");
-            assert_eq!(greeting("홍길동", 4), "홍길동님, 오늘도 수고 많으셨습니다");
-            assert_eq!(greeting("  ", 9), "좋은 아침입니다");
-            assert_eq!(greeting(" 김 ", 99), "김님, 오늘도 수고 많으셨습니다");
+            assert_eq!(greeting("홍길동", 5), "홍길동님, 좋은 아침이에요");
+            assert_eq!(greeting("홍길동", 11), "홍길동님, 좋은 아침이에요");
+            assert_eq!(greeting("홍길동", 12), "홍길동님, 좋은 오후예요");
+            assert_eq!(greeting("홍길동", 17), "홍길동님, 좋은 오후예요");
+            assert_eq!(greeting("홍길동", 18), "홍길동님, 오늘도 수고 많으셨어요");
+            assert_eq!(greeting("홍길동", 4), "홍길동님, 오늘도 수고 많으셨어요");
+            assert_eq!(greeting("  ", 9), "좋은 아침이에요");
+            assert_eq!(greeting(" 김 ", 99), "김님, 오늘도 수고 많으셨어요");
         }
 
         #[test]
@@ -312,9 +306,8 @@ mod logic {
 
         #[test]
         fn notices_title_and_width() {
-            assert_eq!(notices_title(0), "공지");
-            assert_eq!(notices_title(4), "공지 · 안 읽음 4");
-            assert_eq!(notices_title(150), "공지 · 안 읽음 99+");
+            assert_eq!(unread_badge(4), "안 읽음 4");
+            assert_eq!(unread_badge(150), "안 읽음 99+");
             assert!(notices_wide(false));
             assert!(!notices_wide(true));
         }

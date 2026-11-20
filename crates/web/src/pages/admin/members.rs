@@ -19,7 +19,7 @@ use crate::text;
 use crate::ui::{
     loaded_or_empty, report_error, report_success, resource_view, today, Avatar, Badge, Button,
     ButtonKind, Card, Checkbox, ConfirmModal, DateField, EmptyState, FormError, Icon, IconName,
-    Modal, PageHeader, SecretReveal, SelectField, TextField, Tone,
+    Meta, Modal, PageHeader, SecretReveal, SelectField, TextField, Tone,
 };
 
 use self::logic::{FormErrors, MemberActions, ProfileForm, StatusForm};
@@ -91,9 +91,9 @@ pub mod logic {
     /// 동작이 막힌 이유(안내 문구). 막힌 것이 없으면 `None`.
     pub fn restriction(me: &Me, target: &MemberDetail) -> Option<&'static str> {
         if me.id == target.summary.id {
-            Some("본인 계정의 상태·역할·비밀번호는 여기서 바꿀 수 없습니다.")
+            Some("본인 계정의 상태·역할·비밀번호는 여기서 바꿀 수 없어요.")
         } else if me.role != Role::Owner && target.role != Role::Member {
-            Some("관리자 계정은 최고 관리자만 관리할 수 있습니다.")
+            Some("관리자 계정은 최고 관리자만 관리할 수 있어요.")
         } else {
             None
         }
@@ -833,13 +833,6 @@ impl From<IssuedCredentials> for Issued {
     }
 }
 
-fn department_and_position(member: &MemberDetail) -> String {
-    format::org_line(
-        member.summary.department_name.as_deref(),
-        member.summary.position_name.as_deref(),
-    )
-}
-
 #[component]
 pub fn AdminMembers() -> Element {
     let session = use_session();
@@ -868,7 +861,7 @@ pub fn AdminMembers() -> Element {
     rsx! {
         PageHeader {
             title: "구성원 관리",
-            subtitle: "계정을 만들고 소속·상태·권한을 관리합니다.",
+            description: "계정을 만들고 소속·상태·권한을 관리해요.",
             actions: rsx! {
                 Button { onclick: move |_| creating.set(true),
                     Icon { name: IconName::Plus }
@@ -876,32 +869,37 @@ pub fn AdminMembers() -> Element {
                 }
             },
         }
-        div { class: "filters admin-member-filters",
-            TextField {
-                label: "검색",
-                value: search(),
-                kind: "search",
-                placeholder: "이름 또는 아이디",
-                maxlength: 100,
-                oninput: move |value| search.set(value),
+        Card {
+            div { class: "toolbar",
+                div { class: "toolbar-wide",
+                    TextField {
+                        label: "검색",
+                        value: search(),
+                        kind: "search",
+                        placeholder: "이름 또는 아이디",
+                        maxlength: 100,
+                        oninput: move |value| search.set(value),
+                    }
+                }
+                SelectField {
+                    label: "부서",
+                    value: department(),
+                    options: department_filter,
+                    onchange: move |value| department.set(value),
+                }
+                div { class: "toolbar-end",
+                    Checkbox {
+                        label: "퇴사·정지 포함",
+                        checked: include_inactive(),
+                        onchange: move |value| include_inactive.set(value),
+                    }
+                }
             }
-            SelectField {
-                label: "부서",
-                value: department(),
-                options: department_filter,
-                onchange: move |value| department.set(value),
-            }
-            Checkbox {
-                label: "퇴사·정지 포함",
-                checked: include_inactive(),
-                onchange: move |value| include_inactive.set(value),
-            }
-        }
         {resource_view(members, move |list: Vec<MemberDetail>| rsx! {
             if list.is_empty() {
-                EmptyState { title: "조건에 맞는 구성원이 없습니다.", icon: IconName::People }
+                EmptyState { title: "조건에 맞는 구성원이 없어요.", icon: IconName::People }
             } else {
-                Card {
+                Fragment {
                     div { class: "table-wrap only-desktop",
                         table { class: "table",
                             thead {
@@ -956,11 +954,16 @@ pub fn AdminMembers() -> Element {
                                         let member = member.clone();
                                         move |_| selected.set(Some(member.clone()))
                                     },
-                                    Avatar { name: member.summary.name.clone() }
+                                    Avatar { name: member.summary.name.clone(), seed: member.summary.id.to_string() }
                                     span { class: "list-row-main",
                                         strong { "{member.summary.name}" }
-                                        small { "{member.login_id}" }
-                                        small { {department_and_position(&member)} }
+                                        Meta {
+                                            items: vec![
+                                                member.login_id.to_string(),
+                                                member.summary.department_name.clone().unwrap_or_default(),
+                                                member.summary.position_name.clone().unwrap_or_default(),
+                                            ],
+                                        }
                                     }
                                     span { class: "list-row-side",
                                         Badge { tone: text::member_status_tone(member.summary.status),
@@ -977,6 +980,7 @@ pub fn AdminMembers() -> Element {
                 }
             }
         })}
+        }
         if creating() {
             MemberCreateModal {
                 departments: department_list.clone(),
@@ -1008,7 +1012,7 @@ pub fn AdminMembers() -> Element {
                 onclose: move |_| issued.set(None),
                 p { class: "secret-intro",
                     strong { "{secret.name}" }
-                    " ({secret.login_id}) 님의 임시 비밀번호입니다. 처음 로그인하면 새 비밀번호로 바꾸게 됩니다."
+                    " ({secret.login_id}) 님의 임시 비밀번호예요. 처음 로그인하면 새 비밀번호로 바꾸게 돼요."
                 }
             }
         }
@@ -1040,7 +1044,7 @@ fn ProfileFields(
                 label: "아이디",
                 value: current.login_id.clone(),
                 autocomplete: "off",
-                hint: "영문 소문자·숫자와 . _ - 3~32자. 로그인할 때 씁니다.",
+                hint: "영문 소문자·숫자와 . _ - 3~32자. 로그인할 때 써요.",
                 required: true,
                 maxlength: 32,
                 oninput: move |value| form.write().login_id = value,
@@ -1093,7 +1097,7 @@ fn ProfileFields(
             value: current.hired_on.clone(),
             min: min_hired.to_string(),
             max: max_hired.to_string(),
-            hint: "1950. 1. 1.부터 오늘의 1년 뒤까지 입력할 수 있습니다.",
+            hint: "1950. 1. 1.부터 오늘의 1년 뒤까지 입력할 수 있어요.",
             error: hired_on_error,
             required: true,
             disabled,
@@ -1134,7 +1138,7 @@ fn MemberCreateModal(
         busy.set(false);
         match result {
             Ok(credentials) => {
-                report_success("구성원을 추가했습니다.");
+                report_success("구성원을 추가했어요.");
                 oncreated.call(credentials);
             }
             Err(failure) => show_failure(&failure, errors),
@@ -1153,9 +1157,9 @@ fn MemberCreateModal(
                     today,
                     hired_on_error: errors().hired_on,
                 }
-                p { class: "field-hint", "역할은 구성원으로 만들어집니다. 임시 비밀번호는 추가한 직후 한 번만 보여 드립니다." }
+                p { class: "field-hint", "역할은 구성원으로 만들어져요. 임시 비밀번호는 추가한 직후 한 번만 보여 드려요." }
                 div { class: "modal-actions",
-                    Button { kind: ButtonKind::Secondary, onclick: move |_| onclose.call(()), "취소" }
+                    Button { kind: ButtonKind::Grey, onclick: move |_| onclose.call(()), "취소" }
                     Button { submit: true, busy: busy(), "추가" }
                 }
             }
@@ -1236,7 +1240,7 @@ fn MemberDetailModal(
         busy.set(false);
         match result {
             Ok(detail) => {
-                report_success("정보를 저장했습니다.");
+                report_success("정보를 저장했어요.");
                 apply(detail);
             }
             Err(failure) => fail(failure).await,
@@ -1267,7 +1271,7 @@ fn MemberDetailModal(
         pending.set(None);
         match result {
             Ok(detail) => {
-                report_success("상태를 바꿨습니다.");
+                report_success("상태를 바꿨어요.");
                 apply(detail);
             }
             Err(failure) => fail(failure).await,
@@ -1293,7 +1297,7 @@ fn MemberDetailModal(
         busy.set(false);
         match result {
             Ok(detail) => {
-                report_success("역할을 바꿨습니다.");
+                report_success("역할을 바꿨어요.");
                 apply(detail);
             }
             Err(failure) => fail(failure).await,
@@ -1346,7 +1350,7 @@ fn MemberDetailModal(
         Modal { title: "{detail.summary.name}", onclose,
             div { class: "member-detail",
                 div { class: "member-detail-head",
-                    Avatar { name: detail.summary.name.clone(), large: true }
+                    Avatar { name: detail.summary.name.clone(), seed: detail.summary.id.to_string(), large: true }
                     div {
                         p { class: "mono", "{detail.login_id}" }
                         div { class: "badge-row",
@@ -1365,11 +1369,11 @@ fn MemberDetailModal(
                 }
                 FormError { message: errors().top }
                 if let Some(reason) = restriction {
-                    p { class: "notice", role: "note", "{reason}" }
+                    p { class: "callout callout-info", role: "note", "{reason}" }
                 }
 
                 section { class: "member-section",
-                    h3 { class: "section-title", "기본 정보" }
+                    h3 { class: "sub-title", "기본 정보" }
                     form { class: "form", onsubmit: save_profile, novalidate: true,
                         ProfileFields {
                             form,
@@ -1389,7 +1393,7 @@ fn MemberDetailModal(
 
                 if actions.change_status {
                     section { class: "member-section",
-                        h3 { class: "section-title", "계정 상태" }
+                        h3 { class: "sub-title", "계정 상태" }
                         div { class: "form-row",
                             SelectField {
                                 label: "상태",
@@ -1406,7 +1410,7 @@ fn MemberDetailModal(
                                     label: "퇴사일",
                                     value: status.read().retired_on.clone(),
                                     min: detail.hired_on.to_string(),
-                                    hint: "비워 두면 오늘 날짜로 기록됩니다. 입사일보다 이를 수 없습니다.",
+                                    hint: "비워 두면 오늘 날짜로 기록돼요. 입사일보다 이를 수 없어요.",
                                     error: errors().retired_on,
                                     oninput: move |value| status.write().retired_on = value,
                                 }
@@ -1414,7 +1418,7 @@ fn MemberDetailModal(
                         }
                         div { class: "modal-actions",
                             Button {
-                                kind: ButtonKind::Secondary,
+                                kind: ButtonKind::Grey,
                                 disabled: !status_changed,
                                 busy: busy(),
                                 onclick: move |_| async move {
@@ -1433,7 +1437,7 @@ fn MemberDetailModal(
 
                 if actions.change_role {
                     section { class: "member-section",
-                        h3 { class: "section-title", "역할" }
+                        h3 { class: "sub-title", "역할" }
                         SelectField {
                             label: "역할",
                             value: role().as_str(),
@@ -1444,10 +1448,10 @@ fn MemberDetailModal(
                                 }
                             },
                         }
-                        p { class: "field-hint", "관리자는 구성원·근태·휴가·결재 양식·공지를 관리합니다. 최고 관리자는 역할도 바꿀 수 있습니다." }
+                        p { class: "field-hint", "관리자는 구성원·근태·휴가·결재 양식·공지를 관리해요. 최고 관리자는 역할도 바꿀 수 있어요." }
                         div { class: "modal-actions",
                             Button {
-                                kind: ButtonKind::Secondary,
+                                kind: ButtonKind::Grey,
                                 disabled: role() == detail.role,
                                 busy: busy(),
                                 onclick: change_role,
@@ -1459,11 +1463,11 @@ fn MemberDetailModal(
 
                 if actions.reset_password {
                     section { class: "member-section",
-                        h3 { class: "section-title", "비밀번호" }
-                        p { class: "field-hint", "임시 비밀번호를 새로 만듭니다. 구성원은 다음 로그인 때 비밀번호를 바꿔야 합니다." }
+                        h3 { class: "sub-title", "비밀번호" }
+                        p { class: "field-hint", "임시 비밀번호를 새로 만들어요. 구성원은 다음 로그인 때 비밀번호를 바꿔야 해요." }
                         div { class: "modal-actions",
                             Button {
-                                kind: ButtonKind::Secondary,
+                                kind: ButtonKind::Grey,
                                 busy: busy(),
                                 onclick: move |_| pending.set(Some(Pending::ResetPassword)),
                                 "비밀번호 초기화"
@@ -1499,7 +1503,7 @@ fn MemberDetailModal(
                     oncancel: move |_| pending.set(None),
                     p {
                         strong { "{detail.summary.name}" }
-                        " 님의 지금 비밀번호는 더 이상 쓸 수 없게 됩니다. 새 임시 비밀번호는 다음 화면에서 한 번만 보여 드립니다."
+                        " 님의 지금 비밀번호는 더 이상 쓸 수 없게 돼요. 새 임시 비밀번호는 다음 화면에서 한 번만 보여 드려요."
                     }
                 }
             },

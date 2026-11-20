@@ -72,7 +72,7 @@ pub fn Icon(name: IconName) -> Element {
             view_box: "0 0 24 24",
             fill: "none",
             stroke: "currentColor",
-            stroke_width: "1.8",
+            stroke_width: "1.7",
             stroke_linecap: "round",
             stroke_linejoin: "round",
             "aria-hidden": "true",

@@ -16,8 +16,8 @@ use crate::pages::notices::NoticeFlags;
 use crate::session::use_session;
 use crate::ui::{
     loaded_or_empty, report_error, report_success, resource_view, use_more_pages, Badge, Button,
-    ButtonKind, Card, Checkbox, ConfirmModal, EmptyState, FormError, IconName, LoadMore, Modal,
-    PageHeader, SelectField, TextArea, TextField, Tone,
+    ButtonKind, Card, Checkbox, ConfirmModal, EmptyState, FormError, IconName, LoadMore, Meta,
+    Modal, PageHeader, SelectField, TextArea, TextField, Tone,
 };
 
 use logic::{build_input, count_label, NoticeForm, LIST_PATH};
@@ -62,7 +62,7 @@ pub fn AdminNotices() -> Element {
         let path = format!("/admin/notices/{}?version={}", notice.id, notice.version);
         match api::delete::<NoticeDetail>(&path).await {
             Ok(_) => {
-                report_success("공지를 보관했습니다.");
+                report_success("공지를 보관했어요.");
                 dialog.set(Dialog::Closed);
                 list.restart();
                 refresh_badges();
@@ -81,6 +81,7 @@ pub fn AdminNotices() -> Element {
     rsx! {
         PageHeader {
             title: "공지 관리",
+            description: "공지를 게시하고 누가 읽었는지 확인해요.",
             actions: rsx! {
                 Button { onclick: move |_| dialog.set(Dialog::Create), "새 공지" }
             },
@@ -90,28 +91,31 @@ pub fn AdminNotices() -> Element {
             let items: Vec<NoticeSummary> = more.all(page.items, |item| item.id);
             rsx! {
                 if items.is_empty() {
-                    EmptyState { title: "작성한 공지가 없습니다.", icon: IconName::Megaphone }
+                    EmptyState { title: "작성한 공지가 없어요.", icon: IconName::Megaphone }
                 } else {
                     Card {
                         ul { class: "list",
                             for notice in items {
-                                li { key: "{notice.id}", class: "list-row admin-notice-row",
+                                li { key: "{notice.id}", class: "list-row list-row-wrap",
                                     div { class: "list-row-main",
-                                        span { class: "notice-title",
+                                        span { class: "row-title",
                                             if notice.archived_at.is_some() {
                                                 Badge { tone: Tone::Neutral, "보관됨" }
                                             }
                                             NoticeFlags { pinned: notice.pinned, must_read: notice.must_read }
                                             strong { "{notice.title}" }
                                         }
-                                        small {
-                                            "{notice.author_name} · {format::datetime(notice.published_at, tz)} · "
-                                            {crate::pages::notices::logic::audience_text(&notice)}
+                                        Meta {
+                                            items: vec![
+                                                notice.author_name.clone(),
+                                                format::datetime(notice.published_at, tz),
+                                                crate::pages::notices::logic::audience_text(&notice).to_string(),
+                                            ],
                                         }
                                     }
                                     div { class: "row-actions",
                                         Button {
-                                            kind: ButtonKind::Secondary,
+                                            kind: ButtonKind::Grey,
                                             small: true,
                                             onclick: {
                                                 let notice = notice.clone();
@@ -121,7 +125,7 @@ pub fn AdminNotices() -> Element {
                                         }
                                         if notice.archived_at.is_none() {
                                             Button {
-                                                kind: ButtonKind::Secondary,
+                                                kind: ButtonKind::Grey,
                                                 small: true,
                                                 onclick: {
                                                     let notice = notice.clone();
@@ -130,7 +134,7 @@ pub fn AdminNotices() -> Element {
                                                 "수정"
                                             }
                                             Button {
-                                                kind: ButtonKind::Ghost,
+                                                kind: ButtonKind::Grey,
                                                 small: true,
                                                 onclick: {
                                                     let notice = notice.clone();
@@ -182,7 +186,7 @@ pub fn AdminNotices() -> Element {
                 ConfirmModal {
                     title: "공지 보관",
                     message: format!(
-                        "‘{}’ 공지를 보관합니다. 구성원 목록에서 사라지고 다시 게시할 수 없습니다.",
+                        "‘{}’ 공지를 보관해요. 구성원 목록에서 사라지고 다시 게시할 수 없어요.",
                         notice.title
                     ),
                     confirm_label: "보관",
@@ -270,9 +274,9 @@ fn NoticeEditor(
         match result {
             Ok(_) => {
                 report_success(if target.is_some() {
-                    "공지를 수정했습니다."
+                    "공지를 수정했어요."
                 } else {
-                    "공지를 게시했습니다."
+                    "공지를 게시했어요."
                 });
                 onsaved.call(());
             }
@@ -345,7 +349,7 @@ fn NoticeEditor(
                 }
             }
             if current.audience == AudienceKind::Department {
-                p { class: "field-hint", "하위 부서 구성원도 함께 받습니다." }
+                p { class: "field-hint", "하위 부서 구성원도 함께 받아요." }
             }
             Checkbox {
                 label: "목록 위에 고정",
@@ -354,12 +358,12 @@ fn NoticeEditor(
             }
             Checkbox {
                 label: "필독",
-                hint: "구성원에게 읽음 확인을 받습니다.",
+                hint: "구성원에게 읽음 확인을 받아요.",
                 checked: current.must_read,
                 onchange: move |value| form.write().must_read = value,
             }
-            div { class: "card-actions",
-                Button { kind: ButtonKind::Secondary, onclick: move |_| onclose.call(()), "취소" }
+            div { class: "modal-actions",
+                Button { kind: ButtonKind::Grey, onclick: move |_| onclose.call(()), "취소" }
                 Button { submit: true, busy: busy(),
                     if target.is_some() { "저장" } else { "게시" }
                 }
@@ -376,12 +380,12 @@ fn ReadReport(id: NoticeId, title: String) -> Element {
     });
     let tz = session.zone();
     rsx! {
-        p { class: "read-report-title", "{title}" }
+        p { class: "sub-title wrap-anywhere", "{title}" }
         {resource_view(report, move |report: NoticeReadReport| rsx! {
             section { class: "read-report",
-                h3 { class: "read-report-heading", "읽음 {report.read.len()}명" }
+                h3 { class: "sub-title", "읽음 {report.read.len()}명" }
                 if report.read.is_empty() {
-                    p { class: "field-hint", "아직 읽은 사람이 없습니다." }
+                    p { class: "field-hint", "아직 읽은 사람이 없어요." }
                 }
                 ul { class: "list",
                     for reader in report.read {
@@ -395,9 +399,9 @@ fn ReadReport(id: NoticeId, title: String) -> Element {
                 }
             }
             section { class: "read-report",
-                h3 { class: "read-report-heading", "안 읽음 {report.unread.len()}명" }
+                h3 { class: "sub-title", "안 읽음 {report.unread.len()}명" }
                 if report.unread.is_empty() {
-                    p { class: "field-hint", "대상자가 모두 읽었습니다." }
+                    p { class: "field-hint", "대상자가 모두 읽었어요." }
                 }
                 ul { class: "list",
                     for reader in report.unread {
