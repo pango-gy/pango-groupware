@@ -103,6 +103,10 @@ async fn run(cli: Cli) -> Result<(), AnyError> {
                     "초기화되지 않았습니다. 먼저 `pango-groupware init`을 실행하세요.".into(),
                 );
             }
+            tokio::spawn(pango_server::service::maintenance::run_forever(
+                state.clone(),
+                std::time::Duration::from_secs(3600),
+            ));
             let app = pango_server::http::router(state)
                 .into_make_service_with_connect_info::<SocketAddr>();
             let listener = tokio::net::TcpListener::bind(bind).await?;

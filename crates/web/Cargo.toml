@@ -9,7 +9,7 @@ license.workspace = true
 [dependencies]
 pango-core.workspace = true
 pango-api.workspace = true
-dioxus = { version = "0.7", default-features = false, features = ["web", "router", "macro", "html", "hooks", "signals", "launch"] }
+dioxus = { version = "0.7", features = ["web", "router"] }
 serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
