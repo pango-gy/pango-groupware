@@ -523,12 +523,6 @@ a.list-row:hover strong { color: var(--primary); }
   .people-layout { grid-template-columns: 1fr; gap: 12px; }
   .people-main { gap: 12px; }
 }
-/* 화면 폭에 따라 하나만 보이는 쌍(표 ↔ 목록 등). 다른 규칙보다 뒤에 둬야 이긴다. */
-.only-mobile { display: none; }
-@media (max-width: 959px) {
-  .only-desktop { display: none; }
-  .only-mobile { display: block; }
-  ul.only-mobile { display: flex; }
 /* ── 공지·알림·정책 ───────────────────────────────── */
 .nav-count {
   margin-left: auto; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 999px;
@@ -656,8 +650,9 @@ button.notification { cursor: pointer; }
   }
   .table-stack .nowrap { white-space: normal; }
   .audit-detail { max-width: 100%; flex: 1 1 200px; }
+}
+
 /* ── 근태 ── */
-.load-more { display: flex; justify-content: center; margin-top: 14px; }
 .link-btn {
   padding: 0; border: 0; background: none; color: var(--primary);
   font: inherit; font-weight: 600; text-align: left; cursor: pointer;
@@ -746,4 +741,12 @@ button.att-day-main:hover strong { color: var(--primary); }
   .att-filters .field { max-width: none; }
   .today-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .att-admin-item { align-items: flex-start; }
+}
+
+/* 화면 폭에 따라 하나만 보이는 쌍(표 ↔ 목록 등). 다른 규칙보다 뒤에 둬야 이긴다. */
+.only-mobile { display: none; }
+@media (max-width: 959px) {
+  .only-desktop { display: none; }
+  .only-mobile { display: block; }
+  ul.only-mobile { display: flex; }
 }
