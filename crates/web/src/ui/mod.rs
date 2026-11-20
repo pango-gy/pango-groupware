@@ -484,3 +484,124 @@ pub fn MonthCalendar(
         }
     }
 }
+
+// ── 전자결재에서 처음 쓴 조각 ──
+
+pub mod approval_line;
+
+pub use approval_line::{ApprovalLineEditor, LineStepDraft};
+
+/// 되돌리기 어려운 동작(삭제·회수 등)의 확인 대화 상자.
+#[component]
+pub fn ConfirmModal(
+    #[props(into)] title: String,
+    #[props(into)] message: String,
+    #[props(into)] confirm_label: String,
+    #[props(default)] danger: bool,
+    #[props(default)] busy: bool,
+    onconfirm: EventHandler<()>,
+    onclose: EventHandler<()>,
+) -> Element {
+    rsx! {
+        Modal { title, onclose: move |_| onclose.call(()),
+            p { class: "confirm-message", "{message}" }
+            div { class: "modal-actions",
+                Button {
+                    kind: ButtonKind::Secondary,
+                    disabled: busy,
+                    onclick: move |_| onclose.call(()),
+                    "취소"
+                }
+                Button {
+                    kind: if danger { ButtonKind::Danger } else { ButtonKind::Primary },
+                    busy,
+                    onclick: move |_| onconfirm.call(()),
+                    "{confirm_label}"
+                }
+            }
+        }
+    }
+}
+
+/// 목록 아래의 "더 보기". 다음 페이지가 없으면 아무것도 그리지 않는다.
+#[component]
+pub fn LoadMore(
+    has_more: bool,
+    #[props(default)] busy: bool,
+    onclick: EventHandler<()>,
+) -> Element {
+    if !has_more {
+        return rsx! {};
+    }
+    rsx! {
+        div { class: "load-more",
+            Button { kind: ButtonKind::Secondary, busy, onclick: move |_| onclick.call(()), "더 보기" }
+        }
+    }
+}
+
+/// 세로 타임라인. 항목은 [`TimelineItem`]으로 넣는다.
+#[component]
+pub fn Timeline(children: Element) -> Element {
+    rsx! { ol { class: "timeline", {children} } }
+}
+
+/// 타임라인의 한 칸. 점의 색은 `tone`, 상태 문구는 내용에 함께 적는다(색만으로 알리지 않는다).
+#[component]
+pub fn TimelineItem(
+    #[props(default)] tone: Tone,
+    /// 지금 진행 중인 칸인지.
+    #[props(default)]
+    current: bool,
+    children: Element,
+) -> Element {
+    rsx! {
+        li {
+            class: if current { "timeline-item timeline-item-current" } else { "timeline-item" },
+            "aria-current": if current { "step" },
+            span { class: "timeline-dot {tone.class()}", "aria-hidden": "true" }
+            div { class: "timeline-body", {children} }
+        }
+    }
+}
+
+/// 입력 글자 수 `12 / 200`. 넘치면 경고 색과 함께 "초과" 문구를 붙인다.
+#[component]
+pub fn CharCount(count: usize, max: usize) -> Element {
+    let over = count > max;
+    rsx! {
+        span { class: if over { "char-count char-count-over" } else { "char-count" }, "aria-live": "polite",
+            "{count} / {max}"
+            if over {
+                " (초과)"
+            }
+        }
+    }
+}
+
+/// 라벨이 붙은 체크 상자.
+#[component]
+pub fn Checkbox(
+    #[props(into)] label: String,
+    checked: bool,
+    onchange: EventHandler<bool>,
+    #[props(default)] disabled: bool,
+    #[props(into, default)] hint: String,
+) -> Element {
+    rsx! {
+        label { class: "check",
+            input {
+                r#type: "checkbox",
+                checked,
+                disabled,
+                onchange: move |event| onchange.call(event.checked()),
+            }
+            span { class: "check-text",
+                span { "{label}" }
+                if !hint.is_empty() {
+                    small { class: "field-hint", "{hint}" }
+                }
+            }
+        }
+    }
+}

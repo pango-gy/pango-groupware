@@ -1,7 +1,13 @@
 //! 화면 문구. 서버의 코드 값(오류 코드, 상태 값)을 한국어로 바꾸는 곳은 여기뿐이다.
 
+use pango_core::approval::{
+    DocumentKind, DocumentStatus, EventKind, Mailbox, StepKind, StepStatus,
+};
 use pango_core::authz::Role;
+use pango_core::leave::LeaveUnit;
 use pango_core::member::MemberStatus;
+
+use crate::ui::Tone;
 
 fn field_label(field: &str) -> &str {
     match field {
@@ -22,6 +28,11 @@ fn field_label(field: &str) -> &str {
         "month" => "월",
         "timezone" => "시간대",
         "amount" | "amount_q" => "수량",
+        "form_id" => "양식",
+        "code" => "코드",
+        "description" => "설명",
+        "body_template" => "본문 양식",
+        "sort_order" => "정렬 순서",
         other => other,
     }
 }
@@ -37,6 +48,13 @@ fn validation_message(field: Option<&str>, reason: Option<&str>) -> String {
             "아이디가 들어 있거나 같은 글자만 반복한 비밀번호는 쓸 수 없습니다.".into()
         }
         (Some("steps"), Some("empty")) => "결재자를 한 명 이상 지정해 주세요.".into(),
+        (Some("steps"), Some("duplicate")) => "결재선에 중복된 결재자가 있습니다.".into(),
+        (Some("steps"), Some("inconsistent")) => {
+            "마지막 단계는 결재여야 하며, 본인은 결재자가 될 수 없습니다.".into()
+        }
+        (Some("references"), Some("inconsistent")) => {
+            "본인이나 결재자는 참조자로 지정할 수 없습니다.".into()
+        }
         (_, Some("empty")) => format!("{label}을(를) 입력해 주세요."),
         (_, Some("too_short")) => format!("{label}이(가) 너무 짧습니다."),
         (_, Some("too_long")) => format!("{label}이(가) 너무 깁니다."),
@@ -110,6 +128,90 @@ pub fn member_status_label(status: MemberStatus) -> &'static str {
     }
 }
 
+pub fn document_status_label(status: DocumentStatus) -> &'static str {
+    match status {
+        DocumentStatus::Draft => "임시저장",
+        DocumentStatus::InProgress => "진행 중",
+        DocumentStatus::Approved => "승인",
+        DocumentStatus::Rejected => "반려",
+        DocumentStatus::Withdrawn => "회수",
+    }
+}
+
+/// 상태 배지의 색. 색만으로 상태를 알리지 않도록 배지에는 항상 [`document_status_label`]을 함께 쓴다.
+pub fn document_status_tone(status: DocumentStatus) -> Tone {
+    match status {
+        DocumentStatus::Draft | DocumentStatus::Withdrawn => Tone::Neutral,
+        DocumentStatus::InProgress => Tone::Info,
+        DocumentStatus::Approved => Tone::Success,
+        DocumentStatus::Rejected => Tone::Danger,
+    }
+}
+
+pub fn step_kind_label(kind: StepKind) -> &'static str {
+    match kind {
+        StepKind::Approve => "결재",
+        StepKind::Agree => "합의",
+    }
+}
+
+pub fn step_status_label(status: StepStatus) -> &'static str {
+    match status {
+        StepStatus::Waiting => "대기",
+        StepStatus::Pending => "결재 차례",
+        StepStatus::Approved => "승인",
+        StepStatus::Rejected => "반려",
+    }
+}
+
+pub fn step_status_tone(status: StepStatus) -> Tone {
+    match status {
+        StepStatus::Waiting => Tone::Neutral,
+        StepStatus::Pending => Tone::Warning,
+        StepStatus::Approved => Tone::Success,
+        StepStatus::Rejected => Tone::Danger,
+    }
+}
+
+pub fn document_kind_label(kind: DocumentKind) -> &'static str {
+    match kind {
+        DocumentKind::General => "일반",
+        DocumentKind::Leave => "휴가 신청",
+        DocumentKind::AttendanceCorrection => "근태 정정",
+    }
+}
+
+pub fn mailbox_label(mailbox: Mailbox) -> &'static str {
+    match mailbox {
+        Mailbox::Todo => "결재 대기",
+        Mailbox::Upcoming => "결재 예정",
+        Mailbox::Drafted => "기안함",
+        Mailbox::Done => "완료",
+        Mailbox::Reference => "참조",
+    }
+}
+
+/// 문서 이력 한 줄의 동사. `홍길동 · 상신`처럼 행위자 뒤에 붙인다.
+pub fn event_kind_label(kind: EventKind) -> &'static str {
+    match kind {
+        EventKind::Submitted => "상신",
+        EventKind::Approved => "승인",
+        EventKind::Completed => "최종 승인",
+        EventKind::Rejected => "반려",
+        EventKind::Withdrawn => "회수",
+    }
+}
+
+pub fn leave_unit_label(unit: LeaveUnit) -> &'static str {
+    match unit {
+        LeaveUnit::FullDay => "종일",
+        LeaveUnit::AmHalf => "오전 반차",
+        LeaveUnit::PmHalf => "오후 반차",
+        LeaveUnit::AmQuarter => "오전 반반차",
+        LeaveUnit::PmQuarter => "오후 반반차",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,5 +249,43 @@ mod tests {
             error_message("validation_failed", Some("unknown_field"), Some("weird"))
                 .contains("unknown_field")
         );
+    }
+
+    #[test]
+    fn every_approval_value_has_a_label() {
+        for status in DocumentStatus::ALL {
+            assert!(!document_status_label(*status).is_empty());
+            let _ = document_status_tone(*status);
+        }
+        for kind in StepKind::ALL {
+            assert!(!step_kind_label(*kind).is_empty());
+        }
+        for status in StepStatus::ALL {
+            assert!(!step_status_label(*status).is_empty());
+            let _ = step_status_tone(*status);
+        }
+        for kind in DocumentKind::ALL {
+            assert!(!document_kind_label(*kind).is_empty());
+        }
+        for mailbox in Mailbox::ALL {
+            assert!(!mailbox_label(*mailbox).is_empty());
+        }
+        for kind in EventKind::ALL {
+            assert!(!event_kind_label(*kind).is_empty());
+        }
+        for unit in LeaveUnit::ALL {
+            assert!(!leave_unit_label(unit).is_empty());
+        }
+    }
+
+    #[test]
+    fn approval_line_errors_are_specific() {
+        let fallback = error_message("validation_failed", Some("steps"), Some("weird"));
+        for reason in ["empty", "duplicate", "inconsistent"] {
+            assert_ne!(
+                error_message("validation_failed", Some("steps"), Some(reason)),
+                fallback
+            );
+        }
     }
 }

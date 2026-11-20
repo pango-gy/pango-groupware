@@ -26,17 +26,9 @@ placeholders! {
     Attendance => "근태",
     Leave => "휴가",
     LeaveNew => "휴가 신청",
-    ApprovalList => "결재",
-    ApprovalNew => "새 결재 문서",
     Notices => "공지",
     Notifications => "알림",
     Team => "팀 현황",
-}
-
-#[component]
-pub fn ApprovalDetail(id: String) -> Element {
-    let _ = id;
-    rsx! { ComingSoon { title: "결재 문서" } }
 }
 
 #[component]
