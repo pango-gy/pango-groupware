@@ -165,6 +165,17 @@ pub fn view_leave_schedule(actor: &Actor, subject: &Subject) -> DomainResult<()>
     }
 }
 
+/// 구성원 개인의 신청(휴가, 근태 정정)을 **최종 승인**할 권한이 있는지: 관할 조직장 또는 관리자.
+///
+/// 결재선은 신청자가 고를 수 있으므로, 이 확인이 없으면 동료끼리 서로 승인해 줄 수 있다.
+/// 본인은 관리자여도 자기 신청을 승인할 수 없다.
+pub fn can_resolve_personal_request(approver: &Actor, subject: &Subject) -> bool {
+    matches!(
+        approver.relation_to(subject),
+        Relation::Administered | Relation::Managed
+    )
+}
+
 /// 다른 사람의 기록을 **직접 수정**할 수 있는지: 관리자만.
 /// 본인과 조직장은 기록이 보이므로 403, 그 외는 404.
 pub fn edit_personal_records(actor: &Actor, subject: &Subject) -> DomainResult<()> {
@@ -804,5 +815,22 @@ mod tests {
             keep_an_owner((Role::Member, Active), (Role::Owner, Active), 0),
             Ok(())
         );
+    }
+
+    #[test]
+    fn personal_requests_are_resolved_only_by_managing_heads_or_admins() {
+        let w = world();
+        let requester = subject(Role::Member, Some(w.dept_a_child));
+        let colleague = actor(Role::Member, Some(w.dept_a_child), &[]);
+        let other_head = actor(Role::Member, Some(w.dept_b), &[w.dept_b]);
+        let head = actor(Role::Member, Some(w.dept_a), &[w.dept_a, w.dept_a_child]);
+        let admin = actor(Role::Admin, None, &[]);
+        assert!(!can_resolve_personal_request(&colleague, &requester));
+        assert!(!can_resolve_personal_request(&other_head, &requester));
+        assert!(can_resolve_personal_request(&head, &requester));
+        assert!(can_resolve_personal_request(&admin, &requester));
+        // 본인 신청은 관리자·조직장이어도 승인할 수 없다.
+        assert!(!can_resolve_personal_request(&admin, &self_subject(&admin)));
+        assert!(!can_resolve_personal_request(&head, &self_subject(&head)));
     }
 }

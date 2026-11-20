@@ -589,7 +589,31 @@ pub async fn request_line_tx(
             &suggested
         }
     };
-    build_line_tx(conn, member.id, steps, references).await
+    let line = build_line_tx(conn, member.id, steps, references).await?;
+    // 결재선을 직접 지정할 수 있으므로, 최종 결재자의 권한을 확인한다.
+    if let Some(last) = line.steps().last() {
+        if !can_resolve_for_tx(conn, last.approver, member).await? {
+            return Err(DomainError::validation("steps", ValidationReason::Inconsistent).into());
+        }
+    }
+    Ok(line)
+}
+
+/// `approver_id`가 `requester`의 개인 신청(휴가, 근태 정정)을 최종 승인할 권한이 있는지.
+/// 신청 시점과 승인 시점(그 사이 조직이 바뀌었을 수 있다) 양쪽에서 확인한다.
+pub async fn can_resolve_for_tx(
+    conn: &mut Conn,
+    approver_id: MemberId,
+    requester: &Member,
+) -> ServiceResult<bool> {
+    let Some(approver) = members::find(conn, approver_id).await? else {
+        return Ok(false);
+    };
+    let actor = super::support::build_actor(conn, &approver).await?;
+    Ok(authz::can_resolve_personal_request(
+        &actor,
+        &requester.subject(),
+    ))
 }
 
 async fn require_line_active_tx(
@@ -769,6 +793,14 @@ async fn run_linked_effect_tx(
     actor_id: MemberId,
     now: Timestamp,
 ) -> ServiceResult<()> {
+    // 개인 신청의 최종 승인은, 승인하는 시점에도 권한이 있어야 한다
+    // (신청 뒤에 조직장이 바뀌었거나 관리자에서 해제됐을 수 있다).
+    if record.kind != DocumentKind::General && matches!(outcome, LinkedOutcome::Completed) {
+        let requester = found(members::find(conn, record.drafter_id).await?)?;
+        if !can_resolve_for_tx(conn, actor_id, &requester).await? {
+            return Err(DomainError::Forbidden.into());
+        }
+    }
     match record.kind {
         DocumentKind::General => Ok(()),
         DocumentKind::Leave => {

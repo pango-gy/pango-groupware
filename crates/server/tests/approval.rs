@@ -58,6 +58,19 @@ async fn world() -> World {
     }
 }
 
+async fn promote_to_admin(app: &TestApp, member_id: MemberId) {
+    let mut tx = app.state.db.begin_write().await.expect("begin");
+    let mut member = pango_db::members::find(&mut tx, member_id)
+        .await
+        .expect("find")
+        .expect("member");
+    member.role = Role::Admin;
+    assert!(pango_db::members::update(&mut tx, &member, app.state.now())
+        .await
+        .expect("update"));
+    tx.commit().await.expect("commit");
+}
+
 async fn form_id(app: &TestApp, token: &str, code: &str) -> String {
     let forms = app
         .get("/approval/forms")
@@ -940,6 +953,8 @@ async fn orphan_leave_document(w: &World) -> String {
 #[tokio::test]
 async fn failing_linked_effect_rolls_back_the_whole_transition() {
     let w = world().await;
+    // 권한 검사에서 걸리지 않고 연결 효과까지 가도록, 결재자를 관리자로 둔다.
+    promote_to_admin(&w.app, w.a1.id).await;
     let id = orphan_leave_document(&w).await;
     let before = detail(&w.app, &w.a1.token, &id).await;
 

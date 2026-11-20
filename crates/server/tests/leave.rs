@@ -1835,15 +1835,26 @@ async fn request_needs_an_approver_and_validates_an_explicit_line() {
     );
     drop(conn);
 
+    // 소속 부서가 없는 구성원의 신청은 관리자만 최종 승인할 수 있다:
+    // 다른 부서의 조직장을 최종 결재자로 지정하면 거부된다.
+    request(
+        &w.app,
+        &solo,
+        &with_steps(json!([lead_step.clone()]), json!([])),
+    )
+    .await
+    .expect_error(StatusCode::BAD_REQUEST, "validation_failed");
+
+    let owner_step = json!({ "approver_id": w.app.owner_id, "kind": "approve" });
     let created = request(
         &w.app,
         &solo,
-        &with_steps(json!([lead_step]), json!([w.app.owner_id])),
+        &with_steps(json!([owner_step]), json!([w.lead.id])),
     )
     .await
     .expect(StatusCode::CREATED);
     let detail = document(&w.app, &w.owner, &ids(&created).1).await;
-    assert_eq!(detail["references"][0]["member_id"], json!(w.app.owner_id));
+    assert_eq!(detail["references"][0]["member_id"], json!(w.lead.id));
     assert_eq!(remaining(&w.app, &solo).await, FULL - 4);
     assert_ledger_invariants(&w.app, &solo).await;
 }
