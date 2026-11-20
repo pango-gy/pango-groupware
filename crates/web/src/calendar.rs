@@ -92,6 +92,28 @@ impl YearMonth {
         }
         weeks
     }
+
+    /// 일요일부터 토요일까지 꽉 찬 주 단위 격자. 앞뒤 달의 날짜로 빈칸을 채운다(4~6주).
+    pub fn full_weeks(self) -> Vec<[NaiveDate; 7]> {
+        let start = week_start(self.first_day());
+        let last = self.last_day();
+        let mut weeks = Vec::new();
+        let mut day = start;
+        while day <= last {
+            let mut week = [day; 7];
+            for (offset, slot) in week.iter_mut().enumerate() {
+                *slot = day + chrono::Duration::days(offset as i64);
+            }
+            weeks.push(week);
+            day += chrono::Duration::days(7);
+        }
+        weeks
+    }
+}
+
+/// `date`가 속한 주의 일요일.
+pub fn week_start(date: NaiveDate) -> NaiveDate {
+    date - chrono::Duration::days(i64::from(date.weekday().num_days_from_sunday()))
 }
 
 #[cfg(test)]
@@ -144,6 +166,36 @@ mod tests {
                 .collect();
             assert_eq!(days, expected, "{month:?}");
         }
+    }
+
+    #[test]
+    fn full_weeks_pad_with_neighbouring_months() {
+        // 2026-11-01은 일요일, 30일은 월요일 → 11/1~12/5, 5주.
+        let november = ym(2026, 11).full_weeks();
+        assert_eq!(november.len(), 5);
+        assert_eq!(november[0][0], d("2026-11-01"));
+        assert_eq!(november[4][6], d("2026-12-05"));
+        // 2026-08-01은 토요일 → 7/26부터, 6주.
+        let august = ym(2026, 8).full_weeks();
+        assert_eq!(august.len(), 6);
+        assert_eq!(august[0][0], d("2026-07-26"));
+        assert_eq!(august[5][6], d("2026-09-05"));
+        // 2026-02는 일요일에 시작해 토요일에 끝난다 → 앞뒤 채움 없이 4주.
+        let february = ym(2026, 2).full_weeks();
+        assert_eq!(february.len(), 4);
+        assert_eq!(february[0][0], d("2026-02-01"));
+        assert_eq!(february[3][6], d("2026-02-28"));
+        for month in [ym(2026, 3), ym(2027, 1), ym(2028, 2)] {
+            let weeks = month.full_weeks();
+            assert!(weeks.len() * 7 <= 42);
+            let days: Vec<_> = weeks.iter().flatten().copied().collect();
+            assert!(days
+                .windows(2)
+                .all(|w| w[1] == w[0].succ_opt().expect("next")));
+            assert_eq!(days[0].weekday(), chrono::Weekday::Sun);
+        }
+        assert_eq!(week_start(d("2026-11-20")), d("2026-11-15"));
+        assert_eq!(week_start(d("2026-11-15")), d("2026-11-15"));
     }
 
     #[test]

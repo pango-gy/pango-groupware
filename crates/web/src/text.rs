@@ -6,6 +6,8 @@ use pango_core::approval::{
 };
 use pango_core::attendance::{AttendanceEventKind, CorrectionStatus, DayStatus, WorkType};
 use pango_core::authz::Role;
+use pango_core::calendar_access::CalendarKind;
+use pango_core::calendar_event::AttendeeResponse;
 use pango_core::error::DomainError;
 use pango_core::leave::{LeaveRequestStatus, LeaveUnit};
 use pango_core::member::MemberStatus;
@@ -70,6 +72,10 @@ fn field_label(field: &str) -> &str {
         "form_id" => "양식",
         "description" => "설명",
         "body_template" => "본문 양식",
+        "location" => "장소",
+        "calendar_id" | "calendars" => "캘린더",
+        "attendee_ids" | "member_ids" => "참석자",
+        "start_at" | "end_at" => "일정 시간",
         other => other,
     }
 }
@@ -132,6 +138,20 @@ fn validation_message(field: Option<&str>, reason: Option<&str>) -> String {
         }
         (Some("retired_on"), Some("inconsistent")) => {
             "퇴사일은 입사일보다 이를 수 없습니다.".into()
+        }
+        // 일정(서버 `calendar_event::EventTime`·`check_attendees`).
+        (Some("end_at"), Some("inconsistent")) => {
+            "끝나는 시각은 시작 시각보다 늦어야 합니다.".into()
+        }
+        (Some("end_at"), Some("out_of_range")) => "일정은 31일까지 잡을 수 있습니다.".into(),
+        (Some("end_date"), Some("inconsistent")) => {
+            "끝나는 날은 시작하는 날보다 이를 수 없습니다.".into()
+        }
+        (Some("attendee_ids"), Some("out_of_range")) => {
+            "참석자는 50명까지 초대할 수 있습니다.".into()
+        }
+        (Some("attendee_ids"), Some("inconsistent")) => {
+            "참석자는 내 일정에만 초대할 수 있고, 본인은 초대할 수 없습니다.".into()
         }
         (_, Some("empty")) => format!("{label}을(를) 입력해 주세요."),
         (_, Some("too_short")) => format!("{label}이(가) 너무 짧습니다."),
@@ -297,6 +317,9 @@ pub const AUDIT_ACTIONS: &[(&str, &str)] = &[
     ("holiday.upsert", "공휴일 등록·변경"),
     ("holiday.delete", "공휴일 삭제"),
     ("holiday.import", "공휴일 일괄 등록"),
+    ("calendar.event_create", "공유 일정 추가"),
+    ("calendar.event_update", "공유 일정 수정"),
+    ("calendar.event_delete", "공유 일정 삭제"),
     ("system.initialize", "초기 설정"),
 ];
 
@@ -311,6 +334,10 @@ pub const NOTIFICATION_KINDS: &[(&str, &str)] = &[
     ("approval.withdrawn", "회수"),
     ("attendance.corrected", "근태 정정 반영"),
     ("leave.canceled", "휴가 취소"),
+    ("calendar.invited", "일정 초대"),
+    ("calendar.updated", "일정 변경"),
+    ("calendar.canceled", "일정 취소"),
+    ("calendar.responded", "참석 응답"),
 ];
 
 /// 알림 종류 문구. 모르는 종류는 `None`(제목만 보여 준다).
@@ -354,6 +381,7 @@ pub fn audit_target_label(target_type: &str) -> String {
         "position" => "직책",
         "session" => "로그인 기기",
         "attendance_record" => "출퇴근 기록",
+        "calendar_event" => "일정",
         "attendance_correction" => "근태 정정 요청",
         "leave_request" => "휴가 신청",
         "leave_ledger" => "휴가 원장",
@@ -569,6 +597,32 @@ pub fn leave_unit_short(unit: LeaveUnit) -> &'static str {
     }
 }
 
+/// 캘린더 종류. 부서 일정은 화면에서 부서 이름(`CalendarDto::name`)을 우선 쓴다.
+pub fn calendar_kind_label(kind: CalendarKind) -> &'static str {
+    match kind {
+        CalendarKind::Personal => "내 일정",
+        CalendarKind::Department => "부서 일정",
+        CalendarKind::Company => "전사 일정",
+    }
+}
+
+/// 참석자 응답.
+pub fn attendee_response_label(response: AttendeeResponse) -> &'static str {
+    match response {
+        AttendeeResponse::Pending => "응답 대기",
+        AttendeeResponse::Accepted => "참석",
+        AttendeeResponse::Declined => "불참",
+    }
+}
+
+pub fn attendee_response_tone(response: AttendeeResponse) -> Tone {
+    match response {
+        AttendeeResponse::Pending => Tone::Warning,
+        AttendeeResponse::Accepted => Tone::Success,
+        AttendeeResponse::Declined => Tone::Neutral,
+    }
+}
+
 pub fn leave_status_label(status: LeaveRequestStatus) -> &'static str {
     match status {
         LeaveRequestStatus::Pending => "결재 중",
@@ -672,6 +726,9 @@ mod tests {
         "attendance.create",
         "attendance.edit",
         "attendance.export",
+        "calendar.event_create",
+        "calendar.event_delete",
+        "calendar.event_update",
         "auth.login",
         "auth.logout",
         "auth.password_change",
@@ -705,7 +762,8 @@ mod tests {
     ];
 
     /// 서버가 만드는 알림 종류. `crates/server/src/service`의 `Notify { kind: "…" }`와
-    /// `approval::notify_event_tx`, `notices::NEW_NOTICE`의 문자열이다.
+    /// `approval::notify_event_tx`, `notices::NEW_NOTICE`, `calendar`의 `INVITED`·`UPDATED`·
+    /// `CANCELED`·`RESPONDED` 문자열이다.
     const BACKEND_NOTIFICATION_KINDS: &[&str] = &[
         "approval.admin_rejected",
         "approval.approved",
@@ -714,6 +772,10 @@ mod tests {
         "approval.todo",
         "approval.withdrawn",
         "attendance.corrected",
+        "calendar.canceled",
+        "calendar.invited",
+        "calendar.responded",
+        "calendar.updated",
         "leave.canceled",
         "notice.new",
     ];

@@ -510,7 +510,16 @@ pub(crate) mod logic {
         month: YearMonth,
         week: WorkWeek,
     ) -> BTreeMap<NaiveDate, Vec<DayEntry>> {
-        let (first, last) = (month.first_day(), month.last_day());
+        entries_in_range(entries, month.first_day(), month.last_day(), week)
+    }
+
+    /// [`entries_by_date`]와 같되 `first`~`last`(양 끝 포함) 기간으로 나눈다(캘린더의 월·주 보기).
+    pub fn entries_in_range(
+        entries: &[LeaveCalendarEntry],
+        first: NaiveDate,
+        last: NaiveDate,
+        week: WorkWeek,
+    ) -> BTreeMap<NaiveDate, Vec<DayEntry>> {
         let mut map: BTreeMap<NaiveDate, Vec<DayEntry>> = BTreeMap::new();
         for entry in entries {
             let start = entry.start_date.max(first);
@@ -518,7 +527,7 @@ pub(crate) mod logic {
             if end < start {
                 continue;
             }
-            // 한 달로 잘랐으므로 최대 31일만 돈다.
+            // 보이는 기간으로 잘랐으므로 그 기간의 날짜 수만큼만 돈다.
             for date in start.iter_days().take_while(|d| *d <= end) {
                 if is_day_off(week, date) {
                     continue;

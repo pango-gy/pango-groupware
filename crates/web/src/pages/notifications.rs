@@ -213,6 +213,7 @@ pub mod logic {
     const ROUTE_PREFIXES: &[&str] = &[
         "attendance",
         "leave",
+        "calendar",
         "approval",
         "notices",
         "notifications",
@@ -274,6 +275,8 @@ pub mod logic {
                 "/notices",
                 "/notices/0190a1b2-0000-7000-8000-000000000001",
                 "/approval/documents/abc-123",
+                "/calendar",
+                "/calendar/events/0190a1b2-0000-7000-8000-000000000001",
                 "/notifications",
                 "/admin/notices",
                 "/me",
@@ -327,6 +330,8 @@ pub mod logic {
                 "/notices/../admin",
                 "/..",
                 "/admin/nope/deeper",
+                "/calendar/events",
+                "/calendar/events/x/y",
             ] {
                 assert_eq!(safe_link(link), None, "{link:?}");
             }
