@@ -76,7 +76,8 @@ UUID v7을 타입별 newtype(`MemberId`, `DocumentId` …)으로 감쌉니다. D
 ### 멱등성
 - 생성 요청(`POST`)은 `Idempotency-Key` 헤더를 받습니다. 같은 구성원·같은 키·같은 본문이면 저장해 둔 첫 응답을 그대로 돌려줍니다. 본문이 다르면 422.
 - 상태 전이(승인·반려·취소·출근·퇴근)는 **자연 멱등**입니다. 이미 그 상태면 성공으로 응답하고 부수효과(알림·차감)를 반복하지 않습니다.
-- 자동 부여(연차)는 `grant_key` 유일 제약으로 한 번만 반영됩니다.
+- 자동 부여(연차)는 `grant_key` 유일 제약으로 한 번만 반영됩니다. 잔여 조회·휴가 신청이 본인의 부여를 그때그때 반영하고, 서버의 주기 작업이 회사 시간대 기준 하루에 한 번 재직 구성원 전원의 부여를 반영합니다.
+- `GET /home`과 `GET /admin/dashboard`는 아무것도 쓰지 않습니다. 홈의 연차 잔여는 저장된 원장 그대로이므로, 오늘 생긴 부여는 그날의 주기 작업(또는 잔여 조회) 뒤에 보입니다.
 
 ### 페이지네이션
 `?limit=`(기본 50, 최대 200) + `?cursor=`(불투명 문자열). 응답은 `{"items": […], "next_cursor": "…"|null}`.
@@ -127,6 +128,8 @@ UUID v7을 타입별 newtype(`MemberId`, `DocumentId` …)으로 감쌉니다. D
 - 근무 시간 = 퇴근 − 출근 − 휴게(4시간 이상 30분, 8시간 이상 60분. 설정 가능).
 - 지각: 출근 > 시작 시각 + 유예. 조퇴: 퇴근 < 종료 시각. 휴가(반차)가 있으면 기준 시각을 조정합니다.
 - 관리자 수정과 정정 승인은 `attendance_events`에 이전/이후 값을 남깁니다.
+- 정정 요청은 오늘 근무일까지, 31일 전까지의 근무일에 대해 올릴 수 있고, 같은 근무일에 결재 중인 요청은 하나뿐입니다. 값은 요청할 때와 **최종 승인할 때** 두 번 검증합니다. 승인 시점의 기록이 요청 당시와 다르면(그사이 관리자가 고쳤거나 본인이 퇴근을 찍음) 반영하지 않고 승인이 409 `version_conflict`로 실패하며, 결재자는 반려로 끝냅니다.
+- 정정 요청의 취소는 곧 문서 회수입니다(누군가 결재한 뒤에는 `withdraw_too_late`).
 
 ### 휴가
 - 수량 단위는 **1/4일**(`LeaveAmount`, 정수). 연차 1일 = 4, 반차 = 2, 반반차 = 1.
@@ -144,6 +147,7 @@ UUID v7을 타입별 newtype(`MemberId`, `DocumentId` …)으로 감쌉니다. D
 - 현재 단계의 결재자만 처리할 수 있습니다. 반려는 즉시 문서를 종료합니다.
 - 회수는 기안자가 **아무도 처리하기 전**에만 할 수 있습니다.
 - 기안자는 자신을 결재자로 넣을 수 없습니다. 같은 사람이 결재선에 두 번 나올 수 없습니다.
+- 휴가 신청·근태 정정 같은 **개인 신청의 최종 결재자는 신청자의 관할 조직장 또는 관리자**여야 합니다. 결재선은 신청자가 고칠 수 있으므로, 신청할 때와 최종 승인할 때 모두 확인합니다(동료끼리 서로 승인하는 것을 막기 위해). 앞 단계(합의)에는 누구든 넣을 수 있습니다.
 - 휴가 신청·근태 정정은 **시스템 양식의 결재 문서**입니다. 최종 승인·반려·회수 시 같은 트랜잭션에서 연결된 효과(휴가 확정/복원, 기록 정정)를 실행합니다.
 
 ## 7. HTTP API
@@ -155,7 +159,7 @@ UUID v7을 타입별 newtype(`MemberId`, `DocumentId` …)으로 감쌉니다. D
 | 인증 | `POST /auth/login` `POST /auth/logout` `GET /me` `POST /me/password` `GET /me/sessions` `DELETE /me/sessions/{id}` |
 | 홈 | `GET /home` |
 | 조직 | `GET /departments` `GET /positions` `GET /members` `GET /members/{id}` |
-| 출퇴근 | `GET /attendance/today` `POST /attendance/clock-in` `POST /attendance/clock-out` `GET /attendance/records` `GET /attendance/summary` `POST /attendance/corrections` |
+| 출퇴근 | `GET /attendance/today` `POST /attendance/clock-in` `POST /attendance/clock-out` `GET /attendance/records` `GET /attendance/summary` `GET·POST /attendance/corrections` `POST /attendance/corrections/{id}/cancel` |
 | 휴가 | `GET /leave/types` `GET /leave/balance` `GET /leave/ledger` `GET /leave/requests` `POST /leave/requests` `POST /leave/requests/{id}/cancel` `GET /leave/calendar` |
 | 조직장 | `GET /team/attendance` `GET /team/leave` `GET /team/members` |
 | 결재 | `GET /approval/forms` `GET /approval/counts` `GET /approval/line-suggestion` `GET /approval/documents` `POST /approval/documents` `GET·PATCH·DELETE /approval/documents/{id}` `POST /approval/documents/{id}/{submit,approve,reject,withdraw}` |

@@ -426,3 +426,20 @@ pub async fn list_for_export(
     );
     fetch_detailed(conn, &sql, &binds, None).await
 }
+
+/// 기간 안의 퇴근하지 않은 기록(최근 근무일 먼저, 같은 날은 이름순). 퇴근 누락 점검용.
+///
+/// 열린 기록만 보는 부분 인덱스가 있고 기간이 짧아 결과가 작다. 어떤 것이 "누락"인지는
+/// 규칙(`pango_core::attendance::evaluate_day`)이 정하므로 여기서는 가리지 않는다.
+pub async fn list_open(conn: &mut Conn, range: DateRange) -> DbResult<Vec<RecordWithMember>> {
+    let sql = format!(
+        "SELECT {RECORD_COLUMNS}, m.name AS member_name, m.login_id, d.name AS department_name
+         {DETAILED_FROM} WHERE r.work_date BETWEEN ? AND ? AND r.clock_out_at IS NULL
+         ORDER BY r.work_date DESC, m.name, r.id"
+    );
+    let binds = [
+        codec::date_text(range.start()),
+        codec::date_text(range.end()),
+    ];
+    fetch_detailed(conn, &sql, &binds, None).await
+}

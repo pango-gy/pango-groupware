@@ -733,3 +733,12 @@ pub async fn mailbox_counts(conn: &mut Conn, member_id: MemberId) -> DbResult<Ma
         unread_reference,
     })
 }
+
+/// 결재가 진행 중인 문서 수(관리 대시보드).
+pub async fn count_in_progress(conn: &mut Conn) -> DbResult<i64> {
+    let (count,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM approval_documents WHERE status = 'in_progress'")
+            .fetch_one(conn)
+            .await?;
+    Ok(count)
+}

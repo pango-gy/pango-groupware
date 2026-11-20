@@ -11,11 +11,10 @@
 
 use std::fmt;
 
-use serde::{Deserialize, Serialize};
-
 use crate::authz::Actor;
 use crate::error::{ConflictReason, DomainError, DomainResult, ValidationReason};
 use crate::id::MemberId;
+use crate::string_enum;
 use crate::text::{Comment, Reason};
 use crate::time::Timestamp;
 
@@ -24,51 +23,17 @@ pub const MAX_STEPS: usize = 10;
 /// 문서 하나에 둘 수 있는 최대 참조자 수.
 pub const MAX_REFERENCES: usize = 30;
 
-/// DB·API와 같은 문자열을 쓰는 열거형을 만든다. serde 표기와 `as_str`이 어긋나지 않게 한 곳에서 정의한다.
-macro_rules! string_enum {
-    (
-        $(#[$meta:meta])*
-        $name:ident, $field:literal {
-            $($(#[$variant_meta:meta])* $variant:ident => $text:literal),+ $(,)?
-        }
-    ) => {
-        $(#[$meta])*
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-        #[serde(rename_all = "snake_case")]
-        pub enum $name {
-            $($(#[$variant_meta])* $variant),+
-        }
-
-        impl $name {
-            pub const ALL: &'static [$name] = &[$(Self::$variant),+];
-
-            pub const fn as_str(self) -> &'static str {
-                match self {
-                    $(Self::$variant => $text),+
-                }
-            }
-
-            pub fn parse(value: &str) -> DomainResult<Self> {
-                Self::ALL
-                    .iter()
-                    .copied()
-                    .find(|candidate| candidate.as_str() == value)
-                    .ok_or(DomainError::validation($field, ValidationReason::InvalidFormat))
-            }
-        }
-    };
-}
-
-string_enum!(
+string_enum! {
     /// 문서 상태. `draft → in_progress → approved | rejected | withdrawn`.
-    DocumentStatus, "status" {
+    #[derive(PartialOrd, Ord)]
+    pub enum DocumentStatus("status") {
         Draft => "draft",
         InProgress => "in_progress",
         Approved => "approved",
         Rejected => "rejected",
         Withdrawn => "withdrawn",
     }
-);
+}
 
 impl DocumentStatus {
     /// 종료된 문서는 더 이상 상태가 바뀌지 않는다.
@@ -77,19 +42,21 @@ impl DocumentStatus {
     }
 }
 
-string_enum!(
+string_enum! {
     /// 단계 종류.
-    StepKind, "step_kind" {
+    #[derive(PartialOrd, Ord)]
+    pub enum StepKind("step_kind") {
         /// 결재.
         Approve => "approve",
         /// 합의.
         Agree => "agree",
     }
-);
+}
 
-string_enum!(
+string_enum! {
     /// 단계 상태.
-    StepStatus, "step_status" {
+    #[derive(PartialOrd, Ord)]
+    pub enum StepStatus("step_status") {
         /// 아직 차례가 오지 않음.
         Waiting => "waiting",
         /// 지금 처리할 차례.
@@ -97,22 +64,24 @@ string_enum!(
         Approved => "approved",
         Rejected => "rejected",
     }
-);
+}
 
-string_enum!(
+string_enum! {
     /// 문서 종류. `General` 외에는 최종 결과에 따라 서비스 계층이 연결된 효과를 실행한다.
-    DocumentKind, "document_kind" {
+    #[derive(PartialOrd, Ord)]
+    pub enum DocumentKind("document_kind") {
         General => "general",
         /// 휴가 신청: 승인 시 확정, 반려·회수 시 잔여 복원.
         Leave => "leave",
         /// 근태 정정: 승인 시 기록 정정.
         AttendanceCorrection => "attendance_correction",
     }
-);
+}
 
-string_enum!(
+string_enum! {
     /// 문서함. 목록 필터(SQL)는 서버 쪽에 있고 여기서는 이름만 정한다.
-    Mailbox, "mailbox" {
+    #[derive(PartialOrd, Ord)]
+    pub enum Mailbox("mailbox") {
         /// 내가 결재할 차례인 문서.
         Todo => "todo",
         /// 내 차례가 아직 오지 않은 문서.
@@ -124,7 +93,7 @@ string_enum!(
         /// 내가 참조자인 문서.
         Reference => "reference",
     }
-);
+}
 
 fn invalid(field: &'static str, reason: ValidationReason) -> DomainError {
     DomainError::validation(field, reason)
@@ -273,9 +242,10 @@ impl DocumentEvent {
     }
 }
 
-string_enum!(
+string_enum! {
     /// 문서 이력(`approval_events`)에 남기는 사건 종류. [`DocumentEvent`]와 일대일이다.
-    EventKind, "event_kind" {
+    #[derive(PartialOrd, Ord)]
+    pub enum EventKind("event_kind") {
         Submitted => "submitted",
         /// 한 단계의 승인(결재·합의).
         Approved => "approved",
@@ -284,7 +254,7 @@ string_enum!(
         Rejected => "rejected",
         Withdrawn => "withdrawn",
     }
-);
+}
 
 impl DocumentEvent {
     /// 이력에 남길 종류.
@@ -989,6 +959,45 @@ mod tests {
             )+};
         }
         check!(DocumentStatus, StepKind, StepStatus, DocumentKind, Mailbox);
+    }
+
+    #[test]
+    fn enum_wire_strings_are_fixed() {
+        fn strings<T: Copy>(all: &[T], as_str: fn(T) -> &'static str) -> Vec<&'static str> {
+            all.iter().map(|value| as_str(*value)).collect()
+        }
+        assert_eq!(
+            strings(DocumentStatus::ALL, DocumentStatus::as_str),
+            ["draft", "in_progress", "approved", "rejected", "withdrawn"]
+        );
+        assert_eq!(
+            strings(StepKind::ALL, StepKind::as_str),
+            ["approve", "agree"]
+        );
+        assert_eq!(
+            strings(StepStatus::ALL, StepStatus::as_str),
+            ["waiting", "pending", "approved", "rejected"]
+        );
+        assert_eq!(
+            strings(DocumentKind::ALL, DocumentKind::as_str),
+            ["general", "leave", "attendance_correction"]
+        );
+        assert_eq!(
+            strings(Mailbox::ALL, Mailbox::as_str),
+            ["todo", "upcoming", "drafted", "done", "reference"]
+        );
+        assert_eq!(
+            strings(EventKind::ALL, EventKind::as_str),
+            [
+                "submitted",
+                "approved",
+                "completed",
+                "rejected",
+                "withdrawn"
+            ]
+        );
+        // 선언 순서 비교는 매크로 밖에서 파생한 것이 그대로 남아 있어야 한다.
+        assert!(DocumentStatus::Draft < DocumentStatus::Withdrawn);
     }
 
     #[test]

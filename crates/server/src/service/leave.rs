@@ -12,14 +12,13 @@
 use std::collections::BTreeMap;
 
 use chrono::{Datelike, Days, NaiveDate};
-use pango_api::approval::StepInput;
 use pango_api::leave::{
     AccrualRunResult, AdjustLeaveRequest, AdminLeaveRequestQuery, BalanceDto, CreateLeaveRequest,
     CreateLeaveTypeRequest, LeaveCalendarEntry, LeaveRequestDto, LeaveRequestQuery, LeaveTypeDto,
     LedgerEntryDto, LedgerKind, MemberBalance, UpdateLeaveTypeRequest,
 };
 use pango_api::Page;
-use pango_core::approval::{ApprovalLine, DocumentKind, StepKind};
+use pango_core::approval::DocumentKind;
 use pango_core::authz;
 use pango_core::calendar::{parse_month, DateRange};
 use pango_core::error::{ConflictReason, ValidationReason};
@@ -279,7 +278,19 @@ async fn balance_tx(
     now: Timestamp,
 ) -> ServiceResult<BalanceDto> {
     ensure_accrued_tx(conn, member, today, now).await?;
-    let entries = ledger_entries(conn, member.id).await?;
+    stored_balance_tx(conn, member.id, today).await
+}
+
+/// **저장된 원장 그대로** 계산한 `today` 기준 잔여. 아무것도 쓰지 않는다.
+///
+/// 홈 화면처럼 읽기만 해야 하는 곳에서 쓴다. 오늘 생겼어야 할 자동 부여가 아직 원장에
+/// 없으면 결과에도 없다(부여는 하루 한 번 도는 정리 작업과 [`balance`] 조회가 반영한다).
+pub async fn stored_balance_tx(
+    conn: &mut Conn,
+    member_id: MemberId,
+    today: NaiveDate,
+) -> ServiceResult<BalanceDto> {
+    let entries = ledger_entries(conn, member_id).await?;
     let balance = Balance::compute(&entries, today)?;
     // 기간이 끝난 다음 날 기준으로 다시 계산했을 때 늘어난 소멸량이 곧 그 사이에 사라질 수량이다.
     let horizon = today
@@ -290,7 +301,7 @@ async fn balance_tx(
         .checked_sub(balance.expired)
         .ok_or_else(|| out_of_range("amount"))?;
     Ok(BalanceDto {
-        member_id: member.id,
+        member_id,
         as_of: today,
         balance,
         expiring_soon,
@@ -531,37 +542,84 @@ pub async fn team_leave(
     request_dtos(&mut conn, requests).await
 }
 
-/// 기간 안의 날짜별 휴가 단위(근태 계산용). 승인된 신청의 근무일만 담는다.
-/// 같은 날에 반차·반반차가 둘 있으면 더 큰 단위를 돌려준다.
-pub async fn units_by_date(
+/// 기간 안의 (구성원, 날짜)별 휴가 단위. 승인된 신청의 근무일만 담는다.
+/// 같은 날에 반차·반반차가 둘 있으면 더 큰 단위를 돌려준다. `member_id`가 없으면 전원.
+async fn approved_units(
     conn: &mut Conn,
-    member_id: MemberId,
+    member_id: Option<MemberId>,
     range: DateRange,
-) -> ServiceResult<BTreeMap<NaiveDate, LeaveUnit>> {
+) -> ServiceResult<BTreeMap<(MemberId, NaiveDate), LeaveUnit>> {
     let filter = RequestFilter {
-        member_id: Some(member_id),
+        member_id,
         overlapping: Some(range),
         statuses: vec![LeaveRequestStatus::Approved],
         before: None,
     };
     let (requests, _) = leave::list_requests(conn, &filter, None).await?;
     let calendar = Company::load(conn).await?.calendar(conn, range).await?;
-    let mut units: BTreeMap<NaiveDate, LeaveUnit> = BTreeMap::new();
+    let mut units: BTreeMap<(MemberId, NaiveDate), LeaveUnit> = BTreeMap::new();
     for request in &requests {
         let days = request
             .range
             .days()
             .filter(|day| range.contains(*day) && calendar.is_working_day(*day));
         for day in days {
+            let key = (request.member_id, day);
             let larger = units
-                .get(&day)
+                .get(&key)
                 .is_none_or(|current| request.unit.amount_per_day() > current.amount_per_day());
             if larger {
-                units.insert(day, request.unit);
+                units.insert(key, request.unit);
             }
         }
     }
     Ok(units)
+}
+
+/// 한 구성원의 기간 안 날짜별 휴가 단위(근태 계산용).
+pub async fn units_by_date(
+    conn: &mut Conn,
+    member_id: MemberId,
+    range: DateRange,
+) -> ServiceResult<BTreeMap<NaiveDate, LeaveUnit>> {
+    let units = approved_units(conn, Some(member_id), range).await?;
+    Ok(units
+        .into_iter()
+        .map(|((_, day), unit)| (day, unit))
+        .collect())
+}
+
+/// 그날 휴가인 모든 구성원의 휴가 단위. 전원의 하루 현황을 셀 때 구성원마다 조회하지 않으려고 둔다.
+pub async fn units_on(
+    conn: &mut Conn,
+    date: NaiveDate,
+) -> ServiceResult<BTreeMap<MemberId, LeaveUnit>> {
+    let units = approved_units(conn, None, DateRange::single(date)).await?;
+    Ok(units
+        .into_iter()
+        .map(|((member_id, _), unit)| (member_id, unit))
+        .collect())
+}
+
+/// 오늘부터 `days`일 안에 걸친 내 휴가(결재 중·승인), 시작일순. 홈 화면용.
+pub async fn upcoming_tx(
+    conn: &mut Conn,
+    member_id: MemberId,
+    today: NaiveDate,
+    days: u64,
+) -> ServiceResult<Vec<LeaveRequestDto>> {
+    let until = today
+        .checked_add_days(Days::new(days))
+        .ok_or_else(|| out_of_range("date"))?;
+    let filter = RequestFilter {
+        member_id: Some(member_id),
+        overlapping: Some(DateRange::new(today, until)?),
+        statuses: SCHEDULED.to_vec(),
+        before: None,
+    };
+    let (mut requests, _) = leave::list_requests(conn, &filter, None).await?;
+    requests.sort_by_key(|request| (request.range.start(), request.id));
+    request_dtos(conn, requests).await
 }
 
 // ───────────── 신청 ─────────────
@@ -573,32 +631,6 @@ fn span_label(span: &LeaveSpan) -> String {
         span.range().end(),
         span.amount()
     )
-}
-
-/// 결재선: 직접 지정했으면 그것을, 아니면 추천 결재선(상위 조직장)을 쓴다.
-/// 추천할 사람이 없으면 `Validation { steps, Empty }`이므로 신청자가 직접 지정해야 한다.
-async fn request_line_tx(
-    conn: &mut Conn,
-    member: &Member,
-    steps: Option<&[StepInput]>,
-    references: &[MemberId],
-) -> ServiceResult<ApprovalLine> {
-    let suggested: Vec<StepInput>;
-    let steps = match steps {
-        Some(steps) => steps,
-        None => {
-            suggested = approval::suggested_approvers_tx(conn, member)
-                .await?
-                .iter()
-                .map(|approver| StepInput {
-                    approver_id: approver.id,
-                    kind: StepKind::Approve,
-                })
-                .collect();
-            &suggested
-        }
-    };
-    approval::build_line_tx(conn, member.id, steps, references).await
 }
 
 /// 휴가 신청. 한 트랜잭션에서 부여 반영 → 일수 계산 → 겹침 확인 → 잔여 확인과 예약 →
@@ -656,8 +688,13 @@ pub async fn create_request(
             }
 
             let id = LeaveRequestId::new();
-            let line = request_line_tx(conn, member, request.steps.as_deref(), &request.references)
-                .await?;
+            let line = approval::request_line_tx(
+                conn,
+                member,
+                request.steps.as_deref(),
+                &request.references,
+            )
+            .await?;
             let document = SystemDocument {
                 kind: DocumentKind::Leave,
                 form_code: approval::LEAVE_FORM_CODE,
@@ -910,7 +947,7 @@ async fn notify_canceled_tx(
                 kind: "leave.canceled",
                 title: "승인된 휴가가 취소되었습니다".to_owned(),
                 body: format!("{} ~ {}", request.range.start(), request.range.end()),
-                link: Some(format!("/approval/documents/{}", request.document_id)),
+                link: Some(approval::document_link(request.document_id)),
                 dedupe_key: Some(&dedupe_key),
             },
         )
@@ -1059,6 +1096,52 @@ pub async fn admin_adjust(
         .await
 }
 
+/// 재직 구성원 전원에게 `today`까지의 자동 부여를 반영한다. 관리자의 수동 실행과 하루 한 번
+/// 도는 정리 작업이 같은 길을 쓴다.
+async fn run_accrual_tx(
+    conn: &mut Conn,
+    today: NaiveDate,
+    now: Timestamp,
+) -> ServiceResult<AccrualRunResult> {
+    let filter = MemberFilter {
+        statuses: vec![MemberStatus::Active],
+        ..MemberFilter::default()
+    };
+    let people = members::list(conn, &filter).await?;
+    let mut grants_inserted = 0u32;
+    for member in &people {
+        let inserted = ensure_accrued_tx(conn, member, today, now).await?;
+        grants_inserted = grants_inserted.saturating_add(inserted);
+    }
+    Ok(AccrualRunResult {
+        members: u32::try_from(people.len()).unwrap_or(u32::MAX),
+        grants_inserted,
+    })
+}
+
+async fn audit_accrual_tx(
+    conn: &mut Conn,
+    now: Timestamp,
+    ctx: Option<&AuthContext>,
+    result: AccrualRunResult,
+) -> ServiceResult<()> {
+    audit(
+        conn,
+        now,
+        Audit {
+            action: "leave.accrual_run",
+            target_type: "leave_ledger",
+            target_id: None,
+            detail: Some(serde_json::json!({
+                "members": result.members,
+                "grants_inserted": result.grants_inserted,
+            })),
+            ctx,
+        },
+    )
+    .await
+}
+
 /// 재직 구성원 전원의 자동 부여를 반영한다. 몇 번을 실행해도, 동시에 실행해도 같은 부여는
 /// 한 번만 들어간다.
 pub async fn admin_run_accrual(
@@ -1070,35 +1153,28 @@ pub async fn admin_run_accrual(
     state
         .write(async |conn: &mut Conn| {
             let today = Company::load(conn).await?.today(now);
-            let filter = MemberFilter {
-                statuses: vec![MemberStatus::Active],
-                ..MemberFilter::default()
-            };
-            let people = members::list(conn, &filter).await?;
-            let mut grants_inserted = 0u32;
-            for member in &people {
-                let inserted = ensure_accrued_tx(conn, member, today, now).await?;
-                grants_inserted = grants_inserted.saturating_add(inserted);
+            let result = run_accrual_tx(conn, today, now).await?;
+            audit_accrual_tx(conn, now, Some(ctx), result).await?;
+            Ok(result)
+        })
+        .await
+}
+
+/// 정리 작업이 실행하는 자동 부여(행위자 없는 시스템 작업). `today`는 회사 시간대의 오늘이다.
+///
+/// 새로 들어간 부여가 있을 때만 감사 로그를 남긴다. 매일 도는 작업이 아무것도 바꾸지 않은
+/// 날까지 한 줄씩 쌓지 않기 위해서다.
+pub async fn run_scheduled_accrual(
+    state: &AppState,
+    today: NaiveDate,
+) -> ServiceResult<AccrualRunResult> {
+    let now = state.now();
+    state
+        .write(async |conn: &mut Conn| {
+            let result = run_accrual_tx(conn, today, now).await?;
+            if result.grants_inserted > 0 {
+                audit_accrual_tx(conn, now, None, result).await?;
             }
-            let result = AccrualRunResult {
-                members: u32::try_from(people.len()).unwrap_or(u32::MAX),
-                grants_inserted,
-            };
-            audit(
-                conn,
-                now,
-                Audit {
-                    action: "leave.accrual_run",
-                    target_type: "leave_ledger",
-                    target_id: None,
-                    detail: Some(serde_json::json!({
-                        "members": result.members,
-                        "grants_inserted": result.grants_inserted,
-                    })),
-                    ctx: Some(ctx),
-                },
-            )
-            .await?;
             Ok(result)
         })
         .await

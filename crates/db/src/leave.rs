@@ -346,6 +346,15 @@ pub async fn list_requests(
     })
 }
 
+/// 결재 중인 신청 수(관리 대시보드).
+pub async fn count_pending(conn: &mut Conn) -> DbResult<i64> {
+    let (count,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM leave_requests WHERE status = 'pending'")
+            .fetch_one(conn)
+            .await?;
+    Ok(count)
+}
+
 /// 이 종류로 접수돼 아직 결재 중인 신청 수.
 pub async fn count_pending_for_type(conn: &mut Conn, leave_type_id: LeaveTypeId) -> DbResult<i64> {
     let (count,): (i64,) = sqlx::query_as(

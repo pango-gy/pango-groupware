@@ -183,3 +183,122 @@ async fn canceled_leave_no_longer_affects_attendance() {
         "absent"
     );
 }
+
+// ── 개인 신청의 결재자 권한 ──────────────────────────────────────────────
+
+async fn leave_body(app: &TestApp, token: &str, approver: &TestMember) -> Value {
+    json!({
+        "leave_type_id": annual_leave_type(app, token).await,
+        "start_date": "2026-03-10", "end_date": "2026-03-10", "unit": "full_day",
+        "reason": "개인 사정",
+        "steps": [{ "approver_id": approver.id, "kind": "approve" }],
+    })
+}
+
+#[tokio::test]
+async fn colleagues_cannot_be_chosen_as_final_approver_of_personal_requests() {
+    let app = TestApp::new().await;
+    let (head, member) = team(&app).await;
+    let department = app.add_department("다른팀", None, None).await;
+    let friend = app
+        .add_member("friend", Role::Member, Some(department))
+        .await;
+    let other_head = app
+        .add_member("otherhead", Role::Member, Some(department))
+        .await;
+    app.set_department_head(department, Some(other_head.id))
+        .await;
+
+    // 휴가: 동료나 다른 부서의 조직장을 최종 결재자로 지정할 수 없다.
+    for approver in [&friend, &other_head] {
+        let response = app
+            .post("/leave/requests")
+            .bearer(&member.token)
+            .json(&leave_body(&app, &member.token, approver).await)
+            .send()
+            .await;
+        assert_eq!(response.body["error"]["field"], "steps");
+        response.expect_error(StatusCode::BAD_REQUEST, "validation_failed");
+    }
+    // 근태 정정도 같다.
+    let correction = json!({
+        "work_date": "2026-03-02", "clock_in_at": 1772409600000i64, "clock_out_at": 1772442000000i64,
+        "work_type": "office", "reason": "출근 기록 누락",
+        "steps": [{ "approver_id": friend.id, "kind": "approve" }],
+    });
+    app.set_time("2026-03-03T01:00:00Z");
+    app.post("/attendance/corrections")
+        .bearer(&member.token)
+        .json(&correction)
+        .send()
+        .await
+        .expect_error(StatusCode::BAD_REQUEST, "validation_failed");
+    // 거부된 신청은 아무것도 남기지 않았다.
+    let requests = app
+        .get("/leave/requests?year=2026")
+        .bearer(&member.token)
+        .send()
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(requests.as_array().expect("array").len(), 0);
+
+    // 관할 조직장과 관리자는 지정할 수 있다. 동료를 앞 단계(합의)로 넣는 것도 된다.
+    let mut body = leave_body(&app, &member.token, &head).await;
+    body["steps"] = json!([
+        { "approver_id": friend.id, "kind": "agree" },
+        { "approver_id": head.id, "kind": "approve" },
+    ]);
+    app.post("/leave/requests")
+        .bearer(&member.token)
+        .json(&body)
+        .send()
+        .await
+        .expect(StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn approver_who_lost_authority_cannot_complete_a_personal_request() {
+    let app = TestApp::new().await;
+    let (head, member) = team(&app).await;
+    let request = app
+        .post("/leave/requests")
+        .bearer(&member.token)
+        .json(&leave_body(&app, &member.token, &head).await)
+        .send()
+        .await
+        .expect(StatusCode::CREATED);
+    let document_id = request["document_id"].as_str().expect("id").to_owned();
+
+    // 신청 뒤에 조직장에서 해제됐다.
+    let department =
+        pango_db::members::find(&mut app.state.db.read().await.expect("conn"), head.id)
+            .await
+            .expect("find")
+            .expect("member")
+            .department_id
+            .expect("department");
+    app.set_department_head(department, None).await;
+
+    let approve = format!("/approval/documents/{document_id}/approve");
+    app.post(&approve)
+        .bearer(&head.token)
+        .json(&json!({}))
+        .send()
+        .await
+        .expect_error(StatusCode::FORBIDDEN, "forbidden");
+    // 승인은 전부 롤백됐다: 신청은 여전히 대기 중이고 잔여도 그대로 예약 상태다.
+    let requests = app
+        .get("/leave/requests?year=2026")
+        .bearer(&member.token)
+        .send()
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(requests[0]["status"], "pending");
+    // 반려는 여전히 할 수 있어 문서가 갇히지 않는다.
+    app.post(&format!("/approval/documents/{document_id}/reject"))
+        .bearer(&head.token)
+        .json(&json!({ "reason": "권한 변경으로 반려" }))
+        .send()
+        .await
+        .expect(StatusCode::OK);
+}

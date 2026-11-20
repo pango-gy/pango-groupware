@@ -8,7 +8,7 @@
 //!   한 규칙만 쓰므로 출근·퇴근 어느 쪽에도 초 단위 이득·손해가 쌓이지 않는다.
 //! - 근무 시간은 벽시계가 아니라 실제 경과 시간이다(서머타임 전환일에도 그렇다).
 
-use chrono::{Duration, NaiveDate};
+use chrono::{Days, Duration, NaiveDate};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{ConflictReason, DomainError, DomainResult, ValidationReason};
@@ -33,37 +33,15 @@ const MIN_SUPPORTED_YEAR: i32 = 1900;
 const MAX_SUPPORTED_YEAR: i32 = 9999;
 const MILLIS_PER_MINUTE: i64 = 60_000;
 
-/// 근무 형태.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkType {
-    /// 사무실 출근.
-    Office,
-    /// 재택.
-    Remote,
-    /// 외근·출장.
-    Field,
-}
-
-impl WorkType {
-    pub const ALL: [WorkType; 3] = [Self::Office, Self::Remote, Self::Field];
-
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Office => "office",
-            Self::Remote => "remote",
-            Self::Field => "field",
-        }
-    }
-
-    pub fn parse(value: &str) -> DomainResult<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|work_type| work_type.as_str() == value)
-            .ok_or(DomainError::validation(
-                "work_type",
-                ValidationReason::InvalidFormat,
-            ))
+crate::string_enum! {
+    /// 근무 형태.
+    pub enum WorkType("work_type") {
+        /// 사무실 출근.
+        Office => "office",
+        /// 재택.
+        Remote => "remote",
+        /// 외근·출장.
+        Field => "field",
     }
 }
 
@@ -406,26 +384,26 @@ pub fn validate_edit(
     Ok(())
 }
 
-/// 하루 근태 상태.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DayStatus {
-    /// 기록 없는 근무일로 아직 끝나지 않음(미래, 또는 오늘 출근 전·지각 중).
-    Scheduled,
-    /// 출근했고 아직 퇴근하지 않음.
-    Working,
-    Normal,
-    Late,
-    EarlyLeave,
-    LateAndEarlyLeave,
-    /// 출근 후 `MAX_SHIFT`가 지나도록 퇴근하지 않음. 더는 퇴근으로 닫을 수 없다.
-    MissingClockOut,
-    /// 끝난 근무일에 기록도 종일 휴가도 없음.
-    Absent,
-    /// 종일 휴가이고 기록 없음.
-    OnLeave,
-    /// 근무일이 아니고 기록 없음.
-    DayOff,
+crate::string_enum! {
+    /// 하루 근태 상태.
+    pub enum DayStatus("status") {
+        /// 기록 없는 근무일로 아직 끝나지 않음(미래, 또는 오늘 출근 전·지각 중).
+        Scheduled => "scheduled",
+        /// 출근했고 아직 퇴근하지 않음.
+        Working => "working",
+        Normal => "normal",
+        Late => "late",
+        EarlyLeave => "early_leave",
+        LateAndEarlyLeave => "late_and_early_leave",
+        /// 출근 후 `MAX_SHIFT`가 지나도록 퇴근하지 않음. 더는 퇴근으로 닫을 수 없다.
+        MissingClockOut => "missing_clock_out",
+        /// 끝난 근무일에 기록도 종일 휴가도 없음.
+        Absent => "absent",
+        /// 종일 휴가이고 기록 없음.
+        OnLeave => "on_leave",
+        /// 근무일이 아니고 기록 없음.
+        DayOff => "day_off",
+    }
 }
 
 /// 하루 판정 입력. `record`는 `work_date`의 기록이어야 한다.
@@ -652,6 +630,68 @@ crate::string_enum! {
     }
 }
 
+// ───────────── 정정 요청 ─────────────
+
+/// 정정을 요청할 수 있는 가장 오래된 근무일까지의 일수. 이미 마감된 달의 근태를 구성원이
+/// 뒤늦게 바꾸지 못하게 한다(더 오래된 기록은 관리자가 직접 고친다).
+pub const CORRECTION_WINDOW_DAYS: u64 = 31;
+
+crate::string_enum! {
+    /// 근태 정정 요청의 상태. 요청은 결재 문서와 한 몸이라 문서가 종료될 때만 바뀐다.
+    pub enum CorrectionStatus("status") {
+        /// 결재 중.
+        Pending => "pending",
+        /// 최종 승인되어 기록에 반영됨.
+        Approved => "approved",
+        Rejected => "rejected",
+        /// 요청자가 회수함.
+        Canceled => "canceled",
+    }
+}
+
+/// 정정을 요청할 수 있는 근무일인지. `current_work_date`(지금이 속한 근무일)보다 미래이거나
+/// [`CORRECTION_WINDOW_DAYS`]보다 오래됐으면 `Validation { work_date, OutOfRange }`.
+pub fn validate_correction_date(
+    work_date: NaiveDate,
+    current_work_date: NaiveDate,
+) -> DomainResult<()> {
+    let earliest = current_work_date.checked_sub_days(Days::new(CORRECTION_WINDOW_DAYS));
+    let too_old = earliest.is_none_or(|earliest| work_date < earliest);
+    if too_old || work_date > current_work_date {
+        return Err(DomainError::validation(
+            "work_date",
+            ValidationReason::OutOfRange,
+        ));
+    }
+    Ok(())
+}
+
+/// 문서 종료 결과를 정정 요청에 반영할지.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CorrectionDecision {
+    /// 대기 중인 요청을 `target` 상태로 끝낸다.
+    Close,
+    /// 이미 그 상태다. 아무것도 하지 않는다.
+    AlreadyClosed,
+}
+
+/// 정정 요청을 `target`으로 끝낼 수 있는지 판정한다.
+///
+/// 같은 결과가 다시 오면 `AlreadyClosed`(자연 멱등), 다른 결과로 이미 끝났으면
+/// `DocumentAlreadyClosed`다. 끝난 요청은 다시 열리지 않는다.
+pub fn decide_correction_close(
+    current: CorrectionStatus,
+    target: CorrectionStatus,
+) -> DomainResult<CorrectionDecision> {
+    if current == target {
+        Ok(CorrectionDecision::AlreadyClosed)
+    } else if current == CorrectionStatus::Pending {
+        Ok(CorrectionDecision::Close)
+    } else {
+        Err(ConflictReason::DocumentAlreadyClosed.into())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -754,8 +794,112 @@ mod tests {
     // ---- WorkType ----
 
     #[test]
+    fn enum_wire_strings_are_fixed() {
+        let work_types: Vec<&str> = WorkType::ALL.iter().map(|w| w.as_str()).collect();
+        assert_eq!(work_types, ["office", "remote", "field"]);
+        let statuses: Vec<&str> = DayStatus::ALL.iter().map(|s| s.as_str()).collect();
+        assert_eq!(
+            statuses,
+            [
+                "scheduled",
+                "working",
+                "normal",
+                "late",
+                "early_leave",
+                "late_and_early_leave",
+                "missing_clock_out",
+                "absent",
+                "on_leave",
+                "day_off",
+            ]
+        );
+        for &status in DayStatus::ALL {
+            let json = serde_json::to_string(&status).expect("json");
+            assert_eq!(json, format!("\"{}\"", status.as_str()));
+            assert_eq!(
+                serde_json::from_str::<DayStatus>(&json).expect("parse"),
+                status
+            );
+        }
+        assert!(serde_json::from_str::<DayStatus>("\"DayOff\"").is_err());
+        let events: Vec<&str> = AttendanceEventKind::ALL
+            .iter()
+            .map(|k| k.as_str())
+            .collect();
+        assert_eq!(
+            events,
+            [
+                "clock_in",
+                "clock_out",
+                "admin_create",
+                "admin_edit",
+                "correction"
+            ]
+        );
+        let corrections: Vec<&str> = CorrectionStatus::ALL.iter().map(|s| s.as_str()).collect();
+        assert_eq!(corrections, ["pending", "approved", "rejected", "canceled"]);
+    }
+
+    // ---- 정정 요청 ----
+
+    #[test]
+    fn correction_date_window_boundaries() {
+        let today = date("2026-03-02");
+        assert_eq!(validate_correction_date(today, today), Ok(()));
+        // 31일 전(2026-01-30)까지 받고 32일 전은 거부한다.
+        assert_eq!(validate_correction_date(date("2026-01-30"), today), Ok(()));
+        let out_of_range = Err(DomainError::validation(
+            "work_date",
+            ValidationReason::OutOfRange,
+        ));
+        assert_eq!(
+            validate_correction_date(date("2026-01-29"), today),
+            out_of_range
+        );
+        assert_eq!(
+            validate_correction_date(date("2026-03-03"), today),
+            out_of_range
+        );
+        assert_eq!(
+            validate_correction_date(NaiveDate::MAX, NaiveDate::MIN),
+            out_of_range
+        );
+        assert_eq!(
+            validate_correction_date(NaiveDate::MIN, NaiveDate::MIN),
+            out_of_range,
+            "기준일을 계산할 수 없으면 거부한다"
+        );
+    }
+
+    #[test]
+    fn correction_close_is_idempotent_and_never_reopens() {
+        use CorrectionStatus::*;
+        for &target in &[Approved, Rejected, Canceled] {
+            assert_eq!(
+                decide_correction_close(Pending, target),
+                Ok(CorrectionDecision::Close)
+            );
+            assert_eq!(
+                decide_correction_close(target, target),
+                Ok(CorrectionDecision::AlreadyClosed)
+            );
+        }
+        for &current in &[Approved, Rejected, Canceled] {
+            for &target in CorrectionStatus::ALL {
+                if current != target {
+                    assert_eq!(
+                        decide_correction_close(current, target),
+                        Err(ConflictReason::DocumentAlreadyClosed.into()),
+                        "{current} → {target}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn work_type_round_trips_and_rejects_unknown() {
-        for work_type in WorkType::ALL {
+        for &work_type in WorkType::ALL {
             assert_eq!(WorkType::parse(work_type.as_str()), Ok(work_type));
             let json = serde_json::to_string(&work_type).expect("json");
             assert_eq!(json, format!("\"{}\"", work_type.as_str()));

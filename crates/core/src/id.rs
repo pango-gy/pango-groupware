@@ -76,6 +76,7 @@ define_id!(
     SessionId,
     AttendanceRecordId,
     AttendanceEventId,
+    AttendanceCorrectionId,
     LeaveTypeId,
     LeaveRequestId,
     LeaveLedgerEntryId,

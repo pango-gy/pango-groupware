@@ -5,6 +5,7 @@ pub mod approval;
 pub mod attendance;
 pub mod auth;
 pub mod extract;
+pub mod home;
 pub mod leave;
 pub mod members;
 pub mod notices;
@@ -39,6 +40,7 @@ fn api_routes() -> Router<AppState> {
         .merge(admin::routes())
         .merge(approval::routes())
         .merge(leave::routes())
+        .merge(home::routes())
         .fallback(not_found)
 }
 

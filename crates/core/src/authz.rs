@@ -13,35 +13,18 @@ use crate::id::{DepartmentId, MemberId};
 use crate::member::MemberStatus;
 use crate::string_enum;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Role {
-    Member,
-    Admin,
-    Owner,
+string_enum! {
+    /// 역할. 선언 순서가 곧 권한의 크기다(`Member < Admin < Owner`). 순서 비교는 매크로가
+    /// 만들지 않으므로 여기서 따로 파생한다.
+    #[derive(PartialOrd, Ord)]
+    pub enum Role("role") {
+        Member => "member",
+        Admin => "admin",
+        Owner => "owner",
+    }
 }
 
 impl Role {
-    pub const ALL: [Role; 3] = [Role::Member, Role::Admin, Role::Owner];
-
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Role::Member => "member",
-            Role::Admin => "admin",
-            Role::Owner => "owner",
-        }
-    }
-
-    pub fn parse(value: &str) -> DomainResult<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|role| role.as_str() == value)
-            .ok_or(DomainError::validation(
-                "role",
-                ValidationReason::InvalidFormat,
-            ))
-    }
-
     pub const fn is_admin(self) -> bool {
         matches!(self, Role::Admin | Role::Owner)
     }
@@ -180,6 +163,17 @@ pub fn view_leave_schedule(actor: &Actor, subject: &Subject) -> DomainResult<()>
         Relation::Unrelated => Err(DomainError::NotFound),
         _ => Ok(()),
     }
+}
+
+/// 구성원 개인의 신청(휴가, 근태 정정)을 **최종 승인**할 권한이 있는지: 관할 조직장 또는 관리자.
+///
+/// 결재선은 신청자가 고를 수 있으므로, 이 확인이 없으면 동료끼리 서로 승인해 줄 수 있다.
+/// 본인은 관리자여도 자기 신청을 승인할 수 없다.
+pub fn can_resolve_personal_request(approver: &Actor, subject: &Subject) -> bool {
+    matches!(
+        approver.relation_to(subject),
+        Relation::Administered | Relation::Managed
+    )
 }
 
 /// 다른 사람의 기록을 **직접 수정**할 수 있는지: 관리자만.
@@ -404,8 +398,24 @@ mod tests {
     }
 
     #[test]
+    fn role_wire_strings_are_fixed() {
+        let strings: Vec<&str> = Role::ALL.iter().map(|role| role.as_str()).collect();
+        assert_eq!(strings, ["member", "admin", "owner"]);
+        for &role in Role::ALL {
+            let json = serde_json::to_string(&role).expect("serialize");
+            assert_eq!(json, format!("\"{}\"", role.as_str()));
+            assert_eq!(
+                serde_json::from_str::<Role>(&json).expect("deserialize"),
+                role
+            );
+        }
+        assert!(serde_json::from_str::<Role>("\"Owner\"").is_err());
+        assert!(serde_json::from_str::<Role>("2").is_err());
+    }
+
+    #[test]
     fn role_string_round_trip_and_rejects_unknown() {
-        for role in Role::ALL {
+        for &role in Role::ALL {
             assert_eq!(Role::parse(role.as_str()), Ok(role));
         }
         for bad in ["", "Owner", "ADMIN", "root", "admin ", "member\0"] {
@@ -547,7 +557,7 @@ mod tests {
     #[test]
     fn owner_manages_everyone_but_not_self_for_destructive_actions() {
         let owner = actor(Role::Owner, None, &[]);
-        for role in Role::ALL {
+        for &role in Role::ALL {
             assert_eq!(manage_account(&owner, &subject(role, None)), Ok(()));
             assert_eq!(manage_other_account(&owner, &subject(role, None)), Ok(()));
         }
@@ -805,5 +815,22 @@ mod tests {
             keep_an_owner((Role::Member, Active), (Role::Owner, Active), 0),
             Ok(())
         );
+    }
+
+    #[test]
+    fn personal_requests_are_resolved_only_by_managing_heads_or_admins() {
+        let w = world();
+        let requester = subject(Role::Member, Some(w.dept_a_child));
+        let colleague = actor(Role::Member, Some(w.dept_a_child), &[]);
+        let other_head = actor(Role::Member, Some(w.dept_b), &[w.dept_b]);
+        let head = actor(Role::Member, Some(w.dept_a), &[w.dept_a, w.dept_a_child]);
+        let admin = actor(Role::Admin, None, &[]);
+        assert!(!can_resolve_personal_request(&colleague, &requester));
+        assert!(!can_resolve_personal_request(&other_head, &requester));
+        assert!(can_resolve_personal_request(&head, &requester));
+        assert!(can_resolve_personal_request(&admin, &requester));
+        // 본인 신청은 관리자·조직장이어도 승인할 수 없다.
+        assert!(!can_resolve_personal_request(&admin, &self_subject(&admin)));
+        assert!(!can_resolve_personal_request(&head, &self_subject(&head)));
     }
 }

@@ -159,15 +159,23 @@ pub async fn list(
     ctx: &AuthContext,
     query: &PageQuery,
 ) -> ServiceResult<Page<NoticeSummary>> {
-    let mut conn = state.read().await?;
-    let scope = scope_of(&mut conn, &ctx.actor).await?;
+    list_tx(&mut *state.read().await?, &ctx.actor, query).await
+}
+
+/// [`list`]의 본체. 홈 화면의 최근 공지도 이것으로 읽으므로 보이는 범위가 항상 같다.
+pub async fn list_tx(
+    conn: &mut Conn,
+    actor: &Actor,
+    query: &PageQuery,
+) -> ServiceResult<Page<NoticeSummary>> {
+    let scope = scope_of(conn, actor).await?;
     let departments = visible_departments(&scope);
     let filter = NoticeFilter {
-        reader: ctx.member_id(),
+        reader: actor.member_id,
         visible_departments: departments.as_deref(),
         include_archived: false,
     };
-    page(&mut conn, &filter, query).await
+    page(conn, &filter, query).await
 }
 
 /// 공지 상세. 열람만으로는 읽음 처리하지 않는다(필독 확인은 명시적인 동작이어야 한다).
@@ -202,15 +210,19 @@ pub async fn mark_read(
 
 /// 배지용: 볼 수 있는 공지 중 읽지 않은 수와 그중 필독 수.
 pub async fn unread_count(state: &AppState, ctx: &AuthContext) -> ServiceResult<NoticeUnreadCount> {
-    let mut conn = state.read().await?;
-    let scope = scope_of(&mut conn, &ctx.actor).await?;
+    unread_count_tx(&mut *state.read().await?, &ctx.actor).await
+}
+
+/// [`unread_count`]의 본체. 홈 화면도 같은 값을 쓴다.
+pub async fn unread_count_tx(conn: &mut Conn, actor: &Actor) -> ServiceResult<NoticeUnreadCount> {
+    let scope = scope_of(conn, actor).await?;
     let departments = visible_departments(&scope);
     let filter = NoticeFilter {
-        reader: ctx.member_id(),
+        reader: actor.member_id,
         visible_departments: departments.as_deref(),
         include_archived: false,
     };
-    let (unread, must_read) = notices::count_unread(&mut conn, &filter).await?;
+    let (unread, must_read) = notices::count_unread(conn, &filter).await?;
     let count = |n: i64| u32::try_from(n).map_err(ServiceError::internal);
     Ok(NoticeUnreadCount {
         unread: count(unread)?,
