@@ -178,10 +178,33 @@ pub struct Audit<'a> {
 }
 
 pub async fn audit(conn: &mut Conn, now: Timestamp, record: Audit<'_>) -> ServiceResult<()> {
+    let actor_id = record.ctx.map(AuthContext::member_id);
+    insert_audit(conn, now, actor_id, record).await
+}
+
+/// 요청 맥락 없이 행위자만 아는 곳에서 남기는 감사 로그.
+///
+/// 결재의 연결 효과(승인으로 기록이 고쳐지는 일 등)는 `AuthContext` 없이 실행되지만, 누가
+/// 승인해서 바뀌었는지는 남아야 한다. `record.ctx`가 없으면 IP는 남지 않는다.
+pub async fn audit_as(
+    conn: &mut Conn,
+    now: Timestamp,
+    actor_id: MemberId,
+    record: Audit<'_>,
+) -> ServiceResult<()> {
+    insert_audit(conn, now, Some(actor_id), record).await
+}
+
+async fn insert_audit(
+    conn: &mut Conn,
+    now: Timestamp,
+    actor_id: Option<MemberId>,
+    record: Audit<'_>,
+) -> ServiceResult<()> {
     let entry = AuditEntry {
         id: AuditLogId::new(),
         at: now,
-        actor_id: record.ctx.map(AuthContext::member_id),
+        actor_id,
         action: record.action.to_owned(),
         target_type: record.target_type.to_owned(),
         target_id: record.target_id,

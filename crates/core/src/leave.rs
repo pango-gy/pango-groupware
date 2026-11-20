@@ -71,51 +71,23 @@ impl fmt::Display for LeaveAmount {
     }
 }
 
-/// 하루 중 휴가를 쓰는 단위.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LeaveUnit {
-    /// 종일. 여러 날에 걸쳐 쓸 수 있는 유일한 단위.
-    FullDay,
-    /// 오전 반차.
-    AmHalf,
-    /// 오후 반차.
-    PmHalf,
-    /// 오전 반반차(근무 시작 후 2시간).
-    AmQuarter,
-    /// 오후 반반차(근무 종료 전 2시간).
-    PmQuarter,
+crate::string_enum! {
+    /// 하루 중 휴가를 쓰는 단위.
+    pub enum LeaveUnit("unit") {
+        /// 종일. 여러 날에 걸쳐 쓸 수 있는 유일한 단위.
+        FullDay => "full_day",
+        /// 오전 반차.
+        AmHalf => "am_half",
+        /// 오후 반차.
+        PmHalf => "pm_half",
+        /// 오전 반반차(근무 시작 후 2시간).
+        AmQuarter => "am_quarter",
+        /// 오후 반반차(근무 종료 전 2시간).
+        PmQuarter => "pm_quarter",
+    }
 }
 
 impl LeaveUnit {
-    pub const ALL: [LeaveUnit; 5] = [
-        Self::FullDay,
-        Self::AmHalf,
-        Self::PmHalf,
-        Self::AmQuarter,
-        Self::PmQuarter,
-    ];
-
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::FullDay => "full_day",
-            Self::AmHalf => "am_half",
-            Self::PmHalf => "pm_half",
-            Self::AmQuarter => "am_quarter",
-            Self::PmQuarter => "pm_quarter",
-        }
-    }
-
-    pub fn parse(value: &str) -> DomainResult<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|unit| unit.as_str() == value)
-            .ok_or(DomainError::validation(
-                "unit",
-                ValidationReason::InvalidFormat,
-            ))
-    }
-
     /// 근무일 하루당 차감되는 수량.
     pub const fn amount_per_day(self) -> LeaveAmount {
         match self {
@@ -235,22 +207,13 @@ pub const MAX_SERVICE_YEARS: u32 = 80;
 /// 입사 1년 미만 구간에서 매월 생기는 연차의 최대 횟수.
 const FIRST_YEAR_MONTHLY_GRANTS: u32 = 11;
 
-/// 자동 부여의 종류.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AccrualKind {
-    /// 1년 미만: 만 1개월마다 1일.
-    Monthly,
-    /// 만 n년: 15일 + 가산.
-    Annual,
-}
-
-impl AccrualKind {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Monthly => "monthly",
-            Self::Annual => "annual",
-        }
+crate::string_enum! {
+    /// 자동 부여의 종류. 표기는 `grant_key`의 앞부분으로도 쓰인다.
+    pub enum AccrualKind("kind") {
+        /// 1년 미만: 만 1개월마다 1일.
+        Monthly => "monthly",
+        /// 만 n년: 15일 + 가산.
+        Annual => "annual",
     }
 }
 
@@ -619,41 +582,13 @@ pub fn check_sufficient(
 
 // ───────────── 신청 상태 ─────────────
 
-/// 휴가 신청의 상태. 신청 시점에 잔여를 예약(차감)하고 `Pending`이 된다.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LeaveRequestStatus {
-    Pending,
-    Approved,
-    Rejected,
-    Canceled,
-}
-
-impl LeaveRequestStatus {
-    pub const ALL: [LeaveRequestStatus; 4] = [
-        Self::Pending,
-        Self::Approved,
-        Self::Rejected,
-        Self::Canceled,
-    ];
-
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Pending => "pending",
-            Self::Approved => "approved",
-            Self::Rejected => "rejected",
-            Self::Canceled => "canceled",
-        }
-    }
-
-    pub fn parse(value: &str) -> DomainResult<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|status| status.as_str() == value)
-            .ok_or(DomainError::validation(
-                "status",
-                ValidationReason::InvalidFormat,
-            ))
+crate::string_enum! {
+    /// 휴가 신청의 상태. 신청 시점에 잔여를 예약(차감)하고 `Pending`이 된다.
+    pub enum LeaveRequestStatus("status") {
+        Pending => "pending",
+        Approved => "approved",
+        Rejected => "rejected",
+        Canceled => "canceled",
     }
 }
 
@@ -885,7 +820,7 @@ mod tests {
 
     #[test]
     fn unit_round_trip_and_amounts() {
-        for unit in LeaveUnit::ALL {
+        for &unit in LeaveUnit::ALL {
             assert_eq!(LeaveUnit::parse(unit.as_str()), Ok(unit));
         }
         assert!(LeaveUnit::parse("half").is_err());
@@ -942,7 +877,7 @@ mod tests {
     #[test]
     fn span_partial_units_require_a_single_day() {
         let cal = calendar(&[]);
-        for unit in LeaveUnit::ALL.into_iter().filter(|u| u.is_partial()) {
+        for unit in LeaveUnit::ALL.iter().copied().filter(|u| u.is_partial()) {
             assert_eq!(
                 LeaveSpan::new(range("2026-03-02", "2026-03-03"), unit, &cal),
                 Err(DomainError::validation(
@@ -1025,8 +960,8 @@ mod tests {
             (PmQuarter, AmHalf),
         ];
         let day = DateRange::single(d("2026-03-02"));
-        for a in LeaveUnit::ALL {
-            for b in LeaveUnit::ALL {
+        for &a in LeaveUnit::ALL {
+            for &b in LeaveUnit::ALL {
                 let expected_free = compatible.contains(&(a, b)) || compatible.contains(&(b, a));
                 assert_eq!(
                     requests_overlap((day, a), (day, b)),
@@ -1048,7 +983,7 @@ mod tests {
             "같은 단위 두 번"
         );
         assert!(requests_overlap((day, PmQuarter), (day, PmQuarter)));
-        for unit in LeaveUnit::ALL {
+        for &unit in LeaveUnit::ALL {
             assert!(
                 requests_overlap((day, FullDay), (day, unit)),
                 "종일 + {unit:?}"
@@ -1834,7 +1769,7 @@ mod tests {
 
     #[test]
     fn status_round_trip_and_serde() {
-        for status in LeaveRequestStatus::ALL {
+        for &status in LeaveRequestStatus::ALL {
             assert_eq!(LeaveRequestStatus::parse(status.as_str()), Ok(status));
             let json = serde_json::to_string(&status).expect("serialize");
             assert_eq!(json, format!("\"{}\"", status.as_str()));
@@ -1844,6 +1779,38 @@ mod tests {
             );
         }
         assert_eq!(LeaveRequestStatus::Canceled.as_str(), "canceled");
+        let strings: Vec<&str> = LeaveRequestStatus::ALL.iter().map(|s| s.as_str()).collect();
+        assert_eq!(strings, ["pending", "approved", "rejected", "canceled"]);
+        assert!(serde_json::from_str::<LeaveRequestStatus>("\"Pending\"").is_err());
+    }
+
+    #[test]
+    fn leave_unit_wire_strings_are_fixed() {
+        let strings: Vec<&str> = LeaveUnit::ALL.iter().map(|unit| unit.as_str()).collect();
+        assert_eq!(
+            strings,
+            ["full_day", "am_half", "pm_half", "am_quarter", "pm_quarter"]
+        );
+        for &unit in LeaveUnit::ALL {
+            let json = serde_json::to_string(&unit).expect("serialize");
+            assert_eq!(json, format!("\"{}\"", unit.as_str()));
+            assert_eq!(
+                serde_json::from_str::<LeaveUnit>(&json).expect("deserialize"),
+                unit
+            );
+        }
+        assert!(serde_json::from_str::<LeaveUnit>("\"FullDay\"").is_err());
+    }
+
+    #[test]
+    fn accrual_kind_wire_strings_are_fixed() {
+        let strings: Vec<&str> = AccrualKind::ALL.iter().map(|kind| kind.as_str()).collect();
+        assert_eq!(strings, ["monthly", "annual"]);
+        for &kind in AccrualKind::ALL {
+            let json = serde_json::to_string(&kind).expect("serialize");
+            assert_eq!(json, format!("\"{}\"", kind.as_str()));
+            assert_eq!(AccrualKind::parse(kind.as_str()), Ok(kind));
+        }
         assert_eq!(
             LeaveRequestStatus::parse("Pending"),
             Err(DomainError::validation(

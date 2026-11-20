@@ -33,16 +33,18 @@ use pango_db::approval::{
 use pango_db::members::{self, Member};
 use pango_db::{org, Conn};
 
-use super::leave;
 use super::support::{
     audit, found, member_names, notify, page_of, parse_cursor, require_active_members,
     require_updated, Audit, AuthContext, Company, Idempotency, Notify,
 };
+use super::{attendance, leave};
 use crate::error::{ServiceError, ServiceResult};
 use crate::state::AppState;
 
 /// 휴가 신청 양식의 코드. 휴가 기능이 문서를 만들 때 이 코드로 양식을 찾는다.
 pub const LEAVE_FORM_CODE: &str = "leave";
+/// 근태 정정 양식의 코드. 근태 기능이 정정 요청 문서를 만들 때 이 코드로 양식을 찾는다.
+pub const ATTENDANCE_CORRECTION_FORM_CODE: &str = "attendance_correction";
 /// 추천 결재선의 최대 단계 수.
 const SUGGESTED_STEPS: usize = 3;
 
@@ -74,7 +76,7 @@ pub async fn seed_defaults_tx(conn: &mut Conn, now: Timestamp) -> ServiceResult<
         ("general", "품의서", DocumentKind::General),
         (LEAVE_FORM_CODE, "휴가 신청서", DocumentKind::Leave),
         (
-            "attendance_correction",
+            ATTENDANCE_CORRECTION_FORM_CODE,
             "근태 정정 신청서",
             DocumentKind::AttendanceCorrection,
         ),
@@ -269,7 +271,8 @@ async fn load(conn: &mut Conn, id: DocumentId) -> ServiceResult<Loaded> {
     Ok(Loaded { record, document })
 }
 
-fn document_link(id: DocumentId) -> String {
+/// 앱 안에서 문서 상세로 가는 경로. 알림의 `link`에 쓴다.
+pub fn document_link(id: DocumentId) -> String {
     format!("/approval/documents/{id}")
 }
 
@@ -471,7 +474,12 @@ pub async fn admin_list_documents(
 }
 
 pub async fn counts(state: &AppState, ctx: &AuthContext) -> ServiceResult<ApprovalCounts> {
-    let counts = approval::mailbox_counts(&mut *state.read().await?, ctx.member_id()).await?;
+    counts_tx(&mut *state.read().await?, ctx.member_id()).await
+}
+
+/// 한 구성원의 결재함 건수. 홈 화면도 같은 값을 쓴다.
+pub async fn counts_tx(conn: &mut Conn, member_id: MemberId) -> ServiceResult<ApprovalCounts> {
+    let counts = approval::mailbox_counts(conn, member_id).await?;
     let clamp = |count: i64| u32::try_from(count).unwrap_or(u32::MAX);
     Ok(ApprovalCounts {
         todo: clamp(counts.todo),
@@ -555,6 +563,33 @@ pub async fn build_line_tx(
     let approvers = line.steps().iter().map(|step| step.approver);
     require_line_active_tx(conn, approvers, line.references()).await?;
     Ok(line)
+}
+
+/// 시스템 양식 문서(휴가 신청, 근태 정정)의 결재선: 직접 지정했으면 그것을, 아니면 추천
+/// 결재선(상위 조직장)을 쓴다. 추천할 사람이 없으면 `Validation { steps, Empty }`이므로
+/// 요청자가 직접 지정해야 한다.
+pub async fn request_line_tx(
+    conn: &mut Conn,
+    member: &Member,
+    steps: Option<&[StepInput]>,
+    references: &[MemberId],
+) -> ServiceResult<ApprovalLine> {
+    let suggested: Vec<StepInput>;
+    let steps = match steps {
+        Some(steps) => steps,
+        None => {
+            suggested = suggested_approvers_tx(conn, member)
+                .await?
+                .iter()
+                .map(|approver| StepInput {
+                    approver_id: approver.id,
+                    kind: StepKind::Approve,
+                })
+                .collect();
+            &suggested
+        }
+    };
+    build_line_tx(conn, member.id, steps, references).await
 }
 
 async fn require_line_active_tx(
@@ -745,18 +780,18 @@ async fn run_linked_effect_tx(
     }
 }
 
-/// 근태 정정 문서가 종료됐을 때의 연결 효과가 들어갈 **자리**다. 지금은 아무것도 하지 않는다.
+/// 근태 정정 문서가 종료됐을 때의 연결 효과(최종 승인 → 기록 정정, 반려·회수 → 요청 종료).
 ///
-/// 근태 정정 기능이 생기면 여기서 그 기능의 `*_tx` 함수 하나를 부른다
-/// (최종 승인 → 기록 정정, 반려·회수 → 요청 종료). 오류를 돌려주면 결재 전이 전체가 롤백된다.
+/// 오류를 돌려주면 결재 전이 전체가 롤백된다. 승인 시점에 정정 값을 다시 검증하므로, 값이 더는
+/// 유효하지 않으면 승인 자체가 실패하고 결재자는 반려로 문서를 끝낼 수 있다.
 async fn attendance_correction_effect_tx(
-    _conn: &mut Conn,
-    _record: &DocumentRecord,
-    _outcome: LinkedOutcome,
-    _actor_id: MemberId,
-    _now: Timestamp,
+    conn: &mut Conn,
+    record: &DocumentRecord,
+    outcome: LinkedOutcome,
+    actor_id: MemberId,
+    now: Timestamp,
 ) -> ServiceResult<()> {
-    Ok(())
+    attendance::on_correction_document_closed_tx(conn, record.id, outcome, actor_id, now).await
 }
 
 // ───────────── 기안·상신 ─────────────
@@ -1021,7 +1056,7 @@ pub async fn reject(
     .await
 }
 
-/// 회수. 휴가 신청 문서라면 연결된 신청도 같은 트랜잭션에서 취소된다.
+/// 회수. 휴가 신청·근태 정정 문서라면 연결된 요청도 같은 트랜잭션에서 취소된다.
 pub async fn withdraw(
     state: &AppState,
     ctx: &AuthContext,
@@ -1034,7 +1069,7 @@ pub async fn withdraw(
     .await
 }
 
-/// 연결된 기능이 문서를 회수한다(휴가 신청 취소). 호출한 쪽의 트랜잭션에 묶인다.
+/// 연결된 기능이 문서를 회수한다(휴가 신청·근태 정정 요청 취소). 호출한 쪽의 트랜잭션에 묶인다.
 ///
 /// 회수는 기안자의 동작이므로 상태 기계에는 기안자의 이름으로 요청하고, 이력에는 실제
 /// 요청자(`actor_id`: 본인 또는 대신 취소한 관리자)를 남긴다. 권한은 호출한 쪽이 이미

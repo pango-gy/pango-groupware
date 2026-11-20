@@ -6,6 +6,7 @@
 
 pub mod approval;
 pub mod attendance;
+pub mod attendance_corrections;
 pub mod audit;
 pub mod codec;
 pub mod error;

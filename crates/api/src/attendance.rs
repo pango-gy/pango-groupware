@@ -4,10 +4,18 @@
 //! 엄격하게 검증한다(`2026-3-2` 같은 다른 표기를 받지 않기 위해서다).
 
 use chrono::NaiveDate;
-use pango_core::attendance::{AttendanceEventKind, DayEvaluation, MonthlySummary, WorkType};
-use pango_core::id::{AttendanceEventId, AttendanceRecordId, DepartmentId, MemberId};
+use pango_core::attendance::{
+    AttendanceEventKind, CorrectionStatus, DayEvaluation, MonthlySummary, WorkType,
+};
+use pango_core::id::{
+    AttendanceCorrectionId, AttendanceEventId, AttendanceRecordId, DepartmentId, DocumentId,
+    MemberId,
+};
 use pango_core::time::{MinuteOfDay, Timestamp};
 use serde::{Deserialize, Serialize};
+
+use crate::approval::StepInput;
+use crate::common::PageQuery;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttendanceRecordDto {
@@ -175,4 +183,61 @@ pub struct AdminEditRecordRequest {
 pub struct ExportQuery {
     pub from: String,
     pub to: String,
+}
+
+/// 근태 정정 요청(`POST /attendance/corrections`). 고칠 값 전체를 보낸다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateCorrectionRequest {
+    /// `YYYY-MM-DD`. 오늘 근무일까지, 31일 전까지. 출근 시각이 이 근무일에 속해야 한다.
+    pub work_date: String,
+    pub clock_in_at: Timestamp,
+    #[serde(default)]
+    pub clock_out_at: Option<Timestamp>,
+    pub work_type: WorkType,
+    /// 정정 사유. 결재 문서의 본문과 기록 이력에 남는다.
+    pub reason: String,
+    /// 생략하면 추천 결재선(상위 조직장)을 쓴다.
+    #[serde(default)]
+    pub steps: Option<Vec<StepInput>>,
+    #[serde(default)]
+    pub references: Vec<MemberId>,
+}
+
+/// 근태 정정 요청. 상태는 연결된 결재 문서(`document_id`)가 종료될 때 바뀐다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CorrectionDto {
+    pub id: AttendanceCorrectionId,
+    pub member_id: MemberId,
+    pub member_name: String,
+    pub work_date: NaiveDate,
+    /// 요청한 값.
+    pub clock_in_at: Timestamp,
+    pub clock_out_at: Option<Timestamp>,
+    pub work_type: WorkType,
+    pub reason: String,
+    pub status: CorrectionStatus,
+    pub document_id: DocumentId,
+    pub created_at: Timestamp,
+    pub decided_at: Option<Timestamp>,
+}
+
+/// `GET /attendance/corrections`의 쿼리. 최신 접수순.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CorrectionQuery {
+    /// 생략하면 본인.
+    #[serde(default)]
+    pub member_id: Option<MemberId>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub cursor: Option<String>,
+}
+
+impl CorrectionQuery {
+    pub fn page(&self) -> PageQuery {
+        PageQuery {
+            limit: self.limit,
+            cursor: self.cursor.clone(),
+        }
+    }
 }

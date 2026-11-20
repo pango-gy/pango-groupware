@@ -2,7 +2,7 @@
 
 use pango_api::notification::{NotificationDto, NotificationQuery, ReadAllResult, UnreadCount};
 use pango_api::Page;
-use pango_core::id::NotificationId;
+use pango_core::id::{MemberId, NotificationId};
 use pango_core::DomainError;
 use pango_db::notifications::{self, Notification};
 use pango_db::Conn;
@@ -44,7 +44,12 @@ pub async fn list(
 }
 
 pub async fn unread_count(state: &AppState, ctx: &AuthContext) -> ServiceResult<UnreadCount> {
-    let count = notifications::count_unread(&mut *state.read().await?, ctx.member_id()).await?;
+    unread_count_tx(&mut *state.read().await?, ctx.member_id()).await
+}
+
+/// 한 구성원의 읽지 않은 알림 수. 홈 화면도 같은 값을 쓴다.
+pub async fn unread_count_tx(conn: &mut Conn, member_id: MemberId) -> ServiceResult<UnreadCount> {
+    let count = notifications::count_unread(conn, member_id).await?;
     Ok(UnreadCount {
         unread: u32::try_from(count).map_err(ServiceError::internal)?,
     })

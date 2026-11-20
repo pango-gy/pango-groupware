@@ -4,14 +4,15 @@ use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
-use http::{header, HeaderValue};
+use http::{header, HeaderValue, StatusCode};
 use pango_api::attendance::{
     AdminAttendanceItem, AdminAttendanceQuery, AdminCreateRecordRequest, AdminEditRecordRequest,
-    AttendanceEventDto, AttendanceRecordDto, ClockInRequest, ExportQuery, MonthQuery, MonthRecords,
-    MonthlySummaryDto, TeamAttendance, TeamAttendanceQuery, TodayResponse,
+    AttendanceEventDto, AttendanceRecordDto, ClockInRequest, CorrectionDto, CorrectionQuery,
+    CreateCorrectionRequest, ExportQuery, MonthQuery, MonthRecords, MonthlySummaryDto,
+    TeamAttendance, TeamAttendanceQuery, TodayResponse,
 };
 use pango_api::Page;
-use pango_core::id::AttendanceRecordId;
+use pango_core::id::{AttendanceCorrectionId, AttendanceRecordId};
 
 use super::extract::{ApiJson, ApiPath, ApiQuery, Auth, IdempotentJson};
 use crate::error::{ServiceError, ServiceResult};
@@ -26,6 +27,14 @@ pub fn routes() -> Router<AppState> {
         .route("/attendance/records", get(records))
         .route("/attendance/records/{id}/events", get(events))
         .route("/attendance/summary", get(summary))
+        .route(
+            "/attendance/corrections",
+            get(list_corrections).post(create_correction),
+        )
+        .route(
+            "/attendance/corrections/{id}/cancel",
+            post(cancel_correction),
+        )
         .route("/team/attendance", get(team))
         .route("/admin/attendance", get(admin_list).post(admin_create))
         .route("/admin/attendance/export.csv", get(export_csv))
@@ -80,6 +89,37 @@ async fn events(
     ApiPath(id): ApiPath<AttendanceRecordId>,
 ) -> ServiceResult<Json<Vec<AttendanceEventDto>>> {
     attendance::record_events(&state, &ctx, id).await.map(Json)
+}
+
+async fn list_corrections(
+    State(state): State<AppState>,
+    Auth(ctx): Auth,
+    ApiQuery(query): ApiQuery<CorrectionQuery>,
+) -> ServiceResult<Json<Page<CorrectionDto>>> {
+    attendance::list_corrections(&state, &ctx, &query)
+        .await
+        .map(Json)
+}
+
+async fn create_correction(
+    State(state): State<AppState>,
+    Auth(ctx): Auth,
+    request: IdempotentJson<CreateCorrectionRequest>,
+) -> ServiceResult<(StatusCode, Json<CorrectionDto>)> {
+    let created =
+        attendance::create_correction(&state, &ctx, &request.body, request.idempotency.as_ref())
+            .await?;
+    Ok((StatusCode::CREATED, Json(created)))
+}
+
+async fn cancel_correction(
+    State(state): State<AppState>,
+    Auth(ctx): Auth,
+    ApiPath(id): ApiPath<AttendanceCorrectionId>,
+) -> ServiceResult<Json<CorrectionDto>> {
+    attendance::cancel_correction(&state, &ctx, id)
+        .await
+        .map(Json)
 }
 
 async fn team(

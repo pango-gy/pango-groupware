@@ -10,6 +10,7 @@ pub mod approval;
 pub mod attendance;
 pub mod audit_log;
 pub mod auth;
+pub mod home;
 pub mod leave;
 pub mod maintenance;
 pub mod members;
