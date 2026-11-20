@@ -9,7 +9,8 @@ license.workspace = true
 [dependencies]
 pango-core.workspace = true
 pango-api.workspace = true
-dioxus = { version = "0.7", features = ["web", "router"] }
+# devtools(개발 서버 연결)는 쓰지 않으므로 기본 기능에서 뺀다.
+dioxus = { version = "0.7", default-features = false, features = ["launch", "logger", "lib", "web", "router"] }
 serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
