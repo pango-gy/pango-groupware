@@ -108,7 +108,7 @@ fn TodayCard(onchange: EventHandler<()>) -> Element {
             {match stage {
                 TodayStage::ClockIn => rsx! {
                     div { class: "chip-group", role: "group", "aria-label": "근무 형태",
-                        for option in WorkType::ALL {
+                        for option in WorkType::ALL.iter().copied() {
                             button {
                                 key: "{option.as_str()}",
                                 r#type: "button",

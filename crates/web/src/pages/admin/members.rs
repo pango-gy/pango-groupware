@@ -329,7 +329,7 @@ pub mod logic {
         #[test]
         fn owner_manages_everyone_else_fully() {
             let owner = me(Role::Owner);
-            for role in Role::ALL {
+            for role in Role::ALL.iter().copied() {
                 assert_eq!(allowed_actions(&owner, &target(role)), ALL, "{role:?}");
                 assert_eq!(restriction(&owner, &target(role)), None);
             }
@@ -369,7 +369,7 @@ pub mod logic {
         #[test]
         fn member_gets_nothing() {
             let member = me(Role::Member);
-            for role in Role::ALL {
+            for role in Role::ALL.iter().copied() {
                 assert_eq!(allowed_actions(&member, &target(role)), NONE);
             }
             assert_eq!(allowed_actions(&member, &myself(&member)), NONE);
@@ -1143,7 +1143,8 @@ fn MemberDetailModal(
         })
         .collect();
     let role_options: Vec<(String, String)> = Role::ALL
-        .into_iter()
+        .iter()
+        .copied()
         .map(|r| (r.as_str().to_owned(), text::role_label(r).to_owned()))
         .collect();
 

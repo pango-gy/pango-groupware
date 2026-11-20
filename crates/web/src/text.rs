@@ -544,7 +544,7 @@ mod tests {
 
     #[test]
     fn every_attendance_enum_value_has_a_distinct_label() {
-        let work: Vec<_> = WorkType::ALL.into_iter().map(work_type_label).collect();
+        let work: Vec<_> = WorkType::ALL.iter().copied().map(work_type_label).collect();
         let status: Vec<_> = DAY_STATUSES.into_iter().map(day_status_label).collect();
         let events: Vec<_> = AttendanceEventKind::ALL
             .iter()
@@ -624,7 +624,8 @@ mod tests {
             .map(|s| member_status_label(*s))
             .collect();
         assert_eq!(labels.len(), MemberStatus::ALL.len());
-        let roles: std::collections::BTreeSet<_> = Role::ALL.into_iter().map(role_label).collect();
+        let roles: std::collections::BTreeSet<_> =
+            Role::ALL.iter().copied().map(role_label).collect();
         assert_eq!(roles.len(), Role::ALL.len());
         assert_ne!(
             member_status_tone(MemberStatus::Active),
@@ -659,11 +660,11 @@ mod tests {
 
     #[test]
     fn every_leave_enum_value_has_a_label() {
-        for unit in LeaveUnit::ALL {
+        for unit in LeaveUnit::ALL.iter().copied() {
             assert!(!leave_unit_label(unit).is_empty(), "{unit:?}");
             assert!(!leave_unit_short(unit).is_empty(), "{unit:?}");
         }
-        for status in LeaveRequestStatus::ALL {
+        for status in LeaveRequestStatus::ALL.iter().copied() {
             assert!(!leave_status_label(status).is_empty(), "{status:?}");
         }
         for kind in [
@@ -698,7 +699,7 @@ mod tests {
         for kind in EventKind::ALL {
             assert!(!event_kind_label(*kind).is_empty());
         }
-        for unit in LeaveUnit::ALL {
+        for unit in LeaveUnit::ALL.iter().copied() {
             assert!(!leave_unit_label(unit).is_empty());
         }
     }

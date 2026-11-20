@@ -583,7 +583,8 @@ mod logic {
 
     pub fn work_type_options() -> Vec<(String, String)> {
         WorkType::ALL
-            .into_iter()
+            .iter()
+            .copied()
             .map(|t| (t.as_str().to_owned(), text::work_type_label(t).to_owned()))
             .collect()
     }
