@@ -250,3 +250,64 @@ impl Company {
         ))
     }
 }
+
+/// CSV 한 줄을 덧붙인다(RFC 4180, 줄 끝 CRLF).
+///
+/// 내보낸 파일은 스프레드시트에서 열리므로, `=`·`+`·`-`·`@`·탭·CR로 시작하는 칸은 앞에 `'`를
+/// 붙여 수식으로 실행되지 않게 한다(CSV 수식 주입 방어). 쉼표·따옴표·줄바꿈이 있는 칸은
+/// 따옴표로 감싸고 안의 따옴표는 두 번 쓴다.
+pub fn push_csv_row<S: AsRef<str>>(out: &mut String, cells: impl IntoIterator<Item = S>) {
+    for (index, cell) in cells.into_iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        let cell = cell.as_ref();
+        let neutralized = cell.starts_with(['=', '+', '-', '@', '\t', '\r']);
+        let quoted = cell.contains([',', '"', '\n', '\r']);
+        if quoted {
+            out.push('"');
+        }
+        if neutralized {
+            out.push('\'');
+        }
+        out.push_str(&cell.replace('"', "\"\""));
+        if quoted {
+            out.push('"');
+        }
+    }
+    out.push_str("\r\n");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(cells: &[&str]) -> String {
+        let mut out = String::new();
+        push_csv_row(&mut out, cells);
+        out
+    }
+
+    #[test]
+    fn csv_cells_that_start_a_formula_are_neutralized() {
+        assert_eq!(
+            row(&["=1+1", "+cmd", "-2", "@SUM(A1)"]),
+            "'=1+1,'+cmd,'-2,'@SUM(A1)\r\n"
+        );
+        assert_eq!(row(&["\tx", "\rx"]), "'\tx,\"'\rx\"\r\n");
+        assert_eq!(row(&["a=b", "1-2", "메일@회사"]), "a=b,1-2,메일@회사\r\n");
+    }
+
+    #[test]
+    fn csv_cells_with_separators_are_quoted() {
+        assert_eq!(
+            row(&["a,b", "say \"hi\"", "line\nbreak", ""]),
+            "\"a,b\",\"say \"\"hi\"\"\",\"line\nbreak\",\r\n"
+        );
+        assert_eq!(
+            row(&[r#"=HYPERLINK("http://evil","x")"#]),
+            "\"'=HYPERLINK(\"\"http://evil\"\",\"\"x\"\")\"\r\n"
+        );
+        assert_eq!(row(&[]), "\r\n");
+    }
+}

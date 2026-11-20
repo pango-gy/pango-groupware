@@ -110,6 +110,57 @@ impl DateRange {
     }
 }
 
+/// 쿼리·본문으로 받는 날짜가 다룰 수 있는 연도 범위. 출퇴근 시각 범위(1900~9999년)와 같다.
+const MIN_INPUT_YEAR: i32 = 1900;
+const MAX_INPUT_YEAR: i32 = 9999;
+
+/// 고정 폭 숫자 묶음을 읽는다. `str::parse`는 `+`를 받으므로 숫자만인지 먼저 확인한다.
+fn fixed_digits(raw: &str) -> Option<u32> {
+    if raw.is_empty() || !raw.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    raw.parse().ok()
+}
+
+fn supported_year(year: u32) -> Option<i32> {
+    i32::try_from(year)
+        .ok()
+        .filter(|y| (MIN_INPUT_YEAR..=MAX_INPUT_YEAR).contains(y))
+}
+
+/// `YYYY-MM`(두 자리 월 고정)을 그 달 전체 구간으로 바꾼다.
+///
+/// `2026-1`처럼 표기가 여러 개면 같은 달이 링크·캐시에서 다른 값이 되므로 하나만 받는다.
+pub fn parse_month(raw: &str) -> DomainResult<DateRange> {
+    let invalid = || DomainError::validation("month", ValidationReason::InvalidFormat);
+    let (year, month) = raw
+        .split_once('-')
+        .filter(|(y, m)| y.len() == 4 && m.len() == 2)
+        .ok_or_else(invalid)?;
+    let year = fixed_digits(year)
+        .and_then(supported_year)
+        .ok_or_else(invalid)?;
+    let month = fixed_digits(month)
+        .filter(|m| (1..=12).contains(m))
+        .ok_or_else(invalid)?;
+    DateRange::month(year, month).map_err(|_| invalid())
+}
+
+/// `YYYY-MM-DD`(고정 폭)만 받는다. `field`는 오류에 실을 입력 이름이다.
+///
+/// `NaiveDate::from_str`은 `2026-3-2`도 받으므로 외부 입력에는 이 함수를 쓴다.
+pub fn parse_date(field: &'static str, raw: &str) -> DomainResult<NaiveDate> {
+    let invalid = || DomainError::validation(field, ValidationReason::InvalidFormat);
+    let bytes = raw.as_bytes();
+    if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
+        return Err(invalid());
+    }
+    let part = |from: usize, to: usize| raw.get(from..to).and_then(fixed_digits);
+    let year = part(0, 4).and_then(supported_year).ok_or_else(invalid)?;
+    let (month, day) = part(5, 7).zip(part(8, 10)).ok_or_else(invalid)?;
+    NaiveDate::from_ymd_opt(year, month, day).ok_or_else(invalid)
+}
+
 /// 근무 요일 + 공휴일.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkCalendar {
@@ -241,6 +292,77 @@ mod tests {
             0
         );
         assert!(cal.is_holiday(d("2026-03-07")) && !cal.is_working_day(d("2026-03-07")));
+    }
+
+    #[test]
+    fn parse_month_accepts_only_strict_yyyy_mm() {
+        let march = parse_month("2026-03").expect("march");
+        assert_eq!(
+            (march.start(), march.end()),
+            (d("2026-03-01"), d("2026-03-31"))
+        );
+        assert_eq!(parse_month("2028-02").expect("leap").end(), d("2028-02-29"));
+        assert_eq!(
+            parse_month("2026-12").expect("december").end(),
+            d("2026-12-31")
+        );
+        for bad in [
+            "2026-13",
+            "2026-00",
+            "0000-00",
+            "0000-01",
+            "1899-12",
+            "2026-1",
+            "2026-3",
+            "26-03",
+            "2026/03",
+            "2026-03-01",
+            "202603",
+            "",
+            " 2026-03",
+            "2026-03 ",
+            "+2026-03",
+            "99999-01",
+            "2026-0a",
+            "２０２６-03",
+        ] {
+            assert_eq!(
+                parse_month(bad),
+                Err(DomainError::validation(
+                    "month",
+                    ValidationReason::InvalidFormat
+                )),
+                "accepted {bad:?}"
+            );
+        }
+        assert!(parse_month("9999-12").is_ok());
+    }
+
+    #[test]
+    fn parse_date_accepts_only_strict_yyyy_mm_dd() {
+        assert_eq!(parse_date("from", "2028-02-29"), Ok(d("2028-02-29")));
+        for bad in [
+            "2026-3-2",
+            "2026-02-30",
+            "2026-13-01",
+            "20260302",
+            "2026-03-02T00:00:00",
+            "",
+            " 2026-03-02",
+            "+2026-03-02",
+            "0000-01-01",
+            "1899-12-31",
+            "2026-03-0x",
+        ] {
+            assert_eq!(
+                parse_date("from", bad),
+                Err(DomainError::validation(
+                    "from",
+                    ValidationReason::InvalidFormat
+                )),
+                "accepted {bad:?}"
+            );
+        }
     }
 
     #[test]

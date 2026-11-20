@@ -1,5 +1,6 @@
 //! HTTP 계층: 라우터와 공통 미들웨어.
 
+pub mod attendance;
 pub mod auth;
 pub mod extract;
 pub mod web;
@@ -23,6 +24,7 @@ fn api_routes() -> Router<AppState> {
     Router::new()
         .route("/health", get(health))
         .merge(auth::routes())
+        .merge(attendance::routes())
         .fallback(not_found)
 }
 
