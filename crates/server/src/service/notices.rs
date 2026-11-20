@@ -12,7 +12,7 @@ use pango_core::text::{Body, Title};
 use pango_core::DomainError;
 use pango_db::members::{self, Member, MemberFilter};
 use pango_db::notices::{self, Notice, NoticeCursor, NoticeFilter, NoticeListItem, NoticeView};
-use pango_db::{notifications, org, Conn};
+use pango_db::{notifications, Conn};
 
 use super::support::{
     audit, department_subtree, department_tree, found, members_by_id, next_page, notify,
@@ -125,11 +125,7 @@ async fn find_visible(conn: &mut Conn, actor: &Actor, id: NoticeId) -> ServiceRe
 /// 사라진 부서이므로 없는 부서와 같이 취급한다.
 async fn check_department(conn: &mut Conn, audience: &Audience) -> ServiceResult<()> {
     if let Some(id) = audience.department_id() {
-        found(
-            org::find_department(conn, id)
-                .await?
-                .filter(|d| d.archived_at.is_none()),
-        )?;
+        super::org::active_department(conn, id).await?;
     }
     Ok(())
 }

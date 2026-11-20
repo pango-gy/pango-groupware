@@ -260,14 +260,12 @@ impl Profile {
     ) -> ServiceResult<()> {
         if let Some(id) = self.department_id {
             if current.and_then(|m| m.department_id) != Some(id) {
-                let department = org::find_department(conn, id).await?;
-                found(department.filter(|d| d.archived_at.is_none()))?;
+                super::org::active_department(conn, id).await?;
             }
         }
         if let Some(id) = self.position_id {
             if current.and_then(|m| m.position_id) != Some(id) {
-                let position = org::find_position(conn, id).await?;
-                found(position.filter(|p| p.archived_at.is_none()))?;
+                super::org::active_position(conn, id).await?;
             }
         }
         Ok(())

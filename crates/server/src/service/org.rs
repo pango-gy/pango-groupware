@@ -53,7 +53,10 @@ impl DepartmentFields {
 }
 
 /// 보관되지 않은 부서. 보관된 부서는 관리 대상에서 사라진 것으로 보고 `NotFound`.
-async fn active_department(conn: &mut Conn, id: DepartmentId) -> ServiceResult<Department> {
+pub(super) async fn active_department(
+    conn: &mut Conn,
+    id: DepartmentId,
+) -> ServiceResult<Department> {
     found(
         org::find_department(conn, id)
             .await?
@@ -297,7 +300,7 @@ fn position_name_taken(error: DbError) -> ServiceError {
     }
 }
 
-async fn active_position(conn: &mut Conn, id: PositionId) -> ServiceResult<Position> {
+pub(super) async fn active_position(conn: &mut Conn, id: PositionId) -> ServiceResult<Position> {
     found(
         org::find_position(conn, id)
             .await?
