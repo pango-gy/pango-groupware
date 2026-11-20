@@ -10,7 +10,7 @@
 | 조직 | 부서 트리, 직책, 구성원, 역할 | 겸직, 조직 개편 이력 |
 | 출퇴근·근태 | 출근/퇴근, 근무 형태, 월별 조회·요약, 정정 요청, 관리자 수정·CSV | 위치/Wi-Fi 확인, 교대 근무 |
 | 휴가 | 휴가 종류, 연차 자동 부여, 신청·승인·취소, 잔여 조회, 관리자 조정 | 회계연도 기준 부여 |
-| 전자결재 | 양식, 기안, 결재라인(결재·합의·참조), 승인·반려·회수, 결재함 | 대결·전결, 첨부파일 |
+| 전자결재 | 분류별 양식(필드 정의), 기안, 결재라인(결재·합의·참조), 승인·반려·회수, 결재함 | 대결·전결, 첨부파일 |
 | 공지 | 작성·고정·필독, 읽음 확인, 대상 지정 | 첨부파일, 댓글 |
 | 캘린더 | 내·전사·부서 일정, 참석자 초대·응답, 참석자 일정 확인, 공휴일·휴가 표시 | 반복 일정, 미리 알림, 생일, 다른 사람의 캘린더 공유 |
 | 알림 | 앱 내 알림 | 푸시 중계 서버 |
@@ -56,7 +56,8 @@ UUID v7을 타입별 newtype(`MemberId`, `DocumentId` …)으로 감쌉니다. D
 
 ### 오류
 - core: `DomainError` (`Validation`, `Forbidden`, `NotFound`, `Conflict`, `Unauthenticated`, `RateLimited`).
-- HTTP 본문: `{"error": {"code": "snake_case", "message": "…", "field": "…"}}`.
+- HTTP 본문: `{"error": {"code": "snake_case", "message": "…", "field": "…", "reason": "…"}}`.
+- 한 요청에서 여러 필드가 잘못될 수 있는 입력(결재 양식의 값, 양식의 필드 정의)은 **찾은 오류를 전부** `fields`에 담습니다: `"fields": [{"key": "items", "row": 1, "column": "amount", "reason": "out_of_range"}, …]`. `row`(0부터)·`column`은 표의 칸일 때만 값이 있고 아니면 `null`입니다. 이때도 `field`·`reason`에는 첫 오류가 들어 있어 `fields`를 모르는 클라이언트가 그대로 동작합니다. 그 밖의 오류에는 `fields`가 없습니다(`ServiceError::InvalidFields`, 최대 100개).
 - 오류 코드는 `pango_api::ErrorCode` 한 곳에 정의합니다. 웹 UI의 문구도 이 코드에 매핑합니다.
 
 | 상황 | 상태 |
@@ -190,6 +191,32 @@ UUID v7을 타입별 newtype(`MemberId`, `DocumentId` …)으로 감쌉니다. D
 - 휴가 신청·근태 정정 같은 **개인 신청의 최종 결재자는 신청자의 관할 조직장 또는 관리자**여야 합니다. 결재선은 신청자가 고칠 수 있으므로, 신청할 때와 최종 승인할 때 모두 확인합니다(동료끼리 서로 승인하는 것을 막기 위해). 앞 단계(합의)에는 누구든 넣을 수 있습니다.
 - 휴가 신청·근태 정정은 **시스템 양식의 결재 문서**입니다. 최종 승인·반려·회수 시 같은 트랜잭션에서 연결된 효과(휴가 확정/복원, 기록 정정)를 실행합니다.
 
+#### 양식
+- 양식은 **분류**(`FormCategory`: `general` 일반 · `hr` 인사 · `attendance` 근태 · `trip` 출장 · `accounting` 회계 · `support` 지원 · `welfare` 복지 · `etc` 기타)와 **필드 정의**(`pango_core::form_schema::FormSchema`)를 가집니다. `use_body`가 참이면 자유 입력 본문이 필수이고, 거짓이면 본문 없이 필드만으로 문서를 냅니다(본문도 필수 필드도 없는 양식은 만들 수 없음).
+- 필드 정의: `{"fields": [{"key", "label", "kind", "required", "help"?, …종류별 속성}]}`. 필드는 최대 40개, `key`는 소문자로 시작하는 `snake_case`(40자 이하, 양식 안에서 유일)입니다.
+
+  | `kind` | 속성 | 값 |
+  | --- | --- | --- |
+  | `text` / `textarea` | `max_len`(기본이자 최대 200 / 5,000) | 문자열(`text`는 한 줄). `text` 규칙으로 정규화 |
+  | `number` | `min`, `max`(생략 가능, ±10^15 안) | 정수 |
+  | `money` | | 0~10^12의 정수(원) |
+  | `date` | | `"YYYY-MM-DD"` |
+  | `date_range` | | `{"start", "end"}` 양 끝 포함, 최대 366일 |
+  | `time_range` | | `{"start": "HH:MM", "end": "HH:MM"}` 같은 날, 시작 < 끝 |
+  | `select` | `options`(1~30개, 각 50자 이하, 중복 없음) | 선택지 중 하나 |
+  | `checkbox` | | 불리언(필수면 반드시 `true`) |
+  | `member` | | 재직 중인 구성원의 ID |
+  | `table` | `columns`(1~8개, 종류는 text·number·money·date·select) | 행의 배열(`{열 key: 값}`), 최대 50행. 필수면 1행 이상 |
+
+- **값 검증**(`FormSchema::validate_values`)은 임시저장·수정·상신 모두에서 합니다. 양식에 없는 키는 `unknown_field`, 필수 누락은 `empty`, 선택지에 없는 값은 `not_an_option`, 없거나 재직 중이 아닌 구성원은 `not_found`·`member_inactive`이며 모든 오류를 한 번에 돌려줍니다(위 `fields`). 없는 키·`null`·공백뿐인 문자열·빈 표는 "입력하지 않음"입니다.
+- **계산값**: 금액 열이 있는 표는 열별 합계(`{"totals": {열 key: 합계}}`), 기간은 일수(`{"days": n}`)를 서버가 계산해 필드 키 아래에 둡니다.
+- **문서는 낸 시점의 양식을 갖고 다닙니다.** 일반 양식 문서의 `payload`는 `{"form_schema_version", "category", "use_body", "schema", "values", "computed"}`이고, 상세 응답은 이것을 `form_snapshot`(분류 이름과 `member` 필드의 구성원 이름 포함)으로 내려 줍니다. 그래서 양식을 고쳐도 이미 낸 문서는 낼 때의 모양대로 보입니다. 시스템 양식 문서의 `payload`는 그 기능이 정한 그대로이고 `form_snapshot`이 없습니다. 이 기능 이전의 일반 문서는 필드 없는 양식(`schema_version` 0)으로 보입니다.
+- 필드 정의를 고치면 `schema_version`이 1 오릅니다(같은 정의를 다시 보내면 그대로). **임시저장 문서는 상신할 때 지금의 정의로 다시 검증**하고 그 정의를 갖습니다. 맞지 않으면 상신이 400으로 실패하고 기안자가 고쳐야 합니다.
+- **기본 참조자**(`default_reference_ids`, 30명 이하): 상신할 때 문서의 참조자에 더합니다(예: 회계 양식 → 재무 담당자). 이미 당사자인 사람은 건너뛰고, 재직 중이 아니거나 참조자 한도를 넘는 사람은 상신을 막지 않고 빼되 감사 로그 `approval.default_reference_skipped`에 남깁니다.
+- **기본 양식(카탈로그)**: `crates/server/src/service/form_catalog.json`의 27개 양식(일반 3 · 인사 9 · 근태 3 · 출장 2 · 회계 2 · 지원 5 · 복지 3, 시스템 양식 2개 포함)을 최초 설정이 넣습니다. 서버는 시작할 때마다 `code`로 **없는 것만** 채우므로(`ensure_form_catalog`, 넣었으면 감사 로그 `approval_form.catalog_seed`) 판올림으로 생긴 양식이 기존 회사에도 들어갑니다. 관리자가 고친 양식은 덮어쓰지 않고, 양식은 지우지 않고 끄기만 하므로 꺼 둔 기본 양식이 다시 생기지 않습니다. 양식의 출처는 `origin`(`catalog`/`custom`)에 남습니다.
+- **양식 관리**(관리자): 만들기·고치기에서 분류·필드 정의·본문 사용·기본 참조자를 정합니다(수정은 보낸 것만 바뀜). 필드 정의의 오류 위치는 `schema.fields[0].key` 같은 경로입니다. `POST /admin/approval/forms/{id}/duplicate`(본문 `{}`)는 같은 내용의 **꺼진** 사본을 `<code>_copy_N` 코드로 만듭니다. 시스템 양식은 끌 수 없고 분류·필드 정의·본문 사용·기본 참조자를 바꾸거나 복제할 수 없습니다(409 `in_use`).
+- `GET /approval/forms`는 사용 중인 양식을 분류별로 묶어 줍니다: `[{category, category_label, forms: [{id, code, name, description, kind, body_template, use_body, schema, schema_version, system, route}]}]`. 시스템 양식은 `system: true`이고 `route`(`leave_new`·`attendance`, 일반은 `approval_new`)가 문서를 만드는 화면을 가리킵니다. 문서함은 `?form_id=`·`?category=`(양식의 지금 분류)로 거를 수 있습니다.
+
 ## 7. HTTP API
 
 접두사 `/api/v1`. 인증이 필요 없는 것은 `POST /auth/login`, `GET /health`뿐입니다.
@@ -202,7 +229,7 @@ UUID v7을 타입별 newtype(`MemberId`, `DocumentId` …)으로 감쌉니다. D
 | 출퇴근 | `GET /attendance/today` `POST /attendance/clock-in` `POST /attendance/clock-out` `GET /attendance/records` `GET /attendance/summary` `GET·POST /attendance/corrections` `POST /attendance/corrections/{id}/cancel` |
 | 휴가 | `GET /leave/types` `GET /leave/balance` `GET /leave/ledger` `GET /leave/requests` `POST /leave/requests` `POST /leave/requests/{id}/cancel` `GET /leave/calendar` |
 | 조직장 | `GET /team/attendance` `GET /team/leave` `GET /team/members` |
-| 결재 | `GET /approval/forms` `GET /approval/counts` `GET /approval/line-suggestion` `GET /approval/documents` `POST /approval/documents` `GET·PATCH·DELETE /approval/documents/{id}` `POST /approval/documents/{id}/{submit,approve,reject,withdraw}` `POST /admin/approval/documents/{id}/reject` |
+| 결재 | `GET /approval/forms` `GET /approval/counts` `GET /approval/line-suggestion` `GET /approval/documents` `POST /approval/documents` `GET·PATCH·DELETE /approval/documents/{id}` `POST /approval/documents/{id}/{submit,approve,reject,withdraw}` `POST /admin/approval/documents/{id}/reject` `POST /admin/approval/forms/{id}/duplicate` |
 | 공지 | `GET /notices` `GET /notices/{id}` `POST /notices/{id}/read` |
 | 캘린더 | `GET /calendar/calendars` `GET /calendar/view` `GET /calendar/conflicts` `POST /calendar/events` `GET·PATCH·DELETE /calendar/events/{id}` `POST /calendar/events/{id}/respond` |
 | 알림 | `GET /notifications` `POST /notifications/{id}/read` `POST /notifications/read-all` |
