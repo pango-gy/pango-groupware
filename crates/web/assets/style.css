@@ -763,6 +763,8 @@ body:has(.action-bar) .toasts { bottom: calc(24px + var(--action-bar-h) + env(sa
 .calendar-row { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
 .calendar-weekday { padding: 8px 0; text-align: center; font-size: 13px; font-weight: 500; color: var(--grey-600); }
 .calendar-weekday:first-child { color: var(--red-strong); }
+/* 한국 달력 관례: 일요일은 빨강, 토요일은 파랑. */
+.calendar-weekday:last-child { color: var(--blue-strong); }
 .calendar-cell {
   min-height: 88px; padding: 6px; border-top: 1px solid var(--grey-100);
   display: flex; flex-direction: column; gap: 3px; min-width: 0; font-size: 12px;
@@ -1072,7 +1074,9 @@ body:has(.action-bar) .toasts { bottom: calc(24px + var(--action-bar-h) + env(sa
 .cal-company { --c: var(--cal-company); --c-strong: var(--cal-company-strong); --c-weak: var(--cal-company-weak); }
 .cal-holiday { --c: var(--red); }
 .cal-leave { --c: var(--cal-leave); }
-.cal-layout { display: grid; grid-template-columns: var(--sidebar-w) minmax(0, 1fr); gap: 16px; align-items: start; }
+.cal-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 16px; align-items: start; }
+/* 달력은 넓을수록 일정 제목이 덜 잘리므로 본문 최대 폭 제한을 풀고, 화면 높이를 채운다. */
+.content:has(.cal-layout) { max-width: none; }
 .cal-side {
   position: sticky; top: 16px; max-height: calc(100dvh - 32px); overflow-y: auto;
   display: flex; flex-direction: column; gap: 20px; padding: 20px 16px;
@@ -1112,7 +1116,7 @@ body:has(.action-bar) .toasts { bottom: calc(24px + var(--action-bar-h) + env(sa
 .cal-toggle-note { flex: none; font-size: 12px; color: var(--grey-600); }
 
 /* 월 보기: 막대는 시작 칸에서 오른쪽 칸들 위로 늘어난다(지나는 칸은 같은 높이의 빈자리를 둔다). */
-.cal-month .calendar-cell { min-height: 112px; padding: 0; }
+.cal-month .calendar-cell { min-height: max(112px, calc((100dvh - 230px) / 6)); padding: 0; }
 .cal-month .calendar-cell-outside { background: var(--grey-50); }
 .cal-day { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 4px 0 6px; }
 .cal-day-head { display: flex; align-items: center; gap: 4px; min-width: 0; padding: 0 4px; }
@@ -1122,6 +1126,8 @@ body:has(.action-bar) .toasts { bottom: calc(24px + var(--action-bar-h) + env(sa
 }
 .cal-date:hover { background: var(--grey-100); }
 .cal-day-off .cal-date, .calendar-cell-outside .cal-date { color: var(--grey-600); }
+.calendar-row > .calendar-cell:first-child:not(.calendar-cell-outside) .cal-date { color: var(--red-strong); }
+.calendar-row > .calendar-cell:last-child:not(.calendar-cell-outside) .cal-date { color: var(--blue-strong); }
 .cal-day-holiday .cal-date { color: var(--red-strong); }
 .cal-day-today .cal-date, .cal-day-today .cal-date:hover { background: var(--blue); color: var(--on-blue); font-weight: 700; }
 .cal-holiday-name {
