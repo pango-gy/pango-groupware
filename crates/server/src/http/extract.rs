@@ -29,6 +29,19 @@ fn header_str(headers: &HeaderMap, name: impl header::AsHeaderName) -> Option<&s
     headers.get(name).and_then(|value| value.to_str().ok())
 }
 
+/// `X-Forwarded-For`의 한 항목을 IP로 읽는다. `1.2.3.4:5678`, `[::1]:443` 같은 포트 표기도 받는다.
+fn parse_forwarded_ip(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    let ip = raw
+        .parse::<std::net::IpAddr>()
+        .ok()
+        .or_else(|| raw.parse::<SocketAddr>().ok().map(|addr| addr.ip()));
+    if ip.is_none() {
+        tracing::warn!("unparseable X-Forwarded-For entry; falling back to the peer address");
+    }
+    ip.map(|ip| ip.to_string())
+}
+
 /// 요청의 출처 정보를 읽는다.
 pub fn request_meta(parts: &Parts, trust_proxy: bool) -> RequestMeta {
     let forwarded = trust_proxy
@@ -36,9 +49,7 @@ pub fn request_meta(parts: &Parts, trust_proxy: bool) -> RequestMeta {
         .flatten()
         // 프록시가 덧붙인 마지막 값만 믿는다. 앞쪽 값은 클라이언트가 위조할 수 있다.
         .and_then(|value| value.rsplit(',').next())
-        .map(str::trim)
-        .filter(|ip| ip.parse::<std::net::IpAddr>().is_ok())
-        .map(str::to_owned);
+        .and_then(parse_forwarded_ip);
     let direct = parts
         .extensions
         .get::<ConnectInfo<SocketAddr>>()
@@ -68,11 +79,45 @@ fn session_token(headers: &HeaderMap, cookie: &str) -> Option<(SessionToken, Ses
         .map(|token| (token, SessionVia::Cookie))
 }
 
+/// 요청이 어느 주소로 들어왔는지. 출처 검사에 쓴다.
+pub struct Target<'a> {
+    /// 설정된 공개 주소(`https://erp.example.com`). 있으면 이것만 기준으로 삼는다.
+    pub public_origin: Option<&'a str>,
+    /// `Host` 헤더 또는 (HTTP/2에서는) 요청 URI의 authority.
+    pub host: Option<&'a str>,
+}
+
+impl<'a> Target<'a> {
+    pub fn of(parts: &'a Parts, public_origin: Option<&'a str>) -> Self {
+        let host = header_str(&parts.headers, header::HOST)
+            .or_else(|| parts.uri.authority().map(|authority| authority.as_str()));
+        Self {
+            public_origin,
+            host,
+        }
+    }
+
+    fn matches(&self, origin: &str) -> bool {
+        match self.public_origin {
+            // 스킴·호스트·포트를 모두 비교한다.
+            Some(expected) => origin.eq_ignore_ascii_case(expected.trim_end_matches('/')),
+            None => match (origin.split_once("://"), self.host) {
+                (Some((_, origin_host)), Some(host)) => origin_host.eq_ignore_ascii_case(host),
+                _ => false,
+            },
+        }
+    }
+}
+
 /// 브라우저가 보낸 요청이 같은 출처에서 왔는지 확인한다(CSRF 방어).
 ///
-/// `Sec-Fetch-Site`가 있으면 그것을, 없으면 `Origin`을 `Host`와 비교한다.
+/// `Sec-Fetch-Site`가 있으면 그것을, 없으면 `Origin`을 요청 대상과 비교한다.
 /// `require_header`가 참이면 둘 다 없는 요청도 거부한다(쿠키 인증된 변경 요청).
-pub fn check_same_origin(headers: &HeaderMap, require_header: bool) -> Result<(), ServiceError> {
+pub fn check_same_origin(
+    headers: &HeaderMap,
+    target: &Target<'_>,
+    require_header: bool,
+) -> Result<(), ServiceError> {
     if let Some(site) = header_str(headers, "sec-fetch-site") {
         return if matches!(site, "same-origin" | "none") {
             Ok(())
@@ -81,15 +126,8 @@ pub fn check_same_origin(headers: &HeaderMap, require_header: bool) -> Result<()
         };
     }
     match header_str(headers, header::ORIGIN) {
-        Some(origin) => {
-            let origin_host = origin.split_once("://").map(|(_, host)| host);
-            let host = header_str(headers, header::HOST);
-            if origin_host.is_some() && origin_host == host {
-                Ok(())
-            } else {
-                Err(ServiceError::CrossOrigin)
-            }
-        }
+        Some(origin) if target.matches(origin) => Ok(()),
+        Some(_) => Err(ServiceError::CrossOrigin),
         None if require_header => Err(ServiceError::CrossOrigin),
         None => Ok(()),
     }
@@ -101,7 +139,8 @@ async fn authenticate(parts: &mut Parts, state: &AppState) -> Result<AuthContext
         .ok_or(ServiceError::Domain(DomainError::Unauthenticated))?;
     let safe = matches!(parts.method, Method::GET | Method::HEAD | Method::OPTIONS);
     if via == SessionVia::Cookie && !safe {
-        check_same_origin(&parts.headers, true)?;
+        let target = Target::of(parts, state.config.public_origin.as_deref());
+        check_same_origin(&parts.headers, &target, true)?;
     }
     let meta = request_meta(parts, state.config.trust_proxy);
     service::auth::authenticate(state, &token, meta).await
@@ -149,7 +188,8 @@ impl FromRequestParts<AppState> for Meta {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        check_same_origin(&parts.headers, false)?;
+        let target = Target::of(parts, state.config.public_origin.as_deref());
+        check_same_origin(&parts.headers, &target, false)?;
         Ok(Self(request_meta(parts, state.config.trust_proxy)))
     }
 }
@@ -319,18 +359,40 @@ mod tests {
         assert_eq!(session_token(&HeaderMap::new(), "pango_session"), None);
     }
 
-    #[test]
-    fn same_origin_check() {
-        let ok = |pairs: &[(&'static str, &str)], required| {
-            check_same_origin(&headers(pairs), required).is_ok()
+    fn same_origin(
+        pairs: &[(&'static str, &str)],
+        public_origin: Option<&str>,
+        required: bool,
+    ) -> bool {
+        let map = headers(pairs);
+        let target = Target {
+            public_origin,
+            host: header_str(&map, header::HOST),
         };
-        assert!(ok(&[("sec-fetch-site", "same-origin")], true));
-        assert!(ok(&[("sec-fetch-site", "none")], true));
-        assert!(!ok(&[("sec-fetch-site", "cross-site")], true));
+        check_same_origin(&map, &target, required).is_ok()
+    }
+
+    #[test]
+    fn sec_fetch_site_decides_when_present() {
+        let ok = |pairs: &[(&'static str, &str)]| same_origin(pairs, None, true);
+        assert!(ok(&[("sec-fetch-site", "same-origin")]));
+        assert!(ok(&[("sec-fetch-site", "none")]));
+        assert!(!ok(&[("sec-fetch-site", "cross-site")]));
         assert!(
-            !ok(&[("sec-fetch-site", "same-site")], true),
+            !ok(&[("sec-fetch-site", "same-site")]),
             "다른 서브도메인도 거부"
         );
+        // cross-site면 Origin이 맞아 보여도 거부.
+        assert!(!ok(&[
+            ("sec-fetch-site", "cross-site"),
+            ("origin", "https://a.com"),
+            ("host", "a.com")
+        ]));
+    }
+
+    #[test]
+    fn origin_is_compared_with_the_request_host() {
+        let ok = |pairs: &[(&'static str, &str)], required| same_origin(pairs, None, required);
         assert!(ok(
             &[
                 ("origin", "https://erp.example.com"),
@@ -338,6 +400,16 @@ mod tests {
             ],
             true
         ));
+        assert!(
+            ok(
+                &[
+                    ("origin", "https://ERP.example.com"),
+                    ("host", "erp.Example.com")
+                ],
+                true
+            ),
+            "대소문자 무시"
+        );
         assert!(!ok(
             &[
                 ("origin", "https://evil.example"),
@@ -363,17 +435,57 @@ mod tests {
             ],
             true
         ));
+        assert!(
+            !ok(&[("origin", "https://erp.example.com")], true),
+            "비교할 호스트가 없으면 거부"
+        );
         assert!(!ok(&[], true), "헤더가 없으면 쿠키 인증 변경 요청은 거부");
         assert!(ok(&[], false));
-        // Sec-Fetch-Site가 cross-site면 Origin이 맞아 보여도 거부.
-        assert!(!ok(
-            &[
-                ("sec-fetch-site", "cross-site"),
-                ("origin", "https://a.com"),
-                ("host", "a.com")
-            ],
-            false
-        ));
+    }
+
+    #[test]
+    fn configured_public_origin_is_matched_exactly_including_scheme() {
+        let public = Some("https://erp.example.com/");
+        let ok = |pairs: &[(&'static str, &str)]| same_origin(pairs, public, true);
+        // 프록시가 Host를 바꿔도 공개 주소와 맞으면 통과한다.
+        assert!(ok(&[
+            ("origin", "https://erp.example.com"),
+            ("host", "127.0.0.1:8080")
+        ]));
+        assert!(ok(&[("origin", "HTTPS://ERP.EXAMPLE.COM")]));
+        assert!(
+            !ok(&[("origin", "http://erp.example.com")]),
+            "스킴이 다르면 거부"
+        );
+        assert!(!ok(&[("origin", "https://erp.example.com:8443")]));
+        // Host만 맞는 것으로는 부족하다.
+        assert!(!ok(&[
+            ("origin", "https://internal.local"),
+            ("host", "internal.local")
+        ]));
+    }
+
+    #[test]
+    fn forwarded_ip_accepts_port_forms_and_rejects_garbage() {
+        assert_eq!(
+            parse_forwarded_ip(" 203.0.113.9 ").as_deref(),
+            Some("203.0.113.9")
+        );
+        assert_eq!(
+            parse_forwarded_ip("203.0.113.9:4711").as_deref(),
+            Some("203.0.113.9")
+        );
+        assert_eq!(
+            parse_forwarded_ip("[2001:db8::1]:443").as_deref(),
+            Some("2001:db8::1")
+        );
+        assert_eq!(
+            parse_forwarded_ip("2001:db8::1").as_deref(),
+            Some("2001:db8::1")
+        );
+        for bad in ["", "unknown", "example.com", "1.2.3.4.5", "' OR 1=1"] {
+            assert_eq!(parse_forwarded_ip(bad), None, "{bad:?}");
+        }
     }
 
     #[test]

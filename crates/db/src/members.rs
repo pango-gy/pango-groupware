@@ -38,10 +38,20 @@ impl Member {
 }
 
 /// 로그인 판정에 필요한 비밀 정보. 일반 조회 결과([`Member`])에는 들어가지 않는다.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Credentials {
     pub member: Member,
     pub password_hash: String,
+}
+
+// 해시가 로그에 찍히지 않게 한다.
+impl std::fmt::Debug for Credentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Credentials")
+            .field("member", &self.member.id)
+            .field("password_hash", &"***")
+            .finish()
+    }
 }
 
 #[derive(sqlx::FromRow)]

@@ -45,6 +45,9 @@ enum Command {
         /// 앞단 리버스 프록시의 X-Forwarded-For를 신뢰한다.
         #[arg(long, env = "PANGO_TRUST_PROXY")]
         trust_proxy: bool,
+        /// 서비스의 공개 주소(예: https://erp.example.com). 리버스 프록시 뒤에서는 지정을 권장한다.
+        #[arg(long, env = "PANGO_PUBLIC_ORIGIN")]
+        public_origin: Option<String>,
         /// HTTPS 없이 쓰는 로컬 개발용. 세션 쿠키의 Secure 속성을 끈다.
         #[arg(long)]
         insecure_cookies: bool,
@@ -90,10 +93,12 @@ async fn run(cli: Cli) -> Result<(), AnyError> {
         Command::Serve {
             bind,
             trust_proxy,
+            public_origin,
             insecure_cookies,
         } => {
             let config = Config {
                 trust_proxy,
+                public_origin,
                 cookie_secure: !insecure_cookies,
                 ..Config::default()
             };

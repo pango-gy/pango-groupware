@@ -255,11 +255,11 @@ async fn invalid_combinations_are_rejected_and_change_nothing() {
     );
     assert!(audit_actions(&app, "settings.").await.is_empty());
 
-    // 경계값(전환 12:00, 유예 120분, 모든 요일, 반반차 = 근무 구간 - 1분)은 받는다.
+    // 경계값(전환 = 근무 시작, 유예 120분, 모든 요일, 반반차 = 근무 구간 - 1분)은 받는다.
     let boundary = edited(
         &current,
         json!({
-            "day_cutoff": "12:00", "late_grace_minutes": 120, "workdays": 127,
+            "day_cutoff": "09:00", "late_grace_minutes": 120, "workdays": 127,
             "quarter_minutes": 539,
         }),
     );
@@ -269,6 +269,28 @@ async fn invalid_combinations_are_rejected_and_change_nothing() {
         .send()
         .await
         .expect(StatusCode::OK);
+}
+
+#[tokio::test]
+async fn day_cutoff_later_than_work_start_is_rejected() {
+    let app = TestApp::new().await;
+    let owner = app.login_owner().await;
+    let current = app
+        .get("/admin/settings")
+        .bearer(&owner)
+        .send()
+        .await
+        .expect(StatusCode::OK);
+    // 09:00 출근인데 전환이 09:01이면 정시 출근이 전날 근무일로 잡힌다.
+    let response = app
+        .put("/admin/settings")
+        .bearer(&owner)
+        .json(&edited(&current, json!({ "day_cutoff": "09:01" })))
+        .send()
+        .await;
+    assert_eq!(response.body["error"]["field"], "day_cutoff");
+    response.expect_error(StatusCode::BAD_REQUEST, "validation_failed");
+    assert_eq!(stored_settings(&app).await.version, 1);
 }
 
 #[tokio::test]

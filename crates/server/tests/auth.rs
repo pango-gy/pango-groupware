@@ -238,6 +238,7 @@ async fn unknown_accounts_lock_the_same_way_so_existence_is_not_revealed() {
 async fn ip_rate_limit_applies_across_accounts() {
     let config = Config {
         trust_proxy: true,
+        login_ip_limit: 20,
         ..Config::for_tests()
     };
     let app = TestApp::with_config(config).await;

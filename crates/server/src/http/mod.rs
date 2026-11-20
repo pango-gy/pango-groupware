@@ -65,6 +65,8 @@ pub fn router(state: AppState) -> Router {
         .nest(API_PREFIX, api)
         .fallback(web::serve)
         .layer(DefaultBodyLimit::max(state.config.max_body_bytes))
+        // 패닉 응답에도 아래의 보안 헤더가 붙도록 헤더 계층보다 안쪽에 둔다.
+        .layer(CatchPanicLayer::custom(panic_response))
         .layer(static_header("x-content-type-options", "nosniff"))
         .layer(static_header("x-frame-options", "DENY"))
         .layer(static_header("referrer-policy", "no-referrer"))
@@ -76,7 +78,6 @@ pub fn router(state: AppState) -> Router {
                  frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
             ),
         ))
-        .layer(CatchPanicLayer::custom(panic_response))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }

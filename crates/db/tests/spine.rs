@@ -12,7 +12,7 @@ use pango_db::audit::{self, AuditEntry, AuditFilter};
 use pango_db::idempotency::{self, StoredResponse};
 use pango_db::members::{self, Member, MemberFilter};
 use pango_db::org::{self, Department, Position};
-use pango_db::sessions::{self, Session, SessionVia};
+use pango_db::sessions::{self, Session, SessionVia, ThrottleMode};
 use pango_db::settings::{self, CompanySettings, Holiday};
 use pango_db::testing::TestDb;
 use pango_db::{Db, DbOptions};
@@ -132,21 +132,30 @@ async fn write_transactions_are_serialized() {
             let db = test.db.clone();
             tokio::spawn(async move {
                 let mut tx = db.begin_write().await.expect("begin");
-                sessions::throttle_hit(&mut tx, "acct:counter", ts(1), 60_000)
-                    .await
-                    .expect("hit");
+                let hit = sessions::throttle_hit(
+                    &mut tx,
+                    "acct:counter",
+                    ts(1),
+                    60_000,
+                    ThrottleMode::Fixed,
+                )
+                .await
+                .expect("hit");
                 tx.commit().await.expect("commit");
+                hit.attempts
             })
         })
         .collect();
+    let mut seen = Vec::new();
     for task in tasks {
-        task.await.expect("join");
+        seen.push(task.await.expect("join"));
     }
-    let mut conn = test.reader().acquire().await.expect("conn");
-    let hits = sessions::throttle_peek(&mut conn, "acct:counter", ts(1), 60_000)
-        .await
-        .expect("peek");
-    assert_eq!(hits, 20, "동시 갱신에서 증가분이 유실되면 안 된다");
+    seen.sort_unstable();
+    assert_eq!(
+        seen,
+        (1..=20).collect::<Vec<_>>(),
+        "동시 갱신에서 증가분이 유실되면 안 된다"
+    );
 }
 
 #[tokio::test]
@@ -468,60 +477,84 @@ async fn revoke_all_can_keep_current_session() {
 }
 
 #[tokio::test]
-async fn throttle_counts_within_window_and_resets_after() {
+async fn fixed_throttle_counts_within_window_and_resets_after() {
     let test = TestDb::new().await;
     let mut tx = test.begin_write().await.expect("begin");
     const WINDOW: i64 = 60_000;
+    let mut hit = async |bucket: &str, at: i64| {
+        sessions::throttle_hit(&mut tx, bucket, ts(at), WINDOW, ThrottleMode::Fixed)
+            .await
+            .expect("hit")
+            .attempts
+    };
     for expected in 1..=3 {
-        let hits = sessions::throttle_hit(&mut tx, "ip:1.1.1.1", ts(1_000), WINDOW).await;
-        assert_eq!(hits.expect("hit"), expected);
+        assert_eq!(hit("ip:1.1.1.1", 1_000).await, expected);
     }
-    // 창의 마지막 순간까지는 누적.
-    let last = sessions::throttle_hit(&mut tx, "ip:1.1.1.1", ts(60_999), WINDOW).await;
-    assert_eq!(last.expect("hit"), 4);
-    // 창이 지나면 1부터.
-    let reset = sessions::throttle_hit(&mut tx, "ip:1.1.1.1", ts(61_000), WINDOW).await;
-    assert_eq!(reset.expect("hit"), 1);
-    // 다른 키는 독립.
-    let other = sessions::throttle_hit(&mut tx, "ip:2.2.2.2", ts(61_000), WINDOW).await;
-    assert_eq!(other.expect("hit"), 1);
+    assert_eq!(
+        hit("ip:1.1.1.1", 60_999).await,
+        4,
+        "창의 마지막 순간까지는 누적"
+    );
+    assert_eq!(hit("ip:1.1.1.1", 61_000).await, 1, "창이 지나면 1부터");
+    assert_eq!(hit("ip:2.2.2.2", 61_000).await, 1, "다른 키는 독립");
     // 시계가 뒤로 가도(창 시작보다 과거) 음수 창에 갇히지 않고 새로 시작한다.
-    let back = sessions::throttle_hit(&mut tx, "ip:1.1.1.1", ts(10), WINDOW).await;
-    assert_eq!(back.expect("hit"), 1);
+    assert_eq!(hit("ip:1.1.1.1", 10).await, 1);
 
-    assert_eq!(
-        sessions::throttle_peek(&mut tx, "ip:2.2.2.2", ts(61_000), WINDOW)
-            .await
-            .expect("peek"),
-        1
-    );
-    assert_eq!(
-        sessions::throttle_peek(&mut tx, "ip:2.2.2.2", ts(121_000), WINDOW)
-            .await
-            .expect("peek"),
-        0
-    );
-    assert_eq!(
-        sessions::throttle_peek(&mut tx, "ip:none", ts(0), WINDOW)
-            .await
-            .expect("peek"),
-        0
-    );
     sessions::throttle_clear(&mut tx, "ip:2.2.2.2")
         .await
         .expect("clear");
-    assert_eq!(
-        sessions::throttle_peek(&mut tx, "ip:2.2.2.2", ts(61_000), WINDOW)
-            .await
-            .expect("peek"),
-        0
-    );
-
     assert_eq!(
         sessions::throttle_purge(&mut tx, ts(1_000))
             .await
             .expect("purge"),
         1
+    );
+}
+
+#[tokio::test]
+async fn lockout_throttle_slides_until_locked_then_holds_for_one_window() {
+    let test = TestDb::new().await;
+    let mut tx = test.begin_write().await.expect("begin");
+    const WINDOW: i64 = 900_000;
+    let mode = ThrottleMode::Lockout { limit: 5 };
+    let mut hit = async |at: i64| {
+        let state = sessions::throttle_hit(&mut tx, "acct:a", ts(at), WINDOW, mode)
+            .await
+            .expect("hit");
+        (state.attempts, state.window_start.as_millis())
+    };
+    // 창 끝 무렵에 몰아서 실패해도 횟수가 이어진다(고정 창이면 여기서 초기화됐을 것).
+    assert_eq!(hit(0).await, (1, 0));
+    for (n, at) in [(2, 890_000), (3, 895_000), (4, 899_000), (5, 899_999)] {
+        assert_eq!(hit(at).await, (n, at));
+    }
+    // 한도를 넘긴 순간부터 한 창 동안 잠긴다.
+    assert_eq!(hit(900_500).await, (6, 900_500));
+    // 잠긴 동안의 시도는 횟수만 늘고 잠금을 늘리지 않는다.
+    assert_eq!(hit(1_500_000).await, (7, 900_500));
+    assert_eq!(hit(1_800_499).await, (8, 900_500));
+    // 잠금 시각 + 창이 지나면 초기화.
+    assert_eq!(hit(1_800_500).await, (1, 1_800_500));
+}
+
+#[tokio::test]
+async fn lockout_throttle_resets_after_a_quiet_window() {
+    let test = TestDb::new().await;
+    let mut tx = test.begin_write().await.expect("begin");
+    let mode = ThrottleMode::Lockout { limit: 5 };
+    let mut hit = async |at: i64| {
+        sessions::throttle_hit(&mut tx, "acct:b", ts(at), 1_000, mode)
+            .await
+            .expect("hit")
+            .attempts
+    };
+    assert_eq!(hit(0).await, 1);
+    assert_eq!(hit(999).await, 2);
+    assert_eq!(hit(1_998).await, 3, "마지막 시도로부터 창 안이면 이어진다");
+    assert_eq!(
+        hit(2_998).await,
+        1,
+        "마지막 시도로부터 창만큼 조용했으면 초기화"
     );
 }
 

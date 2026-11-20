@@ -209,6 +209,13 @@ impl Company {
 
     /// 설정값이 도메인 규칙에 맞는지 확인하며 변환한다. 설정 저장 전 검증에도 쓴다.
     pub fn from_settings(settings: CompanySettings) -> Result<Self, DomainError> {
+        // 근무일 전환 시각이 근무 시작보다 늦으면, 정시 출근이 전날 근무일로 잡혀 버린다.
+        if settings.day_cutoff > settings.work_start {
+            return Err(DomainError::validation(
+                "day_cutoff",
+                pango_core::error::ValidationReason::Inconsistent,
+            ));
+        }
         let zone = WorkCalendarZone::new(parse_timezone(&settings.timezone)?, settings.day_cutoff)?;
         let tiers = settings
             .break_tiers

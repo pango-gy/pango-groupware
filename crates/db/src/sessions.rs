@@ -219,49 +219,59 @@ pub async fn purge(conn: &mut Conn, older_than: Timestamp) -> DbResult<u64> {
     Ok(result.rows_affected())
 }
 
-/// 고정 창 카운터를 1 올리고, 현재 창의 시도 횟수를 돌려준다.
+/// 시도 제한 카운터의 현재 상태.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Throttle {
+    /// 이번 시도를 포함한 창 안의 시도 횟수.
+    pub attempts: i64,
+    /// 현재 창이 시작된 시각. 창은 여기서 `window`만큼 이어진다.
+    pub window_start: Timestamp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThrottleMode {
+    /// 고정 창: 창이 시작된 뒤 일정 시간 동안의 횟수를 센다(IP당 요청 수 제한).
+    Fixed,
+    /// 잠금: 시도할 때마다 창이 다시 시작되어, 조용한 시간이 `window`만큼 지나야 초기화된다.
+    /// 한도를 처음 넘긴 순간부터 `window` 동안 잠기며, 잠긴 동안의 시도는 잠금을 늘리지 않는다.
+    Lockout { limit: i64 },
+}
+
+/// 시도를 1회 기록하고 현재 상태를 돌려준다.
 ///
-/// 창이 지났으면 새 창을 시작한다. 한 문장으로 처리해 동시 요청에서도 횟수가 빠지지 않는다.
+/// 한 문장으로 처리하므로 동시 요청에서도 횟수가 빠지지 않는다.
 pub async fn throttle_hit(
     conn: &mut Conn,
     bucket: &str,
     now: Timestamp,
     window_millis: i64,
-) -> DbResult<i64> {
-    let (attempts,): (i64,) = sqlx::query_as(
+    mode: ThrottleMode,
+) -> DbResult<Throttle> {
+    let lockout_limit = match mode {
+        ThrottleMode::Fixed => None,
+        ThrottleMode::Lockout { limit } => Some(limit),
+    };
+    let (attempts, window_start): (i64, i64) = sqlx::query_as(
         "INSERT INTO login_throttle (bucket, window_start, attempts) VALUES (?1, ?2, 1)
          ON CONFLICT (bucket) DO UPDATE SET
             attempts = CASE WHEN ?2 - window_start >= ?3 OR ?2 < window_start
                             THEN 1 ELSE attempts + 1 END,
-            window_start = CASE WHEN ?2 - window_start >= ?3 OR ?2 < window_start
-                            THEN ?2 ELSE window_start END
-         RETURNING attempts",
+            window_start = CASE
+                WHEN ?2 - window_start >= ?3 OR ?2 < window_start THEN ?2
+                WHEN ?4 IS NOT NULL AND attempts <= ?4 THEN ?2
+                ELSE window_start END
+         RETURNING attempts, window_start",
     )
     .bind(bucket)
     .bind(now.as_millis())
     .bind(window_millis)
+    .bind(lockout_limit)
     .fetch_one(conn)
     .await?;
-    Ok(attempts)
-}
-
-/// 현재 창의 시도 횟수(증가시키지 않음). 창이 지났으면 0.
-pub async fn throttle_peek(
-    conn: &mut Conn,
-    bucket: &str,
-    now: Timestamp,
-    window_millis: i64,
-) -> DbResult<i64> {
-    let row: Option<(i64,)> = sqlx::query_as(
-        "SELECT attempts FROM login_throttle
-         WHERE bucket = ?1 AND ?2 >= window_start AND ?2 - window_start < ?3",
-    )
-    .bind(bucket)
-    .bind(now.as_millis())
-    .bind(window_millis)
-    .fetch_optional(conn)
-    .await?;
-    Ok(row.map_or(0, |(attempts,)| attempts))
+    Ok(Throttle {
+        attempts,
+        window_start: codec::timestamp("window_start", window_start)?,
+    })
 }
 
 pub async fn throttle_clear(conn: &mut Conn, bucket: &str) -> DbResult<()> {

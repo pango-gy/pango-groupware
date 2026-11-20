@@ -28,6 +28,9 @@ pub struct Config {
     pub cookie_secure: bool,
     /// 리버스 프록시의 `X-Forwarded-For`를 믿을지.
     pub trust_proxy: bool,
+    /// 서비스의 공개 주소(예: `https://erp.example.com`). 지정하면 `Origin` 헤더를 이 값과
+    /// 정확히 비교한다. 없으면 요청의 호스트와 비교한다(프록시가 `Host`를 바꾸면 맞지 않는다).
+    pub public_origin: Option<String>,
     /// 요청 본문 최대 크기(바이트).
     pub max_body_bytes: usize,
 }
@@ -37,7 +40,7 @@ impl Default for Config {
         Self {
             session_idle: Duration::days(14),
             session_absolute: Duration::days(90),
-            login_ip_limit: 20,
+            login_ip_limit: 60,
             login_ip_window: Duration::minutes(1),
             login_account_limit: 5,
             login_account_window: Duration::minutes(15),
@@ -50,6 +53,7 @@ impl Default for Config {
             },
             cookie_secure: true,
             trust_proxy: false,
+            public_origin: None,
             max_body_bytes: 256 * 1024,
         }
     }

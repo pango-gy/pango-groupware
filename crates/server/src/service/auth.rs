@@ -8,7 +8,7 @@ use pango_core::text::LoginId;
 use pango_core::time::Timestamp;
 use pango_core::DomainError;
 use pango_db::members::{self, Member};
-use pango_db::sessions::{self, Session, SessionVia};
+use pango_db::sessions::{self, Session, SessionVia, Throttle, ThrottleMode};
 use pango_db::{org, Conn};
 
 use super::support::{audit, build_actor, found, Audit, AuthContext, Company, RequestMeta};
@@ -27,9 +27,37 @@ pub struct LoginOutcome {
     pub max_age_secs: i64,
 }
 
-fn retry_after(window_ms: i64) -> ServiceError {
-    ServiceError::TooManyAttempts {
-        retry_after_secs: (window_ms / 1000).max(1) as u64,
+/// 한도를 넘었으면 창이 끝날 때까지 남은 시간을 담은 오류를 돌려준다.
+fn check_limit(
+    throttle: Throttle,
+    limit: i64,
+    window_ms: i64,
+    now: Timestamp,
+) -> ServiceResult<()> {
+    if throttle.attempts <= limit {
+        return Ok(());
+    }
+    let elapsed = now
+        .since(throttle.window_start)
+        .num_milliseconds()
+        .clamp(0, window_ms);
+    let remaining_secs = ((window_ms - elapsed + 999) / 1000).max(1);
+    Err(ServiceError::TooManyAttempts {
+        retry_after_secs: remaining_secs.unsigned_abs(),
+    })
+}
+
+/// IP별 제한의 키. IPv6는 /64 단위로 묶는다(한 가입자가 주소를 바꿔 가며 제한을 피하지 못하게).
+fn ip_bucket(ip: &str) -> String {
+    match ip.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V6(v6)) => {
+            let prefix = v6.segments();
+            format!(
+                "ip6:{:x}:{:x}:{:x}:{:x}",
+                prefix[0], prefix[1], prefix[2], prefix[3]
+            )
+        }
+        _ => format!("ip:{ip}"),
     }
 }
 
@@ -52,28 +80,39 @@ pub async fn login(
 
     // 1) 시도 제한. 비밀번호 검증(비싼 연산) 전에 **시도를 먼저 기록**한다.
     //    확인과 기록이 한 문장이라, 동시에 여러 요청을 보내도 제한을 넘겨 검증받을 수 없다.
-    let blocked = state
+    //    제한에 걸려도 기록은 커밋해야 하므로 판정은 트랜잭션 밖에서 한다.
+    let account_mode = ThrottleMode::Lockout {
+        limit: config.login_account_limit,
+    };
+    let (ip_state, account_state) = state
         .write(async |conn: &mut Conn| {
-            if let Some(ip) = &meta.ip {
-                let bucket = format!("ip:{ip}");
-                if sessions::throttle_hit(conn, &bucket, now, ip_window).await?
-                    > config.login_ip_limit
-                {
-                    return Ok(Some(ip_window));
-                }
-            }
-            if let Some(bucket) = &account_bucket {
-                if sessions::throttle_hit(conn, bucket, now, account_window).await?
-                    > config.login_account_limit
-                {
-                    return Ok(Some(account_window));
-                }
-            }
-            Ok(None)
+            let ip_state = match &meta.ip {
+                Some(ip) => Some(
+                    sessions::throttle_hit(
+                        conn,
+                        &ip_bucket(ip),
+                        now,
+                        ip_window,
+                        ThrottleMode::Fixed,
+                    )
+                    .await?,
+                ),
+                None => None,
+            };
+            let account_state = match &account_bucket {
+                Some(bucket) => Some(
+                    sessions::throttle_hit(conn, bucket, now, account_window, account_mode).await?,
+                ),
+                None => None,
+            };
+            Ok((ip_state, account_state))
         })
         .await?;
-    if let Some(window) = blocked {
-        return Err(retry_after(window));
+    if let Some(throttle) = ip_state {
+        check_limit(throttle, config.login_ip_limit, ip_window, now)?;
+    }
+    if let Some(throttle) = account_state {
+        check_limit(throttle, config.login_account_limit, account_window, now)?;
     }
 
     // 2) 비밀번호 검증. 계정이 없어도 같은 연산을 한다.
@@ -277,15 +316,15 @@ pub async fn change_password(
 
     // 탈취된 세션으로 현재 비밀번호를 무제한 추측하지 못하게, 로그인과 같은 한도를 건다.
     let window = state.config.login_account_window.num_milliseconds();
+    let limit = state.config.login_account_limit;
     let bucket = format!("pwchg:{}", ctx.member_id());
-    let attempts = state
-        .write(
-            async |conn: &mut Conn| Ok(sessions::throttle_hit(conn, &bucket, now, window).await?),
-        )
+    let throttle = state
+        .write(async |conn: &mut Conn| {
+            let mode = ThrottleMode::Lockout { limit };
+            Ok(sessions::throttle_hit(conn, &bucket, now, window, mode).await?)
+        })
         .await?;
-    if attempts > state.config.login_account_limit {
-        return Err(retry_after(window));
-    }
+    check_limit(throttle, limit, window, now)?;
 
     let credentials =
         found(members::find_credentials_by_id(&mut *state.read().await?, ctx.member_id()).await?)?;
@@ -383,4 +422,55 @@ pub async fn revoke_session(
             }
         })
         .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ts(millis: i64) -> Timestamp {
+        Timestamp::from_millis(millis).expect("timestamp")
+    }
+
+    fn retry_after(attempts: i64, started: i64, now: i64) -> Option<u64> {
+        let throttle = Throttle {
+            attempts,
+            window_start: ts(started),
+        };
+        match check_limit(throttle, 5, 900_000, ts(now)) {
+            Ok(()) => None,
+            Err(ServiceError::TooManyAttempts { retry_after_secs }) => Some(retry_after_secs),
+            Err(other) => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn retry_after_is_the_time_left_in_the_window() {
+        assert_eq!(retry_after(5, 0, 0), None, "한도까지는 허용");
+        assert_eq!(retry_after(6, 0, 0), Some(900));
+        assert_eq!(retry_after(6, 0, 899_001), Some(1), "올림");
+        assert_eq!(retry_after(6, 0, 600_000), Some(300));
+        assert_eq!(
+            retry_after(6, 1_000, 0),
+            Some(900),
+            "시계가 뒤로 가도 음수가 되지 않는다"
+        );
+        assert_eq!(
+            retry_after(6, 0, 5_000_000),
+            Some(1),
+            "창이 지난 값이 와도 최소 1초"
+        );
+    }
+
+    #[test]
+    fn ipv6_addresses_share_a_bucket_per_64_prefix() {
+        assert_eq!(ip_bucket("203.0.113.9"), "ip:203.0.113.9");
+        let a = ip_bucket("2001:db8:1:2:aaaa:bbbb:cccc:dddd");
+        let b = ip_bucket("2001:db8:1:2::1");
+        let other = ip_bucket("2001:db8:1:3::1");
+        assert_eq!(a, b);
+        assert_ne!(a, other);
+        assert_eq!(a, "ip6:2001:db8:1:2");
+        assert_eq!(ip_bucket("not-an-ip"), "ip:not-an-ip");
+    }
 }
