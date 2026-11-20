@@ -6,6 +6,8 @@ pub mod approval;
 pub mod attendance;
 pub mod authz;
 pub mod calendar;
+pub mod calendar_access;
+pub mod calendar_event;
 pub mod error;
 pub mod id;
 pub mod leave;

@@ -6,6 +6,7 @@ pub mod admin;
 pub mod approval;
 pub mod attendance;
 pub mod auth;
+pub mod calendar;
 pub mod common;
 pub mod home;
 pub mod leave;
