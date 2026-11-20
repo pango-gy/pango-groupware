@@ -12,6 +12,7 @@
 | 휴가 | 휴가 종류, 연차 자동 부여, 신청·승인·취소, 잔여 조회, 관리자 조정 | 회계연도 기준 부여 |
 | 전자결재 | 양식, 기안, 결재라인(결재·합의·참조), 승인·반려·회수, 결재함 | 대결·전결, 첨부파일 |
 | 공지 | 작성·고정·필독, 읽음 확인, 대상 지정 | 첨부파일, 댓글 |
+| 캘린더 | 내·전사·부서 일정, 참석자 초대·응답, 참석자 일정 확인, 공휴일·휴가 표시 | 반복 일정, 미리 알림, 생일, 다른 사람의 캘린더 공유 |
 | 알림 | 앱 내 알림 | 푸시 중계 서버 |
 | 관리 | 설정, 근무 정책, 공휴일, 감사 로그 | 백업 UI |
 
@@ -156,6 +157,26 @@ UUID v7을 타입별 newtype(`MemberId`, `DocumentId` …)으로 감쌉니다. D
 - 공지를 게시하면 대상 범위의 재직 구성원에게 `notice.new` 알림이 가고, 알림에는 공지 제목이 들어 있습니다. 수정은 다시 알리지 않습니다.
 - 공지를 **보관**하거나 수정으로 **대상을 좁히면**, 그 공지를 더는 볼 수 없게 된 구성원의 **읽지 않은** `notice.new` 알림을 같은 트랜잭션에서 지웁니다(볼 수 없는 공지의 제목이 알림함에 남지 않도록). 볼 수 있는지는 열람과 같은 규칙(`authz::audience_scope`)으로 정하고, 이미 읽은 알림은 받은 기록이므로 그대로 둡니다.
 
+### 캘린더
+- 캘린더는 세 종류입니다. 권한은 `pango_core::calendar_access`(`can_read`·`can_write`·`event_role`)에서만 판정합니다.
+
+  | 캘린더 | 열람 | 쓰기 |
+  | --- | --- | --- |
+  | 내 일정(`personal`) | 본인만. 관리자·최고 관리자도 볼 수 없음 | 본인 |
+  | 전사 일정(`company`) | 모두 | 관리자 |
+  | 부서 일정(`department`) | 그 부서와 하위 부서 소속, 관할 조직장, 관리자 | 관할 조직장(상위 부서 조직장 포함), 관리자 |
+
+  볼 수 없는 캘린더·일정은 404, 보이지만 쓸 수 없으면 403입니다. 보관된 부서의 캘린더와 일정은 없는 것으로 봅니다. 쓰기 권한은 쓰기 트랜잭션 안에서 다시 읽은 값으로 판정합니다(`support::current_actor`).
+- **캘린더 ID**는 주인에게서 정해집니다: 내 일정 = 구성원 ID, 부서 일정 = 부서 ID, 전사 일정 = 고정 ID `00000000-0000-7000-8000-000000000001`(마이그레이션 `0005_calendar.sql`이 행을 만듦). 내 일정·부서 일정의 `calendars` 행은 첫 일정을 만들 때 `INSERT … ON CONFLICT DO NOTHING`으로 생기므로, 행이 없어도 목록과 권한 판정은 같은 ID를 씁니다. 이름은 저장하지 않고 조회할 때 붙입니다(부서 이름 변경을 따라가도록).
+- **일정 시간**: 종일 일정은 회사 시간대와 무관한 날짜(`start_date`~`end_date`, 양 끝 포함, `end_date` 생략 시 하루), 시간 일정은 `start_at < end_at`인 시각입니다. 둘을 섞어 보내면 400(`inconsistent`). 길이는 최대 31일(종일 31개 날짜, 시간 31×24시간)이고 날짜·시각은 1900~9999년만 받습니다. 제목은 `Title`(200자), 장소 200자(한 줄), 설명 5,000자.
+- **조회**: 캘린더 화면은 양 끝 포함 62일까지 한 번에 읽고, 여러 날에 걸친 일정도 한 번만 돌려줍니다(배치는 화면이 함). 시간 일정은 회사 시간대의 자정(근무일 전환 시각이 아님)으로 날짜를 나눕니다. 초대받은 다른 사람의 일정은 `calendars`에 내 일정이 포함될 때 함께 나옵니다.
+- **함께 보이는 정보**(읽기 전용, 일정 표에 복사하지 않음): 회사 공휴일, 그리고 `authz::view_leave_schedule`로 볼 수 있는 구성원의 결재 중·승인 휴가(휴가 달력과 같은 `leave::schedule_tx`, 이름·날짜·단위·상태만, 사유·종류 없음). 생일은 저장된 값이 없어 다루지 않습니다.
+- **참석자**는 내 일정에만 둡니다(최대 50명, 본인·중복 불가, 공유 캘린더에 보내면 400). 새로 초대하는 사람은 디렉터리에서 볼 수 있어야 하고(아니면 404) 재직 중이어야 합니다(409 `member_inactive`). 이미 초대된 사람은 그사이 정지·퇴사해도 목록에 남을 수 있습니다. 참석자는 일정을 보고 응답(`accepted`/`declined`)만 할 수 있고 고칠 수 없습니다(403). 같은 응답을 다시 보내면 아무것도 바꾸지 않습니다. 참석자에서 빠지면 그 일정은 다시 404입니다.
+- **알림**: 초대 `calendar.invited`(일정·참석자마다 한 번, 빠졌다 다시 초대돼도 다시 보내지 않음), 시간·장소 변경 `calendar.updated`(남은 참석자, 버전마다), 참석자 제외·일정 삭제 `calendar.canceled`, 응답 변경 `calendar.responded`(주인에게, 일정·참석자·응답마다 한 번).
+- **삭제**는 되돌릴 수 없는 실제 삭제입니다(일정은 업무 기록이 아님, 참석자도 함께 지워짐). 전사·부서 일정의 생성·수정·삭제는 감사 로그(`calendar.event_create|update|delete`)에 남기고, 개인 일정은 남기지 않습니다.
+- **참석자 일정 확인**(`GET /calendar/conflicts`, 7일·50명 이하): 구성원마다 본인 일정, 거절하지 않은 초대, 승인된 휴가를 바쁜 시간으로 돌려줍니다. 요청자가 주인이거나 초대받은 일정만 제목이 있는 `event`이고, 나머지는 시간만 있는 `busy`입니다. 휴가는 휴가 일정을 볼 수 있는 구성원이면 `leave`(단위만), 아니면 종일 `busy`입니다. 전사·부서 일정은 개인의 바쁜 시간으로 치지 않습니다.
+- 반복 일정과 미리 알림은 MVP 범위가 아닙니다.
+
 ### 전자결재
 - 문서 상태: `draft → in_progress → approved | rejected | withdrawn`.
 - 결재선은 순차 단계입니다. 단계 종류: `approve`(결재), `agree`(합의). 참조자는 단계가 아니며 열람만 합니다.
@@ -183,6 +204,7 @@ UUID v7을 타입별 newtype(`MemberId`, `DocumentId` …)으로 감쌉니다. D
 | 조직장 | `GET /team/attendance` `GET /team/leave` `GET /team/members` |
 | 결재 | `GET /approval/forms` `GET /approval/counts` `GET /approval/line-suggestion` `GET /approval/documents` `POST /approval/documents` `GET·PATCH·DELETE /approval/documents/{id}` `POST /approval/documents/{id}/{submit,approve,reject,withdraw}` `POST /admin/approval/documents/{id}/reject` |
 | 공지 | `GET /notices` `GET /notices/{id}` `POST /notices/{id}/read` |
+| 캘린더 | `GET /calendar/calendars` `GET /calendar/view` `GET /calendar/conflicts` `POST /calendar/events` `GET·PATCH·DELETE /calendar/events/{id}` `POST /calendar/events/{id}/respond` |
 | 알림 | `GET /notifications` `POST /notifications/{id}/read` `POST /notifications/read-all` |
 | 관리 | `/admin/members…` `/admin/departments…` `/admin/positions…` `/admin/attendance…` `/admin/leave…` `/admin/approval/forms…` `/admin/notices…` `/admin/holidays…` `/admin/settings` `/admin/audit-log` `/admin/dashboard` |
 

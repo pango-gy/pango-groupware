@@ -447,14 +447,14 @@ pub async fn admin_list_requests(
 const SCHEDULED: [LeaveRequestStatus; 2] =
     [LeaveRequestStatus::Pending, LeaveRequestStatus::Approved];
 
-/// 그 달에 걸친 대기·승인 신청 중, `visible`이 허용하는 구성원의 것.
-async fn scheduled_in_month(
+/// 기간에 걸친 대기·승인 신청 중, `visible`이 허용하는 구성원의 것.
+async fn scheduled_in_range(
     conn: &mut Conn,
-    month: &str,
+    range: DateRange,
     visible: impl Fn(&Member) -> bool,
 ) -> ServiceResult<Vec<LeaveRequest>> {
     let filter = RequestFilter {
-        overlapping: Some(parse_month(month)?),
+        overlapping: Some(range),
         statuses: SCHEDULED.to_vec(),
         ..RequestFilter::default()
     };
@@ -475,11 +475,21 @@ pub async fn calendar(
     month: &str,
 ) -> ServiceResult<Vec<LeaveCalendarEntry>> {
     let mut conn = state.read().await?;
-    let requests = scheduled_in_month(&mut conn, month, |member| {
+    schedule_tx(&mut conn, parse_month(month)?, |member| {
         authz::view_leave_schedule(&ctx.actor, &member.subject()).is_ok()
     })
-    .await?;
-    let names = member_names(&mut conn, requests.iter().map(|r| r.member_id)).await?;
+    .await
+}
+
+/// [`calendar`]의 본체: 기간에 걸친 대기·승인 휴가 중 `visible`이 허용하는 구성원의 것을 휴가
+/// 달력의 한 줄(사유·종류 없음)로 돌려준다. 캘린더 화면의 휴가 표시도 이것을 쓴다.
+pub async fn schedule_tx(
+    conn: &mut Conn,
+    range: DateRange,
+    visible: impl Fn(&Member) -> bool,
+) -> ServiceResult<Vec<LeaveCalendarEntry>> {
+    let requests = scheduled_in_range(conn, range, visible).await?;
+    let names = member_names(conn, requests.iter().map(|r| r.member_id)).await?;
     Ok(requests
         .into_iter()
         .map(|request| LeaveCalendarEntry {
@@ -501,7 +511,7 @@ pub async fn team_leave(
 ) -> ServiceResult<Vec<LeaveRequestDto>> {
     authz::require_manager(&ctx.actor)?;
     let mut conn = state.read().await?;
-    let requests = scheduled_in_month(&mut conn, month, |member| {
+    let requests = scheduled_in_range(&mut conn, parse_month(month)?, |member| {
         authz::view_personal_records(&ctx.actor, &member.subject()).is_ok()
     })
     .await?;

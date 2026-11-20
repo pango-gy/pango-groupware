@@ -87,6 +87,8 @@ define_id!(
     NoticeId,
     NotificationId,
     AuditLogId,
+    CalendarId,
+    CalendarEventId,
 );
 
 #[cfg(test)]
