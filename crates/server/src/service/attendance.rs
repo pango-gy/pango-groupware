@@ -46,8 +46,8 @@ use pango_db::{org, settings, Conn};
 
 use super::approval::{self, LinkedOutcome, SystemDocument};
 use super::support::{
-    audit, audit_as, department_tree, found, member_names, notify, push_csv_row, require_updated,
-    Audit, AuthContext, Company, Idempotency, Notify,
+    audit, audit_as, current_member, department_tree, found, member_names, notify, push_csv_row,
+    require_current_admin, require_updated, Audit, AuthContext, Company, Idempotency, Notify,
 };
 use crate::error::{ServiceError, ServiceResult};
 use crate::state::AppState;
@@ -767,9 +767,11 @@ pub async fn create_correction(
     let work_date = parse_date("work_date", &request.work_date)?;
     let reason = Reason::parse(&request.reason)?;
     let now = state.now();
-    let member = &ctx.member;
     state
-        .write_idempotent(member.id, idempotency, async |conn: &mut Conn| {
+        .write_idempotent(ctx.member_id(), idempotency, async |conn: &mut Conn| {
+            // 인증 뒤에 부서가 바뀌었을 수 있다. 최종 결재자 확인과 문서의 기안 부서는 지금의
+            // 소속으로 한다.
+            let member = &current_member(conn, ctx).await?;
             let company = Company::load(conn).await?;
             validate_correction_date(work_date, company.work_date(now))?;
             validate_edit(
@@ -1127,8 +1129,9 @@ pub async fn admin_create(
     let now = state.now();
     state
         .write_idempotent(ctx.member_id(), idempotency, async |conn: &mut Conn| {
+            let actor = require_current_admin(conn, ctx).await?;
             let member = found(members::find(conn, request.member_id).await?)?;
-            authz::edit_personal_records(&ctx.actor, &member.subject())?;
+            authz::edit_personal_records(&actor, &member.subject())?;
             let company = Company::load(conn).await?;
             validate_edit(
                 request.clock_in_at,
@@ -1199,9 +1202,10 @@ pub async fn admin_edit(
     let now = state.now();
     state
         .write(async |conn: &mut Conn| {
+            let actor = require_current_admin(conn, ctx).await?;
             let record = found(attendance::find(conn, record_id).await?)?;
             let member = found(members::find(conn, record.member_id).await?)?;
-            authz::edit_personal_records(&ctx.actor, &member.subject())?;
+            authz::edit_personal_records(&actor, &member.subject())?;
             let company = Company::load(conn).await?;
             validate_edit(
                 request.clock_in_at,

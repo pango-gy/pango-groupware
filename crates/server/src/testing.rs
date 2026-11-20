@@ -18,7 +18,10 @@ use serde_json::Value;
 use tower::ServiceExt;
 
 use crate::config::Config;
+use crate::error::{ServiceError, ServiceResult};
+use crate::security::SessionToken;
 use crate::service::setup::{self, InitInput};
+use crate::service::{auth, AuthContext, RequestMeta};
 use crate::state::AppState;
 
 pub const OWNER_LOGIN: &str = "owner";
@@ -346,5 +349,44 @@ impl TestApp {
             login_id: login_id.to_owned(),
             token,
         }
+    }
+
+    /// 토큰을 인증해 요청 맥락을 만든다(HTTP 추출기가 하는 일과 같다).
+    ///
+    /// 인증을 통과한 **뒤** 권한이나 소속이 바뀌는 경우를 재현할 때 쓴다: 이 맥락을 받아 두고
+    /// [`Self::alter_member`]로 DB를 바꾼 다음 서비스 함수를 직접 부르면, 서비스는 낡은 맥락을
+    /// 들고 쓰기 트랜잭션에 들어간다. HTTP로는 요청마다 다시 인증하므로 이 틈을 만들 수 없다.
+    pub async fn auth_context(&self, token: &str) -> AuthContext {
+        let token = SessionToken::parse(token).expect("session token");
+        auth::authenticate(&self.state, &token, RequestMeta::default())
+            .await
+            .expect("authenticate")
+    }
+
+    /// 구성원을 DB에서 직접 고친다(역할 해제, 정지, 부서 이동 등).
+    pub async fn alter_member(&self, id: MemberId, change: impl FnOnce(&mut Member)) {
+        let mut tx = self.state.db.begin_write().await.expect("begin");
+        let mut member = members::find(&mut tx, id)
+            .await
+            .expect("find")
+            .expect("member");
+        change(&mut member);
+        assert!(members::update(&mut tx, &member, self.state.now())
+            .await
+            .expect("update"));
+        tx.commit().await.expect("commit");
+    }
+}
+
+/// 서비스 호출이 권한 문제로 거부됐는지: `"forbidden"`, `"unauthenticated"`, 성공이면 `"ok"`,
+/// 다른 오류면 그 오류의 표기.
+pub fn denial<T>(result: &ServiceResult<T>) -> String {
+    match result {
+        Ok(_) => "ok".to_owned(),
+        Err(ServiceError::Domain(pango_core::DomainError::Forbidden)) => "forbidden".to_owned(),
+        Err(ServiceError::Domain(pango_core::DomainError::Unauthenticated)) => {
+            "unauthenticated".to_owned()
+        }
+        Err(other) => other.to_string(),
     }
 }

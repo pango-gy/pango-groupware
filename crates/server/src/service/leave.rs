@@ -37,8 +37,8 @@ use pango_db::{org, Conn};
 
 use super::approval::{self, LinkedOutcome, SystemDocument};
 use super::support::{
-    audit, found, member_names, notify, page_of, parse_cursor, require_updated, Audit, AuthContext,
-    Company, Idempotency, Notify,
+    audit, current_member, found, member_names, notify, page_of, parse_cursor,
+    require_current_admin, require_updated, Audit, AuthContext, Company, Idempotency, Notify,
 };
 use crate::error::{ServiceError, ServiceResult};
 use crate::state::AppState;
@@ -169,6 +169,7 @@ pub async fn admin_create_type(
     };
     state
         .write(async |conn: &mut Conn| {
+            require_current_admin(conn, ctx).await?;
             if leave::find_type_by_code(conn, &leave_type.code)
                 .await?
                 .is_some()
@@ -194,6 +195,7 @@ pub async fn admin_update_type(
     let name = LabelName::parse(&request.name)?.into_string();
     state
         .write(async |conn: &mut Conn| {
+            require_current_admin(conn, ctx).await?;
             let current = found(leave::find_type(conn, id).await?)?;
             let deactivating = current.active && !request.active;
             if deactivating && leave::count_pending_for_type(conn, id).await? > 0 {
@@ -645,9 +647,11 @@ pub async fn create_request(
         plain_date("start_date", request.start_date)?,
         plain_date("end_date", request.end_date)?,
     )?;
-    let member = &ctx.member;
     state
-        .write_idempotent(member.id, idempotency, async |conn: &mut Conn| {
+        .write_idempotent(ctx.member_id(), idempotency, async |conn: &mut Conn| {
+            // 인증 뒤에 부서가 바뀌었거나 입사일이 정정됐을 수 있다. 연차 부여(입사일)와
+            // 최종 결재자 확인(소속)은 지금의 값으로 한다.
+            let member = &current_member(conn, ctx).await?;
             let company = Company::load(conn).await?;
             let today = company.today(now);
             let earliest = today.checked_sub_days(Days::new(MAX_BACKDATE_DAYS));
@@ -982,6 +986,9 @@ pub async fn cancel_request(
 }
 
 /// 관리자의 휴가 취소. 이미 시작했거나 지난 휴가도 취소할 수 있다.
+///
+/// 관리자는 자기 휴가를 이 권한으로 취소할 수 없다([`authz::edit_personal_records`]). 본인
+/// 자격의 취소([`cancel_request`])는 일반 구성원과 같은 규칙으로 할 수 있다.
 pub async fn admin_cancel_request(
     state: &AppState,
     ctx: &AuthContext,
@@ -991,7 +998,10 @@ pub async fn admin_cancel_request(
     let now = state.now();
     state
         .write(async |conn: &mut Conn| {
+            let actor = require_current_admin(conn, ctx).await?;
             let request = found(leave::find_request(conn, id).await?)?;
+            let member = found(members::find(conn, request.member_id).await?)?;
+            authz::edit_personal_records(&actor, &member.subject())?;
             cancel_tx(conn, ctx, &request, true, now).await?;
             request_dto(conn, id).await
         })
@@ -1039,6 +1049,8 @@ pub async fn admin_balances(
 
 /// 수동 조정. 양수는 그날부터 유효한 부여, 음수는 그날의 사용으로 계산된다.
 /// 음수 조정은 잔여를 음수(부채)로 만들 수 있다. 출근율 미달 등을 바로잡는 용도이기 때문이다.
+///
+/// 관리자는 자기 연차를 조정할 수 없다(최고 관리자는 가능, [`authz::edit_personal_records`]).
 pub async fn admin_adjust(
     state: &AppState,
     ctx: &AuthContext,
@@ -1064,7 +1076,9 @@ pub async fn admin_adjust(
     })?;
     state
         .write(async |conn: &mut Conn| {
+            let actor = require_current_admin(conn, ctx).await?;
             let member = found(members::find(conn, request.member_id).await?)?;
+            authz::edit_personal_records(&actor, &member.subject())?;
             let today = Company::load(conn).await?.today(now);
             ensure_accrued_tx(conn, &member, today, now).await?;
             let record = LedgerRecord {
@@ -1157,6 +1171,7 @@ pub async fn admin_run_accrual(
     let now = state.now();
     state
         .write(async |conn: &mut Conn| {
+            require_current_admin(conn, ctx).await?;
             let today = Company::load(conn).await?.today(now);
             let result = run_accrual_tx(conn, today, now).await?;
             audit_accrual_tx(conn, now, Some(ctx), result).await?;

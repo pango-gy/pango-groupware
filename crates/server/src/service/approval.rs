@@ -189,6 +189,7 @@ pub async fn admin_create_form(
     };
     state
         .write(async |conn: &mut Conn| {
+            require_current_admin(conn, ctx).await?;
             if approval::find_form_by_code(conn, &form.code)
                 .await?
                 .is_some()
@@ -220,6 +221,7 @@ pub async fn admin_update_form(
     })?;
     state
         .write(async |conn: &mut Conn| {
+            require_current_admin(conn, ctx).await?;
             let current = found(approval::find_form(conn, id).await?)?;
             if current.kind != DocumentKind::General && !request.active {
                 return Err(DomainError::Conflict(ConflictReason::InUse).into());

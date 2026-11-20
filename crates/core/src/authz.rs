@@ -176,12 +176,18 @@ pub fn can_resolve_personal_request(approver: &Actor, subject: &Subject) -> bool
     )
 }
 
-/// 다른 사람의 기록을 **직접 수정**할 수 있는지: 관리자만.
-/// 본인과 조직장은 기록이 보이므로 403, 그 외는 404.
+/// 구성원의 **개인 기록을 관리자 권한으로 직접 다룰** 수 있는지: 출퇴근 기록 생성·수정,
+/// 연차 수동 조정, 휴가의 관리자 취소.
+///
+/// - 관리자는 **다른 사람**의 기록만 다룬다. 자기 기록(자기 지각을 지우거나 자기 연차를
+///   늘리는 일)은 두 번째 사람이 필요하다: 다른 관리자나 최고 관리자가 한다.
+/// - 최고 관리자는 본인 기록도 다룰 수 있다. 최종 권한자라 대신 해 줄 윗사람이 없을 수
+///   있고(관리자가 한 명도 없는 회사), 모든 동작이 감사 로그에 남는다.
+/// - 본인(관리자 포함)과 조직장은 기록이 보이므로 403, 그 외는 404.
 pub fn edit_personal_records(actor: &Actor, subject: &Subject) -> DomainResult<()> {
     match actor.relation_to(subject) {
         Relation::Administered => Ok(()),
-        Relation::Own if actor.is_admin() => Ok(()),
+        Relation::Own if actor.role == Role::Owner => Ok(()),
         Relation::Own | Relation::Managed => Err(DomainError::Forbidden),
         Relation::Colleague | Relation::Unrelated => Err(DomainError::NotFound),
     }
@@ -545,7 +551,27 @@ mod tests {
             Err(DomainError::Forbidden)
         );
         assert_eq!(edit_personal_records(&admin, &colleague), Ok(()));
-        assert_eq!(edit_personal_records(&admin, &self_subject(&admin)), Ok(()));
+        // 관리자는 다른 관리자·최고 관리자의 기록도 다루지만, 자기 기록은 다루지 못한다.
+        let owner = actor(Role::Owner, None, &[]);
+        assert_eq!(
+            edit_personal_records(&admin, &subject(Role::Admin, None)),
+            Ok(())
+        );
+        assert_eq!(edit_personal_records(&admin, &self_subject(&owner)), Ok(()));
+        assert_eq!(
+            edit_personal_records(&admin, &self_subject(&admin)),
+            Err(DomainError::Forbidden)
+        );
+        // 조직장을 겸한 관리자도 마찬가지다.
+        let admin_head = actor(Role::Admin, Some(w.dept_a), &[w.dept_a]);
+        assert_eq!(
+            edit_personal_records(&admin_head, &self_subject(&admin_head)),
+            Err(DomainError::Forbidden)
+        );
+        // 최고 관리자는 본인 기록도, 관리자의 기록도 다룬다.
+        assert_eq!(edit_personal_records(&owner, &self_subject(&owner)), Ok(()));
+        assert_eq!(edit_personal_records(&owner, &self_subject(&admin)), Ok(()));
+        assert_eq!(edit_personal_records(&owner, &colleague), Ok(()));
     }
 
     #[test]

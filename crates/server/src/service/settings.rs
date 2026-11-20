@@ -19,7 +19,9 @@ use pango_db::settings::{self, CompanySettings, Holiday};
 use pango_db::{codec, Conn};
 use serde_json::{Map, Value};
 
-use super::support::{audit, found, require_updated, Audit, AuthContext, Company};
+use super::support::{
+    audit, found, require_current_admin, require_updated, Audit, AuthContext, Company,
+};
 use crate::error::{ServiceError, ServiceResult};
 use crate::state::AppState;
 
@@ -141,6 +143,7 @@ pub async fn update(
     let next = settings_from(&request.data, request.version, now)?;
     state
         .write(async |conn: &mut Conn| {
+            require_current_admin(conn, ctx).await?;
             let current = found(settings::get(conn).await?)?;
             require_updated(settings::update(conn, &next).await?)?;
             let changed = changed_keys(&input_of(&current), &input_of(&next))?;
@@ -215,6 +218,7 @@ pub async fn upsert_holiday(
     };
     state
         .write(async |conn: &mut Conn| {
+            require_current_admin(conn, ctx).await?;
             let previous = find_holiday(conn, holiday.date).await?;
             if previous.as_ref() != Some(&holiday) {
                 settings::upsert_holiday(conn, &holiday).await?;
@@ -246,6 +250,7 @@ pub async fn delete_holiday(state: &AppState, ctx: &AuthContext, date: &str) -> 
     let date = parse_date("date", date)?;
     state
         .write(async |conn: &mut Conn| {
+            require_current_admin(conn, ctx).await?;
             let Some(previous) = find_holiday(conn, date).await? else {
                 return Ok(());
             };
@@ -299,6 +304,7 @@ pub async fn import_holidays(
     let imported = u32::try_from(holidays.len()).map_err(ServiceError::internal)?;
     state
         .write(async |conn: &mut Conn| {
+            require_current_admin(conn, ctx).await?;
             for holiday in &holidays {
                 settings::upsert_holiday(conn, holiday).await?;
             }

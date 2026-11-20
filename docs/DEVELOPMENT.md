@@ -37,6 +37,7 @@ cargo fmt --all                                          # 포맷
 - 쓰기 유스케이스는 `state.write(async |conn| { … })` 한 번입니다. 그 안의 모든 변경은 함께 커밋되거나 함께 롤백됩니다.
 - 생성 요청은 `IdempotentJson` 추출기 + `state.write_idempotent(…)`를 씁니다.
 - 수정 요청은 `version`을 받고, 저장소의 `update`가 `false`를 돌려주면 `support::require_updated`로 409를 냅니다.
+- 관리자 쓰기는 트랜잭션 **안의 첫 줄**에서 `support::require_current_admin(conn, ctx)`로 권한을 다시 확인하고, 대상에 대한 판정(`authz::edit_personal_records` 등)에는 거기서 받은 `Actor`를 씁니다. `ctx.actor`는 인증 시점의 값이라 그사이 해제된 관리자를 걸러 내지 못합니다. 요청자 본인의 소속·입사일이 필요한 쓰기는 `support::current_member`로 다시 읽습니다.
 - 계정·권한·기록을 바꾸면 같은 트랜잭션에서 `support::audit`을 호출합니다. 비밀번호·토큰은 `detail`에 넣지 않습니다.
 - 알림은 `support::notify`로 만들고, 같은 사건이 두 번 알림을 만들지 않도록 `dedupe_key`를 줍니다.
 - 현재 시각은 `state.now()`만 씁니다.

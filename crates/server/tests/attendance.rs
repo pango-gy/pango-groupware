@@ -1935,3 +1935,117 @@ async fn home_and_dashboard_count_only_tracked_members_today() {
     assert_eq!(early_home["today"]["evaluation"]["status"], "working");
     assert_eq!(early_home["today"]["evaluation"]["late_minutes"], 0);
 }
+
+// ── 관리자의 본인 기록 ────────────────────────────────────────────────────
+
+/// 관리자는 자기 출퇴근 기록을 직접 만들거나 고칠 수 없다(다른 관리자나 최고 관리자가 한다).
+/// 최고 관리자는 최종 권한자이므로 본인 기록도 다루되 감사 로그에 남는다.
+#[tokio::test]
+async fn admin_cannot_create_or_edit_their_own_record_but_the_owner_can() {
+    let app = TestApp::new().await;
+    let org = org(&app).await;
+    let own = clock_in(&app, &org.admin.token)
+        .await
+        .expect(StatusCode::OK);
+    app.set_time(&kst("2026-03-04T12:00:00"));
+    let admin_id = org.admin.id;
+    let before = (
+        stored_records(&app, admin_id, ("2026-03-01", "2026-03-31")).await,
+        audit_actions(&app).await,
+    );
+
+    // 만들기: 본인 기록은 403.
+    let body = create_body(admin_id, "2026-03-03", "2026-03-03T09:00:00", None);
+    app.post("/admin/attendance")
+        .bearer(&org.admin.token)
+        .json(&body)
+        .send()
+        .await
+        .expect_error(StatusCode::FORBIDDEN, "forbidden");
+    // 고치기: 본인 기록은 403.
+    let edit = json!({
+        "version": own["version"],
+        "clock_in_at": millis("2026-03-02T08:00:00"),
+        "clock_out_at": millis("2026-03-02T18:00:00"),
+        "work_type": "office",
+        "reason": "내 지각 지우기",
+    });
+    app.patch(&format!("/admin/attendance/{}", id_of(&own)))
+        .bearer(&org.admin.token)
+        .json(&edit)
+        .send()
+        .await
+        .expect_error(StatusCode::FORBIDDEN, "forbidden");
+    assert_eq!(
+        (
+            stored_records(&app, admin_id, ("2026-03-01", "2026-03-31")).await,
+            audit_actions(&app).await,
+        ),
+        before
+    );
+    let records = month(&app, &org.admin.token, "2026-03").await;
+    assert_eq!(day(&records, "2026-03-02")["record"], own);
+    assert_eq!(events(&app, &org.admin.token, &id_of(&own)).await.len(), 1);
+
+    // 다른 관리자·최고 관리자는 그 관리자의 기록을 다룰 수 있다.
+    let other_admin = app.add_member("admin2", Role::Admin, None).await;
+    app.post("/admin/attendance")
+        .bearer(&other_admin.token)
+        .json(&body)
+        .send()
+        .await
+        .expect(StatusCode::OK);
+    app.patch(&format!("/admin/attendance/{}", id_of(&own)))
+        .bearer(&org.owner)
+        .json(&edit)
+        .send()
+        .await
+        .expect(StatusCode::OK);
+    // 관리자는 여전히 다른 사람의 기록을 다룬다.
+    let for_bob = create_body(org.bob.id, "2026-03-03", "2026-03-03T09:00:00", None);
+    app.post("/admin/attendance")
+        .bearer(&org.admin.token)
+        .json(&for_bob)
+        .send()
+        .await
+        .expect(StatusCode::OK);
+
+    // 최고 관리자는 본인 기록도 만들고 고칠 수 있고, 감사 로그에 남는다.
+    let owner_body = create_body(app.owner_id, "2026-03-03", "2026-03-03T09:00:00", None);
+    let created = app
+        .post("/admin/attendance")
+        .bearer(&org.owner)
+        .json(&owner_body)
+        .send()
+        .await
+        .expect(StatusCode::OK);
+    let owner_edit = json!({
+        "version": created["version"],
+        "clock_in_at": millis("2026-03-03T09:00:00"),
+        "clock_out_at": millis("2026-03-03T18:00:00"),
+        "work_type": "office",
+        "reason": "퇴근 누락",
+    });
+    app.patch(&format!("/admin/attendance/{}", id_of(&created)))
+        .bearer(&org.owner)
+        .json(&owner_edit)
+        .send()
+        .await
+        .expect(StatusCode::OK);
+    let mut conn = app.state.db.read().await.expect("conn");
+    let (entries, _) = audit::list(&mut conn, &AuditFilter::default(), 200)
+        .await
+        .expect("audit");
+    let owner_self: Vec<&str> = entries
+        .iter()
+        .filter(|e| e.actor_id == Some(app.owner_id))
+        .filter(|e| {
+            e.detail
+                .as_ref()
+                .is_some_and(|d| d["member_id"] == json!(app.owner_id))
+        })
+        .map(|e| e.action.as_str())
+        .collect();
+    assert!(owner_self.contains(&"attendance.create"));
+    assert!(owner_self.contains(&"attendance.edit"));
+}

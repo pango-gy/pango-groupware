@@ -16,7 +16,8 @@ use pango_db::notices::{self, Notice, NoticeCursor, NoticeFilter, NoticeListItem
 use pango_db::{org, Conn};
 
 use super::support::{
-    audit, department_tree, found, notify, require_updated, Audit, AuthContext, Idempotency, Notify,
+    audit, department_tree, found, notify, require_current_admin, require_updated, Audit,
+    AuthContext, Idempotency, Notify,
 };
 use crate::error::{ServiceError, ServiceResult};
 use crate::state::AppState;
@@ -260,6 +261,7 @@ pub async fn create(
     let content = Content::parse(input)?;
     state
         .write_idempotent(ctx.member_id(), idempotency, async |conn: &mut Conn| {
+            require_current_admin(conn, ctx).await?;
             check_department(conn, &content.audience).await?;
             let notice = Notice {
                 id: NoticeId::new(),
@@ -337,6 +339,7 @@ pub async fn update(
     let content = Content::parse(&request.data)?;
     state
         .write(async |conn: &mut Conn| {
+            require_current_admin(conn, ctx).await?;
             let existing = found(notices::find(conn, id).await?)?;
             if existing.archived_at.is_some() {
                 return Err(DomainError::Conflict(ConflictReason::NoticeArchived).into());
@@ -380,6 +383,7 @@ pub async fn archive(
     let now = state.now();
     state
         .write(async |conn: &mut Conn| {
+            require_current_admin(conn, ctx).await?;
             let existing = found(notices::find(conn, id).await?)?;
             if existing.archived_at.is_none() {
                 let archived = Notice {

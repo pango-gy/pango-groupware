@@ -2365,3 +2365,63 @@ async fn admin_reject_racing_with_the_final_approval_keeps_leave_consistent() {
     assert_eq!(remaining(&w.app, &w.kim).await, FULL - 4 * approved);
     assert_ledger_invariants(&w.app, &w.kim).await;
 }
+
+// ── 관리자의 본인 기록 ────────────────────────────────────────────────────
+
+/// 관리자는 자기 연차를 스스로 조정하거나 자기 휴가를 관리자 권한으로 취소할 수 없다.
+/// 최고 관리자는 최종 권한자이므로 할 수 있고 감사 로그에 남는다.
+#[tokio::test]
+async fn admin_cannot_adjust_or_admin_cancel_their_own_leave_but_the_owner_can() {
+    let w = world().await;
+    let admin = w.app.add_member("admin1", Role::Admin, Some(w.dev)).await;
+    let other_admin = w.app.add_member("admin2", Role::Admin, None).await;
+    assert_eq!(remaining(&w.app, &admin).await, FULL);
+
+    // 조정: 본인 대상은 403이고 원장·감사 로그가 그대로다.
+    let ledger_before = stored_ledger(&w.app, admin.id).await;
+    adjust(&w.app, &admin.token, admin.id, 40)
+        .await
+        .expect_error(StatusCode::FORBIDDEN, "forbidden");
+    adjust(&w.app, &admin.token, admin.id, -4)
+        .await
+        .expect_error(StatusCode::FORBIDDEN, "forbidden");
+    assert_eq!(stored_ledger(&w.app, admin.id).await, ledger_before);
+    assert_eq!(audit_count(&w.app, "leave.adjust").await, 0);
+    assert_eq!(remaining(&w.app, &admin).await, FULL);
+
+    // 관리자 취소: 이미 시작된 본인의 승인된 휴가를 스스로 되돌릴 수 없다.
+    let (id, doc) = requested(&w, &admin, "2026-03-02", "2026-03-02").await;
+    decide(&w.app, &w.lead.token, &doc, "approve")
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(status_of(&w.app, &admin, &id).await, "approved");
+    admin_cancel(&w.app, &admin.token, &id)
+        .await
+        .expect_error(StatusCode::FORBIDDEN, "forbidden");
+    assert_eq!(status_of(&w.app, &admin, &id).await, "approved");
+    assert_eq!(reservations(&w.app, admin.id).await, (1, 0));
+    assert_eq!(audit_count(&w.app, "leave.admin_cancel").await, 0);
+    // 본인 자격의 취소는 일반 구성원과 같은 규칙이다(시작된 휴가는 안 된다).
+    cancel(&w.app, &admin.token, &id)
+        .await
+        .expect_error(StatusCode::CONFLICT, "leave_already_started");
+
+    // 다른 관리자는 할 수 있다. 관리자도 다른 사람의 것은 여전히 다룬다.
+    adjust(&w.app, &other_admin.token, admin.id, 4)
+        .await
+        .expect(StatusCode::CREATED);
+    admin_cancel(&w.app, &other_admin.token, &id)
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(status_of(&w.app, &admin, &id).await, "canceled");
+    adjust(&w.app, &admin.token, w.kim.id, 4)
+        .await
+        .expect(StatusCode::CREATED);
+
+    // 최고 관리자는 본인 것도 조정할 수 있고 감사 로그에 남는다.
+    let before = audit_count(&w.app, "leave.adjust").await;
+    adjust(&w.app, &w.owner, w.app.owner_id, 4)
+        .await
+        .expect(StatusCode::CREATED);
+    assert_eq!(audit_count(&w.app, "leave.adjust").await, before + 1);
+}
