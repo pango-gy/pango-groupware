@@ -23,12 +23,10 @@ macro_rules! placeholders {
 
 placeholders! {
     Home => "홈",
-    Attendance => "근태",
     Leave => "휴가",
     LeaveNew => "휴가 신청",
     ApprovalList => "결재",
     ApprovalNew => "새 결재 문서",
-    Team => "팀 현황",
 }
 
 #[component]

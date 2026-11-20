@@ -557,9 +557,16 @@ pub fn ConfirmModal(
     }
 }
 
-/// 목록 아래의 "더 보기" 버튼.
+/// 목록 아래의 "더 보기" 버튼. 다음 페이지가 없으면(`has_more = false`) 아무것도 그리지 않는다.
 #[component]
-pub fn LoadMore(#[props(default)] busy: bool, onclick: EventHandler<()>) -> Element {
+pub fn LoadMore(
+    #[props(default = true)] has_more: bool,
+    #[props(default)] busy: bool,
+    onclick: EventHandler<()>,
+) -> Element {
+    if !has_more {
+        return rsx! {};
+    }
     rsx! {
         div { class: "load-more",
             Button { kind: ButtonKind::Secondary, busy, onclick: move |_| onclick.call(()), "더 보기" }

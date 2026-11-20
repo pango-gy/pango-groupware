@@ -1,5 +1,6 @@
 //! 화면 문구. 서버의 코드 값(오류 코드, 상태 값)을 한국어로 바꾸는 곳은 여기뿐이다.
 
+use pango_core::attendance::{AttendanceEventKind, DayStatus, WorkType};
 use pango_core::authz::Role;
 use pango_core::error::DomainError;
 use pango_core::member::MemberStatus;
@@ -50,6 +51,13 @@ fn field_label(field: &str) -> &str {
         "items" => "항목",
         "year" => "연도",
         "until" => "기간",
+        "from" | "to" => "기간",
+        "work_date" => "근무일",
+        "work_type" => "근무 형태",
+        "clock_in_at" => "출근 시각",
+        "clock_out_at" => "퇴근 시각",
+        "note" => "메모",
+        "member_id" => "구성원",
         other => other,
     }
 }
@@ -89,6 +97,15 @@ fn validation_message(field: Option<&str>, reason: Option<&str>) -> String {
         }
         (Some("break_tiers"), Some("out_of_range")) => {
             "휴게 기준은 1440분(24시간) 이하여야 합니다.".into()
+        }
+        (Some("work_date"), Some("inconsistent")) => {
+            "출근 시각이 선택한 근무일에 속하지 않습니다.".into()
+        }
+        (Some("clock_out_at"), Some("inconsistent")) => {
+            "퇴근 시각은 출근 시각보다 늦어야 합니다.".into()
+        }
+        (Some("clock_in_at" | "clock_out_at"), Some("out_of_range")) => {
+            "근무는 24시간을 넘을 수 없고, 미래 시각은 입력할 수 없습니다.".into()
         }
         (_, Some("empty")) => format!("{label}을(를) 입력해 주세요."),
         (_, Some("too_short")) => format!("{label}이(가) 너무 짧습니다."),
@@ -256,6 +273,55 @@ pub fn audit_target_label(target_type: &str) -> String {
     label.to_owned()
 }
 
+pub fn work_type_label(work_type: WorkType) -> &'static str {
+    match work_type {
+        WorkType::Office => "사무실",
+        WorkType::Remote => "재택",
+        WorkType::Field => "외근",
+    }
+}
+
+pub fn day_status_label(status: DayStatus) -> &'static str {
+    match status {
+        DayStatus::Scheduled => "예정",
+        DayStatus::Working => "근무 중",
+        DayStatus::Normal => "정상",
+        DayStatus::Late => "지각",
+        DayStatus::EarlyLeave => "조퇴",
+        DayStatus::LateAndEarlyLeave => "지각·조퇴",
+        DayStatus::MissingClockOut => "퇴근 누락",
+        DayStatus::Absent => "결근",
+        DayStatus::OnLeave => "휴가",
+        DayStatus::DayOff => "휴무",
+    }
+}
+
+pub fn attendance_event_label(kind: AttendanceEventKind) -> &'static str {
+    match kind {
+        AttendanceEventKind::ClockIn => "출근",
+        AttendanceEventKind::ClockOut => "퇴근",
+        AttendanceEventKind::AdminCreate => "관리자 추가",
+        AttendanceEventKind::AdminEdit => "관리자 수정",
+        AttendanceEventKind::Correction => "정정 승인",
+    }
+}
+
+/// `DayStatus`에는 `ALL`이 없어 테스트·화면이 함께 쓰는 목록을 둔다. 새 상태가 생기면
+/// `day_status_label`의 `match`가 먼저 컴파일 오류를 내므로 여기도 함께 고친다.
+#[cfg(test)]
+pub const DAY_STATUSES: [DayStatus; 10] = [
+    DayStatus::Scheduled,
+    DayStatus::Working,
+    DayStatus::Normal,
+    DayStatus::Late,
+    DayStatus::EarlyLeave,
+    DayStatus::LateAndEarlyLeave,
+    DayStatus::MissingClockOut,
+    DayStatus::Absent,
+    DayStatus::OnLeave,
+    DayStatus::DayOff,
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,6 +358,47 @@ mod tests {
                 Some("invalid_format")
             ),
             "반반차 길이의 형식이 올바르지 않습니다."
+        );
+    }
+
+    #[test]
+    fn every_attendance_enum_value_has_a_distinct_label() {
+        let work: Vec<_> = WorkType::ALL.into_iter().map(work_type_label).collect();
+        let status: Vec<_> = DAY_STATUSES.into_iter().map(day_status_label).collect();
+        let events: Vec<_> = AttendanceEventKind::ALL
+            .iter()
+            .map(|kind| attendance_event_label(*kind))
+            .collect();
+        for labels in [&work, &status, &events] {
+            assert!(labels.iter().all(|label| !label.trim().is_empty()));
+            let mut unique = labels.to_vec();
+            unique.sort_unstable();
+            unique.dedup();
+            assert_eq!(unique.len(), labels.len(), "{labels:?}");
+        }
+        assert_eq!(work.len(), WorkType::ALL.len());
+        assert_eq!(events.len(), 5);
+    }
+
+    #[test]
+    fn attendance_validation_messages_are_specific() {
+        assert_eq!(
+            error_message("validation_failed", Some("work_date"), Some("inconsistent")),
+            "출근 시각이 선택한 근무일에 속하지 않습니다."
+        );
+        assert!(error_message(
+            "validation_failed",
+            Some("clock_out_at"),
+            Some("out_of_range")
+        )
+        .contains("24시간"));
+        assert_eq!(
+            error_message("validation_failed", Some("note"), Some("too_long")),
+            "메모이(가) 너무 깁니다."
+        );
+        assert!(
+            error_message("validation_failed", Some("from"), Some("out_of_range"))
+                .starts_with("기간")
         );
     }
 
