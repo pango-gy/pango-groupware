@@ -133,34 +133,6 @@ pub struct EditFormRequest {
     pub default_reference_ids: Option<Vec<MemberId>>,
 }
 
-/// [`NewFormRequest`]의 예전 모양(분류·필드 정의 없음). 웹이 새 타입으로 옮겨 가면 지운다.
-/// 서버는 [`NewFormRequest`]로 읽으므로 이 모양의 요청도 그대로 받는다.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CreateFormRequest {
-    pub code: String,
-    pub name: String,
-    #[serde(default)]
-    pub description: String,
-    #[serde(default)]
-    pub body_template: String,
-    #[serde(default)]
-    pub sort_order: i64,
-}
-
-/// [`EditFormRequest`]의 예전 모양. 웹이 새 타입으로 옮겨 가면 지운다.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UpdateFormRequest {
-    pub version: i64,
-    pub name: String,
-    #[serde(default)]
-    pub description: String,
-    #[serde(default)]
-    pub body_template: String,
-    pub active: bool,
-    #[serde(default)]
-    pub sort_order: i64,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StepInput {
     pub approver_id: MemberId,
@@ -196,31 +168,6 @@ pub struct EditDocumentRequest {
     /// 보내면 값을 통째로 바꾸고, 생략하면 저장된 값을 그대로 둔다.
     #[serde(default)]
     pub values: Option<serde_json::Value>,
-    pub steps: Vec<StepInput>,
-    #[serde(default)]
-    pub references: Vec<MemberId>,
-}
-
-/// [`NewDocumentRequest`]의 예전 모양(값 없음). 웹이 새 타입으로 옮겨 가면 지운다.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CreateDocumentRequest {
-    pub form_id: FormId,
-    pub title: String,
-    pub body: String,
-    pub steps: Vec<StepInput>,
-    #[serde(default)]
-    pub references: Vec<MemberId>,
-    /// `true`면 저장과 동시에 상신한다. 아니면 임시저장.
-    #[serde(default)]
-    pub submit: bool,
-}
-
-/// [`EditDocumentRequest`]의 예전 모양(값 없음). 웹이 새 타입으로 옮겨 가면 지운다.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UpdateDocumentRequest {
-    pub version: i64,
-    pub title: String,
-    pub body: String,
     pub steps: Vec<StepInput>,
     #[serde(default)]
     pub references: Vec<MemberId>,
@@ -427,35 +374,23 @@ mod tests {
         assert_eq!(parsed.values, None);
     }
 
-    /// 예전 모양으로 보낸 요청은 새 타입으로 그대로 읽힌다(웹이 옮겨 가는 동안의 호환).
+    /// 분류·필드 정의·값을 생략한 요청도 그대로 읽힌다(생략한 것은 서버가 그대로 둔다).
     #[test]
-    fn legacy_request_shapes_parse_as_the_new_types() {
+    fn optional_parts_may_be_omitted() {
         let form_id = FormId::new();
-        let legacy = CreateDocumentRequest {
-            form_id,
-            title: "t".into(),
-            body: "b".into(),
-            steps: Vec::new(),
-            references: Vec::new(),
-            submit: true,
-        };
-        let parsed: NewDocumentRequest =
-            serde_json::from_value(serde_json::to_value(&legacy).expect("json")).expect("parse");
+        let parsed: NewDocumentRequest = serde_json::from_value(serde_json::json!({
+            "form_id": form_id, "title": "t", "body": "b", "steps": [], "submit": true
+        }))
+        .expect("parse");
         assert_eq!(
             (parsed.form_id, parsed.body.as_str(), parsed.submit),
             (form_id, "b", true)
         );
 
-        let legacy = UpdateFormRequest {
-            version: 3,
-            name: "n".into(),
-            description: String::new(),
-            body_template: String::new(),
-            active: true,
-            sort_order: 0,
-        };
-        let parsed: EditFormRequest =
-            serde_json::from_value(serde_json::to_value(&legacy).expect("json")).expect("parse");
+        let parsed: EditFormRequest = serde_json::from_value(serde_json::json!({
+            "version": 3, "name": "n", "active": true
+        }))
+        .expect("parse");
         assert_eq!(parsed.version, 3);
         assert_eq!(
             (
