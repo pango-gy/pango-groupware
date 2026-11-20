@@ -306,6 +306,9 @@ a.list-row:hover strong { color: var(--primary); }
 
 /* ── 탭 ───────────────────────────────────────────── */
 .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); overflow-x: auto; }
+/* 탭은 손가락·휠로 넘기므로 가로 스크롤바는 그리지 않는다(자리를 차지해 밑줄처럼 보인다). */
+.tabs { scrollbar-width: none; }
+.tabs::-webkit-scrollbar { display: none; }
 .tab {
   display: inline-flex; align-items: center; gap: 6px; padding: 10px 14px;
   border: 0; border-bottom: 2px solid transparent; background: none;
