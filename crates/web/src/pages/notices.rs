@@ -267,6 +267,7 @@ pub mod logic {
                 code: code.into(),
                 field: None,
                 reason: None,
+                fields: Vec::new(),
             }
         }
 

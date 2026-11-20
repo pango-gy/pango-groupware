@@ -28,6 +28,7 @@ pub enum IconName {
     Logout,
     Building,
     List,
+    Star,
 }
 
 impl IconName {
@@ -71,6 +72,7 @@ impl IconName {
             Self::Logout => &["M10 4H5v16h5", "M14 8l4 4-4 4", "M18 12H9"],
             Self::Building => &["M5 21V4h9v17", "M14 9h5v12", "M8 8h3M8 12h3M8 16h3", "M3 21h18"],
             Self::List => &["M8 7h12", "M8 12h12", "M8 17h12", "M4 7h.5M4 12h.5M4 17h.5"],
+            Self::Star => &["M12 3.5l2.6 5.4 5.9.8-4.3 4.1 1 5.9L12 16.9l-5.2 2.8 1-5.9-4.3-4.1 5.9-.8z"],
         }
     }
 }

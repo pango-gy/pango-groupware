@@ -78,6 +78,56 @@ string_enum! {
     }
 }
 
+impl DocumentKind {
+    /// 연결된 기능(휴가 신청, 근태 정정)만 문서를 만드는 시스템 양식의 종류인지.
+    pub const fn is_system(self) -> bool {
+        !matches!(self, Self::General)
+    }
+}
+
+string_enum! {
+    /// 양식 분류. 기안 화면이 이 순서([`FormCategory::ALL`])로 묶어 보여 준다.
+    #[derive(PartialOrd, Ord)]
+    pub enum FormCategory("category") {
+        General => "general",
+        Hr => "hr",
+        Attendance => "attendance",
+        Trip => "trip",
+        Accounting => "accounting",
+        Support => "support",
+        Welfare => "welfare",
+        /// 어느 분류에도 넣지 않은 양식.
+        Etc => "etc",
+    }
+}
+
+impl FormCategory {
+    /// 화면에 보여 줄 이름.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::General => "일반",
+            Self::Hr => "인사",
+            Self::Attendance => "근태",
+            Self::Trip => "출장",
+            Self::Accounting => "회계",
+            Self::Support => "지원",
+            Self::Welfare => "복지",
+            Self::Etc => "기타",
+        }
+    }
+}
+
+string_enum! {
+    /// 양식이 어디서 왔는지.
+    #[derive(PartialOrd, Ord)]
+    pub enum FormOrigin("origin") {
+        /// 제품이 기본으로 넣는 양식. 없는 것만 채워 넣고, 관리자가 고친 내용은 덮어쓰지 않는다.
+        Catalog => "catalog",
+        /// 관리자가 만든 양식.
+        Custom => "custom",
+    }
+}
+
 string_enum! {
     /// 문서함. 목록 필터(SQL)는 서버 쪽에 있고 여기서는 이름만 정한다.
     #[derive(PartialOrd, Ord)]

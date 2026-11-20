@@ -20,6 +20,25 @@ pub struct ErrorDetail {
     /// 입력 오류의 세부 사유(`too_long` 등).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// 한 요청에서 찾은 필드별 오류 전부(결재 양식의 값, 양식 정의). 이때 `field`·`reason`에는
+    /// 첫 오류가 들어 있다. 그 밖의 오류에서는 비어 있어 본문에 실리지 않는다.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<FieldErrorDto>,
+}
+
+/// 필드 하나의 오류.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FieldErrorDto {
+    /// 값 오류면 양식 필드의 키, 양식 정의 오류면 정의 안의 위치(`schema.fields[0].key`).
+    pub key: String,
+    /// 표의 몇 번째 행인지(0부터). 표가 아니면 `null`.
+    pub row: Option<u32>,
+    /// 표의 어느 열인지(열 키). 행 전체의 오류이거나 표가 아니면 `null`.
+    pub column: Option<String>,
+    /// 사유 코드: `empty`(필수 누락), `too_long`, `invalid_format`, `invalid_character`,
+    /// `out_of_range`, `inconsistent`, `duplicate`, `unknown_field`, `not_an_option`,
+    /// `not_found`·`member_inactive`(구성원 필드).
+    pub reason: String,
 }
 
 /// 목록 응답. `next_cursor`가 있으면 다음 페이지가 있다.

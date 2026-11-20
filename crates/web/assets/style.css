@@ -142,7 +142,10 @@ html,
 .dept-nav,
 .select-list,
 .cal-side,
-.cal-week-scroll {
+.cal-week-scroll,
+.form-picker-cats,
+.form-picker-list,
+.doc-side {
   scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: var(--grey-300) transparent;
@@ -1304,6 +1307,195 @@ body:has(.action-bar) .toasts { bottom: calc(24px + var(--action-bar-h) + env(sa
   .busy { padding: 12px; }
   .busy-row { grid-template-columns: 64px minmax(0, 1fr); }
   .busy-axis { margin-left: 72px; }
+}
+
+/* ── 결재 양식 ────────────────────────────────────── */
+/* 양식 필드(FormFields): 입력·읽기 전용·미리보기가 같은 조각을 쓴다. */
+.fieldset > legend { padding: 0; margin-bottom: 6px; }
+/* 숫자·날짜·선택처럼 값이 짧은 칸은 좁게 둔다(넓은 칸에 짧은 값이 떠 보이지 않게). */
+.ff-narrow { max-width: 360px; }
+.ff-num { text-align: right; }
+.ff-money { position: relative; display: block; }
+.ff-money > .input { padding-right: 38px; }
+.ff-unit {
+  position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
+  font-size: 14px; color: var(--grey-600); pointer-events: none;
+}
+.ff-unit-inline { margin-left: 2px; font-size: 12px; font-weight: 400; color: var(--grey-600); }
+.ff-reading { font-size: 13px; color: var(--grey-600); }
+.ff-reading-inline { margin-left: 8px; }
+.ff-read-strong { font-weight: 600; }
+.ff-range { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ff-range > .input { flex: 0 1 176px; width: auto; min-width: 0; }
+.ff-range-sep { color: var(--grey-600); }
+.ff-days { margin-left: 4px; font-size: 13px; font-weight: 600; color: var(--blue-strong); white-space: nowrap; }
+.ff-table-wrap { overflow-x: auto; border-radius: var(--radius-control); }
+.ff-table th:first-child, .ff-table td:first-child { padding-left: 12px; }
+.ff-table th:last-child, .ff-table td:last-child { padding-right: 12px; }
+.ff-table td { height: auto; padding: 6px; vertical-align: top; }
+.ff-table tbody tr:hover td { background: transparent; }
+.ff-table .input { min-width: 104px; min-height: 40px; padding: 8px 10px; }
+.ff-table-no { width: 48px; font-size: 13px; color: var(--grey-600); white-space: nowrap; }
+.ff-table td.ff-table-no { line-height: 40px; }
+.ff-table-act { width: 52px; }
+.ff-cell { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.ff-table .ff-total td { height: 44px; padding: 8px 12px; background: var(--grey-50); vertical-align: middle; border-bottom: 0; }
+.ff-table .ff-total td.ff-table-no { line-height: inherit; font-weight: 600; color: var(--grey-700); }
+.ff-table-read td { height: 44px; padding: 8px 12px; vertical-align: middle; overflow-wrap: anywhere; }
+.ff-table-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.ff-table-empty {
+  padding: 16px; border-radius: var(--radius-control); background: var(--grey-50);
+  color: var(--grey-600); text-align: center; font-size: 14px;
+}
+.ff-read-table { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+@media (max-width: 959px) {
+  .ff-narrow { max-width: none; }
+  .ff-range > .input { flex: 1 1 130px; }
+  /* 날짜 두 칸이 한 줄을 다 쓰도록 일수는 아래 줄로 내린다. */
+  .ff-days { flex: 1 1 100%; margin-left: 0; }
+  /* 표는 행마다 쌓는다(.table-stack). 칸의 입력란은 라벨 옆 남은 폭을 채운다. */
+  .ff-table-wrap { overflow-x: visible; }
+  .ff-table.table-stack tfoot { display: block; width: 100%; }
+  .ff-table.table-stack tr { padding: 12px 0; }
+  .ff-table.table-stack td, .ff-table.table-stack td:first-child, .ff-table.table-stack td:last-child {
+    height: auto; padding: 4px 0; text-align: left;
+  }
+  .ff-table.table-stack td::before { flex: 0 0 64px; }
+  .ff-table.table-stack td > .ff-cell { flex: 1 1 0; }
+  .ff-table.table-stack td.ff-table-no { line-height: inherit; }
+  /* 행 지우기는 행의 오른쪽 위(번호 줄)에 둔다. */
+  .ff-table.table-stack tbody tr { position: relative; }
+  .ff-table.table-stack td.ff-table-act { position: absolute; top: 4px; right: 0; width: auto; padding: 0; }
+  .ff-table.table-stack td.ff-table-act::before { display: none; }
+  .ff-table.table-stack td.ff-table-act:empty, .ff-table.table-stack .ff-total td:empty { display: none; }
+  .ff-table.table-stack .ff-total { padding: 12px; border-radius: var(--radius-control); background: var(--grey-50); }
+  .ff-table.table-stack .ff-total td { background: transparent; height: auto; }
+  .ff-table.table-stack .ff-total td.ff-table-no::before { display: none; }
+}
+
+/* 양식 고르기: 왼쪽 분류, 오른쪽 양식 */
+.modal-wide { width: min(1040px, 100%); }
+.form-picker {
+  display: grid; grid-template-columns: 200px minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr);
+  gap: 16px 24px; height: min(560px, calc(100dvh - 160px));
+}
+.form-picker-search { grid-column: 1 / -1; }
+.form-picker-cats { display: flex; flex-direction: column; gap: 2px; overflow-y: auto; min-height: 0; }
+.form-picker-cat {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: none;
+  height: 40px; padding: 0 12px; border: 0; border-radius: var(--radius-control);
+  background: none; color: var(--grey-700); font-weight: 500; text-align: left; cursor: pointer; white-space: nowrap;
+}
+.form-picker-cat:hover { background: var(--grey-50); color: var(--grey-900); }
+.form-picker-cat-active, .form-picker-cat-active:hover { background: var(--grey-100); color: var(--grey-900); font-weight: 700; }
+.form-picker-cat-count { font-size: 13px; font-weight: 500; color: var(--grey-600); }
+.form-picker-list { display: flex; flex-direction: column; gap: 20px; overflow-y: auto; min-width: 0; min-height: 0; }
+.form-picker-heading { margin-bottom: 4px; font-size: 13px; font-weight: 600; color: var(--grey-600); }
+.form-picker-row { gap: 4px; }
+.form-picker-row > .row-link { min-height: 40px; cursor: pointer; }
+.star-btn { color: var(--grey-400); }
+.star-btn-on, .star-btn-on:hover:not(:disabled) { color: var(--orange); }
+.star-btn-on .icon { fill: currentColor; }
+@media (max-width: 959px) {
+  /* 화면 본문 바로 아래에 놓인 대화 상자의 가림막이 본문의 좌우 여백을 물려받지 않게 한다. */
+  .content > .modal-backdrop { margin: 0; }
+  .form-picker {
+    grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr);
+    gap: 12px; height: calc(92dvh - 120px);
+  }
+  /* 분류는 옆으로 넘기는 칩 줄이 된다. */
+  .form-picker-cats { flex-direction: row; gap: 8px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+  .form-picker-cats::-webkit-scrollbar { display: none; }
+  .form-picker-cat { background: var(--grey-100); font-weight: 600; }
+  .form-picker-cat-active, .form-picker-cat-active:hover { background: var(--blue-weak); color: var(--blue-strong); }
+  .form-picker-cat-active .form-picker-cat-count { color: var(--blue-strong); }
+}
+
+/* 문서 상세: 왼쪽에 문서, 오른쪽에 결재 진행. 작성 화면은 표가 넓게 쓰도록 한 단으로 둔다. */
+.doc-layout { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; align-items: start; }
+.doc-main, .doc-side { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+/* 오른쪽 단은 화면에 붙어 따라오고, 길면 그 안에서 스크롤한다. */
+.doc-side {
+  position: sticky; top: 24px; max-height: calc(100dvh - 48px); overflow-y: auto;
+  border-radius: var(--radius-panel);
+}
+.doc-side-actions { display: flex; flex-direction: column-reverse; gap: 8px; }
+.doc-header > .badge-row { margin-bottom: 16px; }
+.doc-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 16px 24px; }
+.doc-fact { min-width: 0; }
+.doc-fact dt { font-size: 13px; line-height: 1.5; color: var(--grey-600); }
+.doc-fact dd { font-weight: 600; overflow-wrap: anywhere; }
+.doc-form-head {
+  display: flex; flex-direction: column; gap: 4px;
+  padding-bottom: 20px; margin-bottom: 20px; border-bottom: 1px solid var(--grey-100);
+}
+.doc-form-name { font-size: 18px; font-weight: 700; line-height: 1.4; letter-spacing: -0.02em; overflow-wrap: anywhere; }
+/* 넓은 화면에서는 오른쪽 단의 "처리"가 동작 막대를 대신한다. */
+.action-bar.doc-action-bar { display: none; }
+@media (min-width: 960px) {
+  body:has(.doc-action-bar) .toasts { bottom: calc(24px + env(safe-area-inset-bottom)); }
+}
+@media (max-width: 1199px) {
+  .doc-layout { grid-template-columns: minmax(0, 1fr); }
+  .doc-side { position: static; max-height: none; overflow: visible; }
+}
+@media (max-width: 959px) {
+  .doc-layout, .doc-main, .doc-side { gap: 8px; }
+  .doc-side { border-radius: 0; }
+  .content > .doc-layout { margin-left: 0; margin-right: 0; }
+  .doc-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; }
+  .action-bar.doc-action-bar { display: flex; }
+}
+
+/* 결재함의 거르기 줄 */
+.doc-filters { display: flex; align-items: center; justify-content: space-between; gap: 12px 16px; flex-wrap: wrap; margin-bottom: 8px; }
+.doc-filter-form { flex: 0 1 220px; min-width: 0; }
+/* 선택 상자의 첫 항목("모든 양식")이 이름 구실을 하므로 라벨은 화면 낭독기에만 남긴다. */
+.doc-filter-form .field-label {
+  position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+}
+@media (max-width: 959px) {
+  .chip-scroll { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; min-width: 0; max-width: 100%; }
+  .chip-scroll::-webkit-scrollbar { display: none; }
+  .chip-scroll > .chip { flex: none; }
+  .doc-filter-form { flex: 1 1 100%; }
+}
+
+/* 양식 관리: 편집 창(왼쪽 설정, 오른쪽 미리보기)과 입력 항목 편집 */
+.form-editor { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 380px); gap: 24px; align-items: start; }
+.form-editor-main { min-width: 0; }
+.form-editor-main > .sub-title { margin-top: 8px; }
+.form-editor-note { margin-top: -12px; }
+.form-editor-preview { position: sticky; top: 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.form-editor-sheet {
+  display: flex; flex-direction: column; gap: 20px; padding: 20px;
+  border-radius: var(--radius-panel); background: var(--grey-50);
+}
+.form-editor-body {
+  min-height: 88px; padding: 10px 14px; border-radius: var(--radius-control);
+  background: var(--grey-100); color: var(--grey-600);
+}
+.fb { display: flex; flex-direction: column; gap: 12px; }
+.fb-list { display: flex; flex-direction: column; gap: 8px; }
+.fb-field { border-radius: var(--radius-control); background: var(--grey-50); min-width: 0; }
+.fb-head { display: flex; align-items: center; gap: 4px; min-height: 52px; padding: 4px 4px 4px 12px; }
+.fb-toggle {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px 10px; flex-wrap: wrap;
+  padding: 8px 0; border: 0; background: none; text-align: left; cursor: pointer;
+}
+.fb-name { flex: 1 1 96px; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fb-toggle:hover .fb-name { color: var(--blue-strong); }
+.fb-body { padding: 4px 12px 16px; }
+.fb-editor { gap: 16px; }
+.fb-required { display: flex; align-items: center; min-height: 44px; align-self: end; }
+.fb-columns { display: flex; flex-direction: column; gap: 8px; }
+.fb-column { padding: 8px 12px 16px; border-radius: var(--radius-control); background: var(--panel); min-width: 0; }
+.fb-column-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.fb-column-head strong { font-size: 13px; font-weight: 600; color: var(--grey-700); }
+.fb-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+@media (max-width: 959px) {
+  .form-editor { grid-template-columns: minmax(0, 1fr); }
+  .form-editor-preview { position: static; }
 }
 
 /* 손가락으로 누르는 칸은 40px 이상. 데스크톱은 촘촘하게 둔다.

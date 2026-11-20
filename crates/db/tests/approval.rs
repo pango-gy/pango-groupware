@@ -3,10 +3,11 @@
 use std::collections::BTreeSet;
 
 use pango_core::approval::{
-    ApprovalLine, Document, DocumentKind, DocumentStatus, EventKind, LineStep, Mailbox, StepKind,
-    StepStatus,
+    ApprovalLine, Document, DocumentKind, DocumentStatus, EventKind, FormCategory, FormOrigin,
+    LineStep, Mailbox, StepKind, StepStatus,
 };
 use pango_core::authz::Role;
+use pango_core::form_schema::FormSchema;
 use pango_core::id::{ApprovalEventId, DocumentId, FormId, MemberId};
 use pango_core::member::MemberStatus;
 use pango_core::text::Comment;
@@ -47,15 +48,9 @@ async fn add_member(db: &Db, login_id: &str) -> MemberId {
 
 fn form(code: &str, kind: DocumentKind) -> Form {
     Form {
-        id: FormId::new(),
-        code: code.to_owned(),
-        name: format!("양식-{code}"),
         description: "설명".into(),
-        kind,
         body_template: "1. 목적\n2. 내용".into(),
-        active: true,
-        sort_order: 0,
-        version: 1,
+        ..Form::plain(FormId::new(), code, &format!("양식-{code}"), kind)
     }
 }
 
@@ -226,6 +221,240 @@ async fn form_code_is_unique() {
         .await
         .expect_err("duplicate code");
     assert!(err.is_unique_violation("approval_forms.code"), "{err}");
+}
+
+#[tokio::test]
+async fn form_schema_columns_round_trip_and_update() {
+    let test = TestDb::new().await;
+    let reference = add_member(&test, "finance").await;
+    let schema: FormSchema = serde_json::from_value(serde_json::json!({ "fields": [
+        { "key": "amount", "label": "금액", "kind": "money", "required": true },
+        { "key": "items", "label": "내역", "kind": "table", "columns": [
+            { "key": "place", "label": "사용처", "kind": "text", "max_len": 200 }
+        ]}
+    ]}))
+    .expect("schema");
+    let created = Form {
+        category: FormCategory::Accounting,
+        schema: schema.clone(),
+        schema_version: 3,
+        use_body: false,
+        default_reference_ids: vec![reference],
+        origin: FormOrigin::Catalog,
+        ..form("expense", DocumentKind::General)
+    };
+    let mut tx = test.begin_write().await.expect("begin");
+    approval::insert_form(&mut tx, &created, ts(1))
+        .await
+        .expect("insert");
+    let stored = approval::find_form(&mut tx, created.id)
+        .await
+        .expect("find")
+        .expect("form");
+    assert_eq!(stored, created);
+
+    // 기본값: 필드 없는 일반 양식.
+    let plain = form("plain", DocumentKind::General);
+    approval::insert_form(&mut tx, &plain, ts(1))
+        .await
+        .expect("insert");
+    let stored_plain = approval::find_form(&mut tx, plain.id)
+        .await
+        .expect("find")
+        .expect("form");
+    assert_eq!(stored_plain.schema, FormSchema::default());
+    assert_eq!(
+        (
+            stored_plain.category,
+            stored_plain.use_body,
+            stored_plain.origin
+        ),
+        (FormCategory::General, true, FormOrigin::Custom)
+    );
+    assert!(stored_plain.default_reference_ids.is_empty());
+
+    let edited = Form {
+        category: FormCategory::Welfare,
+        schema: FormSchema::default(),
+        schema_version: 4,
+        use_body: true,
+        default_reference_ids: Vec::new(),
+        origin: FormOrigin::Custom,
+        ..created.clone()
+    };
+    assert!(approval::update_form(&mut tx, &edited, ts(2))
+        .await
+        .expect("update"));
+    let stored = approval::find_form(&mut tx, created.id)
+        .await
+        .expect("find")
+        .expect("form");
+    assert_eq!(
+        Form {
+            origin: FormOrigin::Catalog,
+            version: 2,
+            ..edited
+        },
+        stored,
+        "origin은 바뀌지 않는다"
+    );
+}
+
+#[tokio::test]
+async fn insert_form_if_absent_never_replaces_an_existing_code() {
+    let test = TestDb::new().await;
+    let mut tx = test.begin_write().await.expect("begin");
+    let first = form("trip", DocumentKind::General);
+    assert!(approval::insert_form_if_absent(&mut tx, &first, ts(1))
+        .await
+        .expect("insert"));
+    // 관리자가 고치고 꺼 둔 뒤에도 같은 코드는 다시 들어가지 않는다.
+    let edited = Form {
+        name: "고친 이름".into(),
+        active: false,
+        ..first.clone()
+    };
+    assert!(approval::update_form(&mut tx, &edited, ts(2))
+        .await
+        .expect("update"));
+    let again = form("trip", DocumentKind::General);
+    assert!(!approval::insert_form_if_absent(&mut tx, &again, ts(3))
+        .await
+        .expect("insert"));
+    let all = approval::list_forms(&mut tx, false).await.expect("list");
+    assert_eq!(all.len(), 1);
+    assert_eq!(
+        (all[0].id, all[0].name.as_str(), all[0].active),
+        (first.id, "고친 이름", false)
+    );
+}
+
+#[tokio::test]
+async fn form_codes_with_prefix_treats_underscore_literally() {
+    let test = TestDb::new().await;
+    for code in ["trip", "trip_copy_1", "trip_copy_2", "tripxcopy_3", "other"] {
+        add_form(&test, code).await;
+    }
+    let mut conn = test.read().await.expect("read");
+    let mut codes = approval::form_codes_with_prefix(&mut conn, "trip_copy_")
+        .await
+        .expect("codes");
+    codes.sort();
+    assert_eq!(codes, ["trip_copy_1", "trip_copy_2"]);
+}
+
+#[tokio::test]
+async fn documents_filter_by_form_and_category() {
+    let test = TestDb::new().await;
+    let general = add_form(&test, "general").await;
+    let expense = Form {
+        category: FormCategory::Accounting,
+        ..form("expense", DocumentKind::General)
+    };
+    let mut tx = test.begin_write().await.expect("begin");
+    approval::insert_form(&mut tx, &expense, ts(1))
+        .await
+        .expect("form");
+    tx.commit().await.expect("commit");
+    let (drafter, a1) = (
+        add_member(&test, "drafter").await,
+        add_member(&test, "first").await,
+    );
+    let (plain, _) = add_draft(&test, &general, line(drafter, &[a1], &[])).await;
+    let (cost, _) = add_draft(&test, &expense, line(drafter, &[a1], &[])).await;
+
+    let mut conn = test.read().await.expect("read");
+    let base = DocumentFilter {
+        scope: Scope::Mailbox(drafter, Mailbox::Drafted),
+        status: None,
+        kind: None,
+        drafter_id: None,
+        form_id: None,
+        category: None,
+        before: None,
+    };
+    let mut ids = async |filter: DocumentFilter| -> Vec<DocumentId> {
+        let (items, _) = approval::list_documents(&mut conn, &filter, 50)
+            .await
+            .expect("list");
+        items.into_iter().map(|item| item.id).collect()
+    };
+    assert_eq!(ids(base).await, [cost.id, plain.id]);
+    assert_eq!(
+        ids(DocumentFilter {
+            form_id: Some(expense.id),
+            ..base
+        })
+        .await,
+        [cost.id]
+    );
+    assert_eq!(
+        ids(DocumentFilter {
+            category: Some(FormCategory::General),
+            ..base
+        })
+        .await,
+        [plain.id]
+    );
+    assert_eq!(
+        ids(DocumentFilter {
+            category: Some(FormCategory::Trip),
+            ..base
+        })
+        .await,
+        []
+    );
+    assert_eq!(
+        ids(DocumentFilter {
+            form_id: Some(general.id),
+            category: Some(FormCategory::Accounting),
+            ..base
+        })
+        .await,
+        []
+    );
+}
+
+#[tokio::test]
+async fn draft_payload_is_replaced_on_edit_and_refreshed_without_a_version_bump() {
+    let test = TestDb::new().await;
+    let form = add_form(&test, "general").await;
+    let (drafter, a1) = (
+        add_member(&test, "drafter").await,
+        add_member(&test, "first").await,
+    );
+    let (stored, mut document) = add_draft(&test, &form, line(drafter, &[a1], &[])).await;
+    let first = serde_json::json!({ "values": { "amount": 1 } });
+    let second = serde_json::json!({ "values": { "amount": 2 } });
+    let mut tx = test.begin_write().await.expect("begin");
+    assert!(approval::update_draft_content(
+        &mut tx,
+        stored.id,
+        1,
+        "제목",
+        "",
+        Some(&first),
+        ts(30)
+    )
+    .await
+    .expect("update"));
+    assert!(approval::refresh_draft_payload(&mut tx, stored.id, &second)
+        .await
+        .expect("refresh"));
+    tx.commit().await.expect("commit");
+    let (found, _) = reload(&test, stored.id).await;
+    assert_eq!((found.version, found.payload.as_ref()), (2, Some(&second)));
+    assert_eq!(found.body, "");
+
+    // 상신한 뒤에는 바꿀 수 없다.
+    let _ = document.submit(drafter, ts(100)).expect("submit");
+    let mut tx = test.begin_write().await.expect("begin");
+    assert!(save(&mut tx, stored.id, 2, &document).await);
+    assert!(!approval::refresh_draft_payload(&mut tx, stored.id, &first)
+        .await
+        .expect("refresh"));
+    tx.commit().await.expect("commit");
+    assert_eq!(reload(&test, stored.id).await.0.payload, Some(second));
 }
 
 // ── 문서 ─────────────────────────────────────────────────────────────────
@@ -476,13 +705,19 @@ async fn replacing_the_line_swaps_steps_and_references() {
     approval::replace_line(&mut tx, stored.id, document.steps(), document.references())
         .await
         .expect("line");
+    assert!(approval::update_draft_content(
+        &mut tx,
+        stored.id,
+        1,
+        "새 제목",
+        "새 본문",
+        None,
+        ts(30)
+    )
+    .await
+    .expect("update"));
     assert!(
-        approval::update_draft_content(&mut tx, stored.id, 1, "새 제목", "새 본문", ts(30))
-            .await
-            .expect("update")
-    );
-    assert!(
-        !approval::update_draft_content(&mut tx, stored.id, 1, "또", "또", ts(31))
+        !approval::update_draft_content(&mut tx, stored.id, 1, "또", "또", None, ts(31))
             .await
             .expect("update")
     );
@@ -500,7 +735,7 @@ async fn replacing_the_line_swaps_steps_and_references() {
     let mut tx = test.begin_write().await.expect("begin");
     assert!(save(&mut tx, stored.id, 2, &document).await);
     assert!(
-        !approval::update_draft_content(&mut tx, stored.id, 3, "늦음", "늦음", ts(40))
+        !approval::update_draft_content(&mut tx, stored.id, 3, "늦음", "늦음", None, ts(40))
             .await
             .expect("update")
     );
@@ -670,6 +905,8 @@ async fn mailboxes_and_counts_follow_document_state() {
         status,
         kind: None,
         drafter_id: None,
+        form_id: None,
+        category: None,
         before: None,
     };
     let mut ids = async |filter: DocumentFilter| -> Vec<DocumentId> {
@@ -797,6 +1034,8 @@ async fn document_list_pages_by_id_without_overlap() {
             status: None,
             kind: None,
             drafter_id: None,
+            form_id: None,
+            category: None,
             before,
         };
         let (items, has_more) = approval::list_documents(&mut conn, &filter, 2)

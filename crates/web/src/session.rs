@@ -296,6 +296,7 @@ mod tests {
             code: code.into(),
             field: None,
             reason: None,
+            fields: Vec::new(),
         }
     }
 

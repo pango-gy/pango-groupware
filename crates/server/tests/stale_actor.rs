@@ -7,7 +7,7 @@
 
 use http::StatusCode;
 use pango_api::admin::{CompanySettingsInput, HolidayImportRequest, HolidayInput};
-use pango_api::approval::{CreateFormRequest, RejectRequest, UpdateFormRequest};
+use pango_api::approval::{EditFormRequest, NewFormRequest, RejectRequest};
 use pango_api::attendance::{
     AdminCreateRecordRequest, AdminEditRecordRequest, CreateCorrectionRequest,
 };
@@ -365,8 +365,8 @@ async fn approval_admin_writes_recheck_the_role_inside_the_transaction() {
         .await
         .expect(StatusCode::CREATED);
     let document_id = parse(document["id"].clone());
-    let new_form: CreateFormRequest = parse(json!({ "code": "fake", "name": "가짜 양식" }));
-    let edit_form: UpdateFormRequest = parse(json!({
+    let new_form: NewFormRequest = parse(json!({ "code": "fake", "name": "가짜 양식" }));
+    let edit_form: EditFormRequest = parse(json!({
         "version": general["version"], "name": "품의서(수정)", "active": false,
     }));
     let form_id = parse(general["id"].clone());
@@ -376,11 +376,13 @@ async fn approval_admin_writes_recheck_the_role_inside_the_transaction() {
     assert_denied!(s, "forbidden",
         "create form" => approval::admin_create_form(&s.app.state, &s.ctx, &new_form, None),
         "update form" => approval::admin_update_form(&s.app.state, &s.ctx, form_id, &edit_form),
+        "duplicate form" => approval::admin_duplicate_form(&s.app.state, &s.ctx, form_id, None),
         "admin reject" => approval::admin_reject(&s.app.state, &s.ctx, document_id, &reject),
     );
     s.suspend().await;
     assert_denied!(s, "unauthenticated",
         "create form" => approval::admin_create_form(&s.app.state, &s.ctx, &new_form, None),
+        "duplicate form" => approval::admin_duplicate_form(&s.app.state, &s.ctx, form_id, None),
         "admin reject" => approval::admin_reject(&s.app.state, &s.ctx, document_id, &reject),
     );
     // 문서는 여전히 결재자의 차례다.

@@ -56,6 +56,7 @@ cargo fmt --all                                          # 포맷
 | 건수 | `support::count_u32`(저장소의 `i64` 건수 → 응답의 `u32`) |
 | 수정 내역 | `support::Changes`(감사 로그 `{"changed": {필드: {"from", "to"}}}`) |
 | 입력 오류의 필드 | `DomainError::with_field("요청 필드")` |
+| 여러 필드의 입력 오류 | `ServiceError::InvalidFields(Vec<FieldErrorDto>)` — 찾은 오류를 전부 `fields`에 싣는다(결재 양식의 값·필드 정의) |
 | 연도 쿼리 | `calendar::year_range(year)`(1900~9999년) |
 | 저장소 | `codec::placeholders(n)`(`IN (?, …)`), `codec::narrow::<u8>(열, 값)`(좁은 정수 읽기), 유일 제약 위반 판정은 저장소 함수(`members::is_duplicate_login_id` 등)로 |
 
@@ -68,7 +69,7 @@ cargo fmt --all                                          # 포맷
 `crates/server/src/testing.rs`의 `TestApp`을 씁니다(`add_member`, `add_department`, `advance`, `set_time`). 테스트 파일마다 도우미를 다시 쓰지 말고 여기 있는 것을 씁니다.
 
 - 준비·변경: `alter_member`, `set_status`, `set_department_head`, `auth_context`, `org_world()`(최고 관리자·관리자·조직장·구성원)
-- 요청: `try_login`(상태 코드만), `document`(결재 문서 상세), `attendance_day`, `attendance_events`
+- 요청: `try_login`(상태 코드만), `document`(결재 문서 상세), `approval_forms`·`approval_form`(기안 화면의 양식 목록·양식 하나), `attendance_day`, `attendance_events`
 - DB 확인: `audit_entries(action)`, `audit_actions(prefix)`, `notifications_of`, `notification_count`, `grant_keys`, `count(sql)`, `execute(sql)`(장애 주입용 트리거 등)
 - 값: `ts`, `kst`, `millis`(KST 현지 시각 → 밀리초), `id_of`(응답의 `id`)
 

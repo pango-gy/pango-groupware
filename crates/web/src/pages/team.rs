@@ -383,6 +383,7 @@ mod logic {
                 code: "forbidden".into(),
                 field: None,
                 reason: None,
+                fields: Vec::new(),
             }
         }
 

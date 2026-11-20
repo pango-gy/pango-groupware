@@ -9,6 +9,7 @@ pub mod calendar;
 pub mod calendar_access;
 pub mod calendar_event;
 pub mod error;
+pub mod form_schema;
 pub mod id;
 pub mod leave;
 pub mod macros;

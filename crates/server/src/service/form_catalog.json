@@ -1,0 +1,403 @@
+[
+  {
+    "code": "work_draft",
+    "name": "업무기안",
+    "category": "general",
+    "kind": "general",
+    "description": "업무 추진 내용을 보고하고 승인을 받습니다.",
+    "use_body": true,
+    "schema": { "fields": [
+      {"key": "effective_on", "label": "시행 일자", "kind": "date", "required": false},
+      {"key": "related_dept", "label": "협조 부서", "kind": "text", "max_len": 200, "required": false}
+    ]}
+  },
+  {
+    "code": "work_cooperation",
+    "name": "업무협조",
+    "category": "general",
+    "kind": "general",
+    "description": "다른 부서에 업무 협조를 요청합니다.",
+    "use_body": true,
+    "schema": { "fields": [
+      {"key": "target_dept", "label": "협조 요청 부서", "kind": "text", "max_len": 200, "required": true},
+      {"key": "due_on", "label": "회신 기한", "kind": "date", "required": false}
+    ]}
+  },
+  {
+    "code": "general",
+    "name": "품의서",
+    "category": "general",
+    "kind": "general",
+    "description": "",
+    "use_body": true,
+    "schema": { "fields": [] }
+  },
+  {
+    "code": "leave",
+    "name": "휴가 신청서",
+    "category": "hr",
+    "kind": "leave",
+    "description": "",
+    "use_body": true,
+    "schema": { "fields": [] }
+  },
+  {
+    "code": "remote_work",
+    "name": "재택근무신청서",
+    "category": "hr",
+    "kind": "general",
+    "description": "",
+    "use_body": false,
+    "schema": { "fields": [
+      {"key": "period", "label": "재택근무 기간", "kind": "date_range", "required": true},
+      {"key": "location", "label": "근무 장소", "kind": "text", "max_len": 200, "required": true},
+      {"key": "reason", "label": "사유", "kind": "textarea", "max_len": 5000, "required": true},
+      {"key": "contact", "label": "비상 연락처", "kind": "text", "max_len": 200, "required": false}
+    ]}
+  },
+  {
+    "code": "absence_report",
+    "name": "결근사유서",
+    "category": "hr",
+    "kind": "general",
+    "description": "",
+    "use_body": false,
+    "schema": { "fields": [
+      {"key": "period", "label": "결근 기간", "kind": "date_range", "required": true},
+      {"key": "reason", "label": "사유", "kind": "textarea", "max_len": 5000, "required": true},
+      {"key": "evidence", "label": "증빙 서류", "kind": "select", "options": ["진단서", "확인서", "기타", "없음"], "required": false}
+    ]}
+  },
+  {
+    "code": "leave_of_absence",
+    "name": "휴직원",
+    "category": "hr",
+    "kind": "general",
+    "description": "",
+    "use_body": false,
+    "schema": { "fields": [
+      {"key": "leave_kind", "label": "휴직 구분", "kind": "select", "options": ["육아휴직", "질병휴직", "가족돌봄휴직", "병역휴직", "기타"], "required": true},
+      {"key": "start_on", "label": "휴직 시작일", "kind": "date", "required": true},
+      {"key": "end_on", "label": "휴직 종료 예정일", "kind": "date", "required": true},
+      {"key": "reason", "label": "사유", "kind": "textarea", "max_len": 5000, "required": true},
+      {"key": "handover_to", "label": "인수인계자", "kind": "member", "required": false}
+    ]}
+  },
+  {
+    "code": "reinstatement",
+    "name": "복직원",
+    "category": "hr",
+    "kind": "general",
+    "description": "",
+    "use_body": false,
+    "schema": { "fields": [
+      {"key": "leave_start_on", "label": "휴직 시작일", "kind": "date", "required": false},
+      {"key": "return_on", "label": "복직 예정일", "kind": "date", "required": true},
+      {"key": "reason", "label": "복직 사유", "kind": "textarea", "max_len": 5000, "required": false}
+    ]}
+  },
+  {
+    "code": "resignation",
+    "name": "사직서",
+    "category": "hr",
+    "kind": "general",
+    "description": "",
+    "use_body": false,
+    "schema": { "fields": [
+      {"key": "resign_on", "label": "퇴직 희망일", "kind": "date", "required": true},
+      {"key": "reason", "label": "사유", "kind": "textarea", "max_len": 5000, "required": true},
+      {"key": "handover_to", "label": "인수인계자", "kind": "member", "required": false}
+    ]}
+  },
+  {
+    "code": "apology_letter",
+    "name": "시말서",
+    "category": "hr",
+    "kind": "general",
+    "description": "",
+    "use_body": false,
+    "schema": { "fields": [
+      {"key": "occurred_on", "label": "발생 일자", "kind": "date", "required": true},
+      {"key": "detail", "label": "위반 내용", "kind": "textarea", "max_len": 5000, "required": true},
+      {"key": "pledge", "label": "재발 방지 대책", "kind": "textarea", "max_len": 5000, "required": true}
+    ]}
+  },
+  {
+    "code": "incident_report",
+    "name": "경위서",
+    "category": "hr",
+    "kind": "general",
+    "description": "",
+    "use_body": false,
+    "schema": { "fields": [
+      {"key": "occurred_on", "label": "발생 일자", "kind": "date", "required": true},
+      {"key": "place", "label": "발생 장소", "kind": "text", "max_len": 200, "required": false},
+      {"key": "detail", "label": "경위", "kind": "textarea", "max_len": 5000, "required": true},
+      {"key": "action", "label": "조치 사항", "kind": "textarea", "max_len": 5000, "required": false}
+    ]}
+  },
+  {
+    "code": "hiring_request",
+    "name": "채용요청",
+    "category": "hr",
+    "kind": "general",
+    "description": "",
+    "use_body": false,
+    "schema": { "fields": [
+      {"key": "position", "label": "채용 직무", "kind": "text", "max_len": 200, "required": true},
+      {"key": "headcount", "label": "채용 인원", "kind": "number", "min": 1, "max": 100, "required": true},
+      {"key": "employment_type", "label": "고용 형태", "kind": "select", "options": ["정규직", "계약직", "인턴", "파견"], "required": true},
+      {"key": "desired_on", "label": "입사 희망일", "kind": "date", "required": false},
+      {"key": "reason", "label": "요청 사유", "kind": "textarea", "max_len": 5000, "required": true},
+      {"key": "requirements", "label": "자격 요건", "kind": "textarea", "max_len": 5000, "required": false}
+    ]}
+  },
+  {
+    "code": "overtime_work",
+    "name": "휴일/연장 근무신청서",
+    "category": "attendance",
+    "kind": "general",
+    "description": "",
+    "use_body": false,
+    "schema": { "fields": [
+      {"key": "work_type", "label": "근무 구분", "kind": "select", "options": ["연장근무", "야간근무", "휴일근무"], "required": true},
+      {"key": "work_on", "label": "근무일", "kind": "date", "required": true},
+      {"key": "work_time", "label": "근무 시간", "kind": "time_range", "required": true},
+      {"key": "reason", "label": "사유", "kind": "textarea", "max_len": 5000, "required": true}
+    ]}
+  },
+  {
+    "code": "flexible_work",
+    "name": "탄력근무신청서",
+    "category": "attendance",
+    "kind": "general",
+    "description": "",
+    "use_body": false,
+    "schema": { "fields": [
+      {"key": "period", "label": "적용 기간", "kind": "date_range", "required": true},
+      {"key": "work_time", "label": "근무 시간", "kind": "time_range", "required": true},
+      {"key": "reason", "label": "사유", "kind": "textarea", "max_len": 5000, "required": true}
+    ]}
+  },
+  {
+    "code": "attendance_correction",
+    "name": "근태 정정 신청서",
+    "category": "attendance",
+    "kind": "attendance_correction",
+    "description": "",
+    "use_body": true,
+    "schema": { "fields": [] }
+  },
+  {
+    "code": "domestic_trip",
+    "name": "국내출장신청",
+    "category": "trip",
+    "kind": "general",
+    "description": "",
+    "use_body": false,
+    "schema": { "fields": [
+      {"key": "period", "label": "출장 기간", "kind": "date_range", "required": true},
+      {"key": "destination", "label": "출장지", "kind": "text", "max_len": 200, "required": true},
+      {"key": "purpose", "label": "목적", "kind": "textarea", "max_len": 5000, "required": true},
+      {"key": "companions", "label": "동행자", "kind": "table", "required": false, "columns": [
+        {"key": "name", "label": "이름", "kind": "text", "max_len": 200, "required": true},
+        {"key": "department", "label": "소속", "kind": "text", "max_len": 200, "required": false}
+      ]},
+      {"key": "transport", "label": "교통편", "kind": "select", "options": ["자가용", "대중교통", "기차", "항공", "회사 차량"], "required": true},
+      {"key": "expenses", "label": "예상 경비", "kind": "table", "required": false, "columns": [
+        {"key": "item", "label": "항목", "kind": "select", "options": ["교통비", "숙박비", "식비", "기타"], "required": true},
+        {"key": "amount", "label": "금액", "kind": "money", "required": true},
+        {"key": "note", "label": "비고", "kind": "text", "max_len": 200, "required": false}
+      ]}
+    ]}
+  },
+  {
+    "code": "overseas_trip",
+    "name": "해외출장신청",
+    "category": "trip",
+    "kind": "general",
+    "description": "",
+    "use_body": false,
+    "schema": { "fields": [
+      {"key": "period", "label": "출장 기간", "kind": "date_range", "required": true},
+      {"key": "country", "label": "출장 국가", "kind": "text", "max_len": 200, "required": true},
+      {"key": "city", "label": "도시", "kind": "text", "max_len": 200, "required": false},
+      {"key": "purpose", "label": "목적", "kind": "textarea", "max_len": 5000, "required": true},
+      {"key": "companions", "label": "동행자", "kind": "table", "required": false, "columns": [
+        {"key": "name", "label": "이름", "kind": "text", "max_len": 200, "required": true},
+        {"key": "department", "label": "소속", "kind": "text", "max_len": 200, "required": false}
+      ]},
+      {"key": "flight", "label": "항공편", "kind": "text", "max_len": 200, "required": false},
+      {"key": "expenses", "label": "예상 경비", "kind": "table", "required": false, "columns": [
+        {"key": "item", "label": "항목", "kind": "select", "options": ["항공료", "숙박비", "일비", "교통비", "기타"], "required": true},
+        {"key": "amount", "label": "금액", "kind": "money", "required": true},
+        {"key": "note", "label": "비고", "kind": "text", "max_len": 200, "required": false}
+      ]}
+    ]}
+  },
+  {
+    "code": "expense_report",
+    "name": "지출결의서",
+    "category": "accounting",
+    "kind": "general",
+    "description": "법인카드·개인경비 사용 내역을 정산합니다.",
+    "use_body": false,
+    "schema": { "fields": [
+      {"key": "spent_on", "label": "지출일자", "kind": "date", "required": true},
+      {"key": "pay_type", "label": "지출 구분", "kind": "select", "options": ["법인카드", "개인경비"], "required": true},
+      {"key": "items", "label": "사용 내역", "kind": "table", "required": true, "help": "영수증 등 증빙은 결재 후 회계 담당자에게 제출해 주세요.", "columns": [
+        {"key": "used_on", "label": "일자", "kind": "date", "required": true},
+        {"key": "vendor", "label": "사용처", "kind": "text", "max_len": 200, "required": true},
+        {"key": "account", "label": "계정과목", "kind": "select", "options": ["식대", "교통비", "소모품비", "접대비", "회의비", "교육훈련비", "통신비", "기타"], "required": true},
+        {"key": "amount", "label": "금액", "kind": "money", "required": true},
+        {"key": "note", "label": "비고", "kind": "text", "max_len": 200, "required": false}
+      ]},
+      {"key": "memo", "label": "비고", "kind": "textarea", "max_len": 5000, "required": false}
+    ]}
+  },
+  {
+    "code": "extra_budget",
+    "name": "추가예산신청",
+    "category": "accounting",
+    "kind": "general",
+    "description": "",
+    "use_body": false,
+    "schema": { "fields": [
+      {"key": "budget_item", "label": "예산 항목", "kind": "text", "max_len": 200, "required": true},
+      {"key": "current_amount", "label": "기존 예산", "kind": "money", "required": false},
+      {"key": "amount", "label": "추가 요청 금액", "kind": "money", "required": true},
+      {"key": "needed_by", "label": "필요 시점", "kind": "date", "required": false},
+      {"key": "reason", "label": "사유", "kind": "textarea", "max_len": 5000, "required": true}
+    ]}
+  },
+  {
+    "code": "supplies_request",
+    "name": "비품/사무용품 신청서",
+    "category": "support",
+    "kind": "general",
+    "description": "",
+    "use_body": false,
+    "schema": { "fields": [
+      {"key": "items", "label": "신청 품목", "kind": "table", "required": true, "columns": [
+        {"key": "name", "label": "품명", "kind": "text", "max_len": 200, "required": true},
+        {"key": "spec", "label": "규격", "kind": "text", "max_len": 200, "required": false},
+        {"key": "quantity", "label": "수량", "kind": "number", "min": 1, "max": 10000, "required": true},
+        {"key": "unit_price", "label": "예상 단가", "kind": "money", "required": false},
+        {"key": "note", "label": "비고", "kind": "text", "max_len": 200, "required": false}
+      ]},
+      {"key": "needed_by", "label": "필요 일자", "kind": "date", "required": false},
+      {"key": "reason", "label": "사유", "kind": "textarea", "max_len": 5000, "required": false}
+    ]}
+  },
+  {
+    "code": "book_purchase",
+    "name": "도서구입신청",
+    "category": "support",
+    "kind": "general",
+    "description": "",
+    "use_body": false,
+    "schema": { "fields": [
+      {"key": "books", "label": "도서 목록", "kind": "table", "required": true, "columns": [
+        {"key": "title", "label": "도서명", "kind": "text", "max_len": 200, "required": true},
+        {"key": "author", "label": "저자", "kind": "text", "max_len": 200, "required": false},
+        {"key": "publisher", "label": "출판사", "kind": "text", "max_len": 200, "required": false},
+        {"key": "quantity", "label": "수량", "kind": "number", "min": 1, "max": 1000, "required": true},
+        {"key": "price", "label": "금액", "kind": "money", "required": true}
+      ]},
+      {"key": "purpose", "label": "구입 목적", "kind": "textarea", "max_len": 5000, "required": true}
+    ]}
+  },
+  {
+    "code": "business_card",
+    "name": "명함신청",
+    "category": "support",
+    "kind": "general",
+    "description": "",
+    "use_body": false,
+    "schema": { "fields": [
+      {"key": "name_ko", "label": "이름", "kind": "text", "max_len": 50, "required": true},
+      {"key": "name_en", "label": "영문 이름", "kind": "text", "max_len": 100, "required": false},
+      {"key": "job_title", "label": "직함", "kind": "text", "max_len": 50, "required": true},
+      {"key": "phone", "label": "전화번호", "kind": "text", "max_len": 30, "required": true},
+      {"key": "email", "label": "이메일", "kind": "text", "max_len": 100, "required": true},
+      {"key": "quantity", "label": "수량", "kind": "select", "options": ["100매", "200매", "300매", "500매"], "required": true},
+      {"key": "note", "label": "요청 사항", "kind": "textarea", "max_len": 5000, "required": false}
+    ]}
+  },
+  {
+    "code": "certificate_request",
+    "name": "증명서 발급신청",
+    "category": "support",
+    "kind": "general",
+    "description": "",
+    "use_body": false,
+    "schema": { "fields": [
+      {"key": "certificate_type", "label": "증명서 종류", "kind": "select", "options": ["재직증명서", "경력증명서", "퇴직증명서", "원천징수영수증", "급여명세서"], "required": true},
+      {"key": "copies", "label": "발급 부수", "kind": "number", "min": 1, "max": 10, "required": true},
+      {"key": "purpose", "label": "용도", "kind": "text", "max_len": 200, "required": true},
+      {"key": "submit_to", "label": "제출처", "kind": "text", "max_len": 200, "required": false},
+      {"key": "needed_by", "label": "필요 일자", "kind": "date", "required": false}
+    ]}
+  },
+  {
+    "code": "id_card_request",
+    "name": "사원증 발급신청",
+    "category": "support",
+    "kind": "general",
+    "description": "",
+    "use_body": false,
+    "schema": { "fields": [
+      {"key": "issue_type", "label": "발급 구분", "kind": "select", "options": ["신규", "재발급"], "required": true},
+      {"key": "reason", "label": "사유", "kind": "select", "options": ["신규 입사", "분실", "훼손", "정보 변경"], "required": true},
+      {"key": "note", "label": "비고", "kind": "textarea", "max_len": 5000, "required": false}
+    ]}
+  },
+  {
+    "code": "family_event_money",
+    "name": "경조금 지급신청",
+    "category": "welfare",
+    "kind": "general",
+    "description": "",
+    "use_body": false,
+    "schema": { "fields": [
+      {"key": "event_type", "label": "경조 구분", "kind": "select", "options": ["결혼", "출산", "사망", "회갑", "칠순", "기타"], "required": true},
+      {"key": "relation", "label": "대상", "kind": "select", "options": ["본인", "배우자", "부모", "자녀", "형제자매", "조부모"], "required": true},
+      {"key": "event_on", "label": "경조일", "kind": "date", "required": true},
+      {"key": "amount", "label": "금액", "kind": "money", "required": true},
+      {"key": "note", "label": "비고", "kind": "textarea", "max_len": 5000, "required": false}
+    ]}
+  },
+  {
+    "code": "family_event_flowers",
+    "name": "경조화 신청",
+    "category": "welfare",
+    "kind": "general",
+    "description": "",
+    "use_body": false,
+    "schema": { "fields": [
+      {"key": "event_type", "label": "경조 구분", "kind": "select", "options": ["결혼", "사망", "개업", "승진", "기타"], "required": true},
+      {"key": "relation", "label": "대상", "kind": "select", "options": ["본인", "배우자", "부모", "자녀", "형제자매", "조부모"], "required": true},
+      {"key": "event_on", "label": "경조일", "kind": "date", "required": true},
+      {"key": "place", "label": "배송 장소", "kind": "text", "max_len": 200, "required": true},
+      {"key": "recipient", "label": "받는 분", "kind": "text", "max_len": 50, "required": true},
+      {"key": "message", "label": "리본 문구", "kind": "text", "max_len": 100, "required": false}
+    ]}
+  },
+  {
+    "code": "tuition_support",
+    "name": "학자금 지원신청",
+    "category": "welfare",
+    "kind": "general",
+    "description": "",
+    "use_body": false,
+    "schema": { "fields": [
+      {"key": "student_name", "label": "학생 이름", "kind": "text", "max_len": 50, "required": true},
+      {"key": "relation", "label": "관계", "kind": "select", "options": ["본인", "자녀"], "required": true},
+      {"key": "school", "label": "학교", "kind": "text", "max_len": 200, "required": true},
+      {"key": "grade", "label": "학년·학기", "kind": "text", "max_len": 50, "required": true},
+      {"key": "amount", "label": "신청 금액", "kind": "money", "required": true},
+      {"key": "paid_on", "label": "납부일", "kind": "date", "required": false},
+      {"key": "note", "label": "비고", "kind": "textarea", "max_len": 5000, "required": false}
+    ]}
+  }
+]

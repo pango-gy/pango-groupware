@@ -11,6 +11,7 @@ pub mod attendance;
 pub mod audit_log;
 pub mod auth;
 pub mod calendar;
+pub mod form_catalog;
 pub mod home;
 pub mod leave;
 pub mod maintenance;

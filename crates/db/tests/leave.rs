@@ -82,17 +82,7 @@ async fn fixture() -> Fixture {
     let member = add_member(&test, "kim").await;
     let approver = add_member(&test, "lead").await;
     let leave_type = leave_type("annual", true);
-    let form = Form {
-        id: FormId::new(),
-        code: "leave".into(),
-        name: "휴가 신청서".into(),
-        description: String::new(),
-        kind: DocumentKind::Leave,
-        body_template: String::new(),
-        active: true,
-        sort_order: 0,
-        version: 1,
-    };
+    let form = Form::plain(FormId::new(), "leave", "휴가 신청서", DocumentKind::Leave);
     let mut tx = test.begin_write().await.expect("begin");
     leave::insert_type(&mut tx, &leave_type, ts(1))
         .await
