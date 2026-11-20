@@ -37,6 +37,10 @@ enum Command {
         owner_login: String,
         #[arg(long, default_value = "관리자")]
         owner_name: String,
+        /// 최고 관리자 비밀번호. 생략하면 임시 비밀번호를 만들어 한 번 보여 준다.
+        /// 명령줄 기록에 남지 않도록 환경 변수로만 받는다.
+        #[arg(skip = std::env::var("PANGO_OWNER_PASSWORD").ok())]
+        owner_password: Option<String>,
     },
     /// 서버를 실행한다.
     Serve {
@@ -69,6 +73,7 @@ async fn run(cli: Cli) -> Result<(), AnyError> {
             timezone,
             owner_login,
             owner_name,
+            owner_password,
         } => {
             let state = open_state(&cli.data_dir, Config::default()).await?;
             let output = setup::initialize(
@@ -78,7 +83,7 @@ async fn run(cli: Cli) -> Result<(), AnyError> {
                     timezone,
                     owner_login_id: owner_login.clone(),
                     owner_name,
-                    owner_password: None,
+                    owner_password,
                 },
             )
             .await?;
