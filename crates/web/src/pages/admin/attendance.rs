@@ -9,13 +9,14 @@ use pango_core::id::AttendanceRecordId;
 
 use crate::api;
 use crate::calendar::YearMonth;
+use crate::company::use_company;
 use crate::format;
 use crate::org_tree;
 use crate::pages::attendance::RecordHistory;
 use crate::session::use_session;
 use crate::ui::{
-    report_error, report_success, resource_view, today, Badge, Button, ButtonKind, Card,
-    EmptyState, FormError, Icon, IconName, LoadMore, MemberPicker, Modal, PageHeader, PickedMember,
+    report_error, report_success, resource_view, Badge, Button, ButtonKind, Card, EmptyState,
+    FormError, Icon, IconName, LoadMore, MemberPicker, Modal, PageHeader, PickedMember,
     SelectField, TextArea, TextField,
 };
 
@@ -32,7 +33,7 @@ enum Editor {
 pub fn AdminAttendance() -> Element {
     let session = use_session();
     let tz = session.zone();
-    let this_month = YearMonth::of(today(tz));
+    let this_month = YearMonth::of(use_company().work_today(tz));
     let mut from = use_signal(move || this_month.first_day().to_string());
     let mut to = use_signal(move || this_month.last_day().to_string());
     let mut department = use_signal(String::new);
@@ -289,9 +290,10 @@ fn PickedMemberField(
 fn RecordEditor(editor: Editor, onclose: EventHandler<()>, onsaved: EventHandler<()>) -> Element {
     let session = use_session();
     let tz = session.zone();
+    let work_today = use_company().work_today(tz);
     let zone_name = session.me().map(|me| me.timezone).unwrap_or_default();
     let initial = match &editor {
-        Editor::Create => logic::RecordForm::blank(today(tz)),
+        Editor::Create => logic::RecordForm::blank(work_today),
         Editor::Edit(item) => logic::RecordForm::from_record(&item.record, tz),
     };
     let mut form = use_signal(move || initial);

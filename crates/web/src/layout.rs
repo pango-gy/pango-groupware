@@ -5,6 +5,7 @@ use pango_api::auth::Me;
 use pango_core::authz::Capabilities;
 
 use crate::badges::{self, provide_badges, use_badges};
+use crate::company::use_company;
 use crate::route::Route;
 use crate::session::{self, use_session, SessionState};
 use crate::text;
@@ -197,11 +198,15 @@ pub fn Shell() -> Element {
     let nav = navigator();
     let route = use_route::<Route>();
     let badges = provide_badges();
+    let company = use_company();
 
-    // 로그인 상태가 정해지면 배지를 한 번 읽는다.
+    // 로그인 상태가 정해지면 배지와 회사 근무 설정을 한 번 읽는다.
     use_effect(move || {
         if session.me().is_some() {
             spawn(badges.refresh());
+            if !company.is_loaded() {
+                spawn(company.refresh());
+            }
         }
     });
 

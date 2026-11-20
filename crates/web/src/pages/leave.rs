@@ -9,6 +9,7 @@ use pango_api::leave::{BalanceDto, LeaveCalendarEntry, LeaveRequestDto, LedgerEn
 
 use crate::api;
 use crate::calendar::YearMonth;
+use crate::company::{is_day_off, use_company};
 use crate::format;
 use crate::route::Route;
 use crate::session::{use_session, use_toasts};
@@ -232,6 +233,8 @@ pub(crate) fn RequestRow(
 
 #[component]
 fn CalendarTab(today: NaiveDate) -> Element {
+    // 회사 근무 요일. 읽기 전에는 월~금으로 칠한다.
+    let week = use_company().work_week();
     let mut month = use_signal(|| YearMonth::of(today));
     let mut selected = use_signal(|| today);
     let entries = use_resource(move || async move {
@@ -260,7 +263,7 @@ fn CalendarTab(today: NaiveDate) -> Element {
                 }
             }
             {resource_view(entries, move |list: Vec<LeaveCalendarEntry>| {
-                let grouped = logic::entries_by_date(&list, current);
+                let grouped = logic::entries_by_date(&list, current, week);
                 let agenda = grouped.get(&selected()).cloned().unwrap_or_default();
                 rsx! {
                     MonthCalendar {
@@ -272,6 +275,7 @@ fn CalendarTab(today: NaiveDate) -> Element {
                                     date,
                                     people,
                                     today,
+                                    off: is_day_off(week, date),
                                     selected: selected() == date,
                                     onselect: move |date| selected.set(date),
                                 }
@@ -290,12 +294,14 @@ fn DayCell(
     date: NaiveDate,
     people: Vec<logic::DayEntry>,
     today: NaiveDate,
+    /// 근무 요일이 아닌 날(흐리게).
+    off: bool,
     selected: bool,
     onselect: EventHandler<NaiveDate>,
 ) -> Element {
     const VISIBLE: usize = 3;
     let mut class = "leave-day".to_owned();
-    if logic::is_weekend(date) {
+    if off {
         class.push_str(" leave-day-weekend");
     }
     if selected {
@@ -303,7 +309,7 @@ fn DayCell(
     }
     let date_class = if date == today {
         "calendar-date calendar-date-today"
-    } else if logic::is_weekend(date) {
+    } else if off {
         "calendar-date calendar-date-off"
     } else {
         "calendar-date"
@@ -402,8 +408,8 @@ fn LedgerTab(tz: Tz) -> Element {
 /// 화면 계산(순수 함수).
 pub(crate) mod logic {
     use super::*;
-    use chrono::Weekday;
     use pango_api::leave::LedgerKind;
+    use pango_core::calendar::WorkWeek;
     use pango_core::leave::LeaveRequestStatus;
     use pango_core::leave::LeaveUnit;
     use pango_core::time::Timestamp;
@@ -452,10 +458,6 @@ pub(crate) mod logic {
         }
     }
 
-    pub fn is_weekend(date: NaiveDate) -> bool {
-        matches!(date.weekday(), Weekday::Sat | Weekday::Sun)
-    }
-
     /// 달을 옮겼을 때 고를 날: 그 달에 오늘이 있으면 오늘, 아니면 1일.
     pub fn default_selected_day(month: YearMonth, today: NaiveDate) -> NaiveDate {
         if YearMonth::of(today) == month {
@@ -493,11 +495,13 @@ pub(crate) mod logic {
         }
     }
 
-    /// 달력 항목을 그 달의 날짜별로 나눈다. 주말은 휴가일이 아니므로 넣지 않는다.
+    /// 달력 항목을 그 달의 날짜별로 나눈다. 근무 요일(`week`)이 아닌 날은 휴가일이 아니므로
+    /// 넣지 않는다.
     /// 같은 날에는 승인 → 대기, 이름 순으로 놓는다.
     pub fn entries_by_date(
         entries: &[LeaveCalendarEntry],
         month: YearMonth,
+        week: WorkWeek,
     ) -> BTreeMap<NaiveDate, Vec<DayEntry>> {
         let (first, last) = (month.first_day(), month.last_day());
         let mut map: BTreeMap<NaiveDate, Vec<DayEntry>> = BTreeMap::new();
@@ -509,7 +513,7 @@ pub(crate) mod logic {
             }
             // 한 달로 잘랐으므로 최대 31일만 돈다.
             for date in start.iter_days().take_while(|d| *d <= end) {
-                if is_weekend(date) {
+                if is_day_off(week, date) {
                     continue;
                 }
                 map.entry(date).or_default().push(DayEntry {
@@ -692,7 +696,7 @@ pub(crate) mod logic {
         }
 
         #[test]
-        fn periods_and_weekends() {
+        fn periods_and_default_days() {
             assert_eq!(
                 period_label(d("2026-03-02"), d("2026-03-02")),
                 "3월 2일 (월)"
@@ -701,8 +705,6 @@ pub(crate) mod logic {
                 period_label(d("2026-03-02"), d("2026-03-04")),
                 "3월 2일 (월) ~ 3월 4일 (수)"
             );
-            assert!(is_weekend(d("2026-03-07")) && is_weekend(d("2026-03-08")));
-            assert!(!is_weekend(d("2026-03-09")));
             let march = YearMonth::of(d("2026-03-01"));
             assert_eq!(
                 default_selected_day(march, d("2026-03-15")),
@@ -760,7 +762,7 @@ pub(crate) mod logic {
                     LeaveRequestStatus::Approved,
                 ),
             ];
-            let map = entries_by_date(&entries, march);
+            let map = entries_by_date(&entries, march, WorkWeek::MON_TO_FRI);
             assert_eq!(
                 map.keys().copied().collect::<Vec<_>>(),
                 [d("2026-03-02"), d("2026-03-03")]
@@ -770,7 +772,12 @@ pub(crate) mod logic {
                 .map(|p| (p.member_name.as_str(), p.pending))
                 .collect();
             assert_eq!(monday, [("나", false), ("다", false), ("가", true)]);
-            assert!(entries_by_date(&[], march).is_empty());
+            assert!(entries_by_date(&[], march, WorkWeek::MON_TO_FRI).is_empty());
+            // 토요일도 근무하는 회사면 주말에 걸친 신청의 토요일 칸이 생긴다.
+            let six_days = WorkWeek::from_bits(0b011_1111).expect("week");
+            let saturday = entries_by_date(&entries, march, six_days);
+            assert!(saturday.contains_key(&d("2026-03-07")));
+            assert!(!saturday.contains_key(&d("2026-03-08")));
         }
 
         #[test]
@@ -782,7 +789,7 @@ pub(crate) mod logic {
                 "2099-12-31",
                 LeaveRequestStatus::Approved,
             );
-            let map = entries_by_date(&[entry], march);
+            let map = entries_by_date(&[entry], march, WorkWeek::MON_TO_FRI);
             assert_eq!(map.len(), 22, "2026년 3월의 평일 수");
         }
 
