@@ -44,7 +44,8 @@ pub fn LeaveNew() -> Element {
         if let Ok(found) = &result {
             // 사용자가 이미 고쳤다면 추천으로 덮어쓰지 않는다.
             if !*line_touched.peek() {
-                line.set(from_suggestion(found));
+                let exclude: Vec<_> = me_id.into_iter().collect();
+                line.set(from_suggestion(&exclude, &found.steps));
             }
         }
         result
@@ -244,7 +245,7 @@ pub fn LeaveNew() -> Element {
                             steps: line(),
                             exclude: me_id.into_iter().collect::<Vec<_>>(),
                             disabled: busy(),
-                            error: error_for(Slot::Line),
+                            error: logic::line_error(error_for(Slot::Line), line_problem),
                             onchange: move |next: Vec<ApproverEntry>| {
                                 line_touched.set(true);
                                 line.set(next);
@@ -319,7 +320,7 @@ pub(crate) mod logic {
     use pango_core::leave::{LeaveAmount, LeaveSpan, LeaveUnit};
 
     use crate::format;
-    use crate::ui::approval_line::{line_problem, to_step_inputs};
+    use crate::ui::approval_line::{line_problem, to_inputs};
     use crate::ui::ApproverEntry;
 
     /// 사유 최대 길이(서버의 `Reason` 규칙과 같다).
@@ -558,9 +559,18 @@ pub(crate) mod logic {
             end_date,
             unit,
             reason: reason.trim().to_owned(),
-            steps: Some(to_step_inputs(line)),
+            steps: Some(to_inputs(line)),
             references: Vec::new(),
         })
+    }
+
+    /// 결재선 아래에 보일 문구: 서버 오류가 있으면 그것을, 없으면 입력으로 알 수 있는 문제를.
+    pub fn line_error(server: String, problem: Option<&'static str>) -> String {
+        if server.is_empty() {
+            problem.unwrap_or_default().to_owned()
+        } else {
+            server
+        }
     }
 
     /// 서버 오류를 붙일 자리.
@@ -854,6 +864,13 @@ pub(crate) mod logic {
             assert_eq!(error_slot("leave_type_inactive", None), Slot::Type);
             assert_eq!(error_slot("network_error", None), Slot::Form);
             assert_eq!(error_slot("validation_failed", None), Slot::Form);
+        }
+
+        #[test]
+        fn line_error_prefers_the_server_message() {
+            assert_eq!(line_error(String::new(), None), "");
+            assert_eq!(line_error(String::new(), Some("빈 결재선")), "빈 결재선");
+            assert_eq!(line_error("서버".into(), Some("빈 결재선")), "서버");
         }
 
         #[test]

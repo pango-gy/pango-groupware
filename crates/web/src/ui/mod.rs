@@ -547,7 +547,12 @@ pub fn ConfirmModal(
                 {children}
             }
             div { class: "modal-actions",
-                Button { kind: ButtonKind::Secondary, onclick: move |_| oncancel.call(()), "취소" }
+                Button {
+                    kind: ButtonKind::Secondary,
+                    disabled: busy,
+                    onclick: move |_| oncancel.call(()),
+                    "취소"
+                }
                 Button {
                     kind: if danger { ButtonKind::Danger } else { ButtonKind::Primary },
                     busy,
@@ -688,6 +693,45 @@ pub fn SecretReveal(
                         Button { onclick: move |_| onclose.call(()), "확인했습니다" }
                     }
                 }
+            }
+        }
+    }
+}
+
+/// 세로 타임라인. 항목은 [`TimelineItem`]으로 넣는다.
+#[component]
+pub fn Timeline(children: Element) -> Element {
+    rsx! { ol { class: "timeline", {children} } }
+}
+
+/// 타임라인의 한 칸. 점의 색은 `tone`, 상태 문구는 내용에 함께 적는다(색만으로 알리지 않는다).
+#[component]
+pub fn TimelineItem(
+    #[props(default)] tone: Tone,
+    /// 지금 진행 중인 칸인지.
+    #[props(default)]
+    current: bool,
+    children: Element,
+) -> Element {
+    rsx! {
+        li {
+            class: if current { "timeline-item timeline-item-current" } else { "timeline-item" },
+            "aria-current": if current { "step" },
+            span { class: "timeline-dot {tone.class()}", "aria-hidden": "true" }
+            div { class: "timeline-body", {children} }
+        }
+    }
+}
+
+/// 입력 글자 수 `12 / 200`. 넘치면 경고 색과 함께 "초과" 문구를 붙인다.
+#[component]
+pub fn CharCount(count: usize, max: usize) -> Element {
+    let over = count > max;
+    rsx! {
+        span { class: if over { "char-count char-count-over" } else { "char-count" }, "aria-live": "polite",
+            "{count} / {max}"
+            if over {
+                " (초과)"
             }
         }
     }

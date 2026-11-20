@@ -1,6 +1,9 @@
 //! 화면. 파일 하나가 화면 하나(또는 밀접한 한 묶음)다.
 
 pub mod admin;
+mod approval;
+mod approval_detail;
+mod approval_new;
 mod attendance;
 mod auth;
 mod leave;
@@ -13,6 +16,9 @@ mod placeholder;
 mod profile;
 mod team;
 
+pub use approval::ApprovalList;
+pub use approval_detail::ApprovalDetail;
+pub use approval_new::ApprovalNew;
 pub use attendance::Attendance;
 pub use auth::{ChangePassword, Login};
 pub use leave::Leave;
@@ -21,6 +27,6 @@ pub use more::{More, NotFound};
 pub use notices::{NoticeDetail, Notices};
 pub use notifications::Notifications;
 pub use people::People;
-pub use placeholder::{ApprovalDetail, ApprovalList, ApprovalNew, Home};
+pub use placeholder::Home;
 pub use profile::Profile;
 pub use team::Team;

@@ -1,15 +1,21 @@
-//! 결재선 편집기. 휴가 신청과 결재 문서 작성이 함께 쓴다.
+//! 결재선 편집기: 결재자 추가·삭제·순서 바꾸기, 단계별 결재/합의 전환, 추천 결재선 불러오기.
+//! 휴가 신청과 결재 문서 작성이 함께 쓴다.
 //!
-//! 값은 부모가 들고 있고(제어 컴포넌트), 바뀔 때마다 `onchange`로 새 목록을 받는다.
-//! 순서가 곧 결재 순서다. 서버로 보낼 때는 [`to_step_inputs`]로 바꾼다.
+//! 편집기는 상태를 갖지 않는다. 바뀐 결재선 전체를 `onchange`로 돌려주고, 부모가 `steps`로 다시 넘긴다.
+//! 순서가 곧 결재 순서다. 서버로 보낼 때는 [`to_inputs`]로 바꾼다.
+//! 결재선 규칙의 최종 판정은 [`pango_core::approval::ApprovalLine::new`](와 서버)가 한다.
+//! 여기서는 명백한 실수(제외 대상·중복·개수 초과)만 입력 단계에서 막는다.
 
 use dioxus::prelude::*;
-use pango_api::approval::{LineSuggestion, StepInput};
+use pango_api::approval::{LineSuggestion, StepInput, SuggestedStep};
 use pango_api::org::MemberSummary;
 use pango_core::approval::{StepKind, MAX_STEPS};
 use pango_core::id::MemberId;
 
-use super::{Avatar, Icon, IconName, MemberPicker};
+use super::{report_error, Avatar, Button, ButtonKind, Icon, IconName, MemberPicker};
+use crate::api;
+use crate::session::use_toasts;
+use crate::text;
 
 /// 결재선 한 단계. 화면에 이름을 보여 주려고 `StepInput`에 이름을 더했다.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,184 +25,236 @@ pub struct ApproverEntry {
     pub kind: StepKind,
 }
 
-/// 추천 결재선을 편집 상태로.
-pub fn from_suggestion(suggestion: &LineSuggestion) -> Vec<ApproverEntry> {
-    suggestion
-        .steps
+/// `index` 단계를 한 칸 앞으로. 맨 앞이거나 범위 밖이면 그대로다.
+pub fn move_up(steps: &[ApproverEntry], index: usize) -> Vec<ApproverEntry> {
+    let mut out = steps.to_vec();
+    if index > 0 && index < out.len() {
+        out.swap(index - 1, index);
+    }
+    out
+}
+
+/// `index` 단계를 한 칸 뒤로. 맨 뒤이거나 범위 밖이면 그대로다.
+pub fn move_down(steps: &[ApproverEntry], index: usize) -> Vec<ApproverEntry> {
+    let mut out = steps.to_vec();
+    if index.saturating_add(1) < out.len() {
+        out.swap(index, index + 1);
+    }
+    out
+}
+
+/// `index` 단계를 뺀다. 범위 밖이면 그대로다.
+pub fn remove(steps: &[ApproverEntry], index: usize) -> Vec<ApproverEntry> {
+    let mut out = steps.to_vec();
+    if index < out.len() {
+        out.remove(index);
+    }
+    out
+}
+
+/// `index` 단계의 종류를 바꾼다. 범위 밖이면 그대로다.
+pub fn set_kind(steps: &[ApproverEntry], index: usize, kind: StepKind) -> Vec<ApproverEntry> {
+    let mut out = steps.to_vec();
+    if let Some(step) = out.get_mut(index) {
+        step.kind = kind;
+    }
+    out
+}
+
+/// 맨 뒤에 결재 단계를 붙인다. 제외 대상(보통 기안자 본인), 이미 있는 사람,
+/// [`MAX_STEPS`]를 넘는 추가는 무시한다.
+pub fn add(
+    steps: &[ApproverEntry],
+    exclude: &[MemberId],
+    approver_id: MemberId,
+    approver_name: String,
+) -> Vec<ApproverEntry> {
+    let mut out = steps.to_vec();
+    let present = out.iter().any(|step| step.approver_id == approver_id);
+    if !exclude.contains(&approver_id) && !present && out.len() < MAX_STEPS {
+        out.push(ApproverEntry {
+            approver_id,
+            approver_name,
+            kind: StepKind::Approve,
+        });
+    }
+    out
+}
+
+/// 추천 결재선을 편집용 단계로. [`add`]와 같은 규칙으로 거른다.
+pub fn from_suggestion(exclude: &[MemberId], suggested: &[SuggestedStep]) -> Vec<ApproverEntry> {
+    suggested.iter().fold(Vec::new(), |steps, step| {
+        let mut next = add(
+            &steps,
+            exclude,
+            step.approver_id,
+            step.approver_name.clone(),
+        );
+        if next.len() > steps.len() {
+            if let Some(last) = next.last_mut() {
+                last.kind = step.kind;
+            }
+        }
+        next
+    })
+}
+
+/// 요청 본문의 결재선.
+pub fn to_inputs(steps: &[ApproverEntry]) -> Vec<StepInput> {
+    steps
         .iter()
-        .take(MAX_STEPS)
-        .map(|step| ApproverEntry {
+        .map(|step| StepInput {
             approver_id: step.approver_id,
-            approver_name: step.approver_name.clone(),
             kind: step.kind,
         })
         .collect()
 }
 
-pub fn to_step_inputs(entries: &[ApproverEntry]) -> Vec<StepInput> {
-    entries
+/// 결재자 선택기에서 뺄 사람: 제외 대상과 이미 고른 결재자.
+pub fn excluded(exclude: &[MemberId], steps: &[ApproverEntry]) -> Vec<MemberId> {
+    exclude
         .iter()
-        .map(|entry| StepInput {
-            approver_id: entry.approver_id,
-            kind: entry.kind,
-        })
+        .copied()
+        .chain(steps.iter().map(|step| step.approver_id))
         .collect()
 }
 
-/// 맨 뒤에 결재자로 추가한다. 이미 있거나 최대 단계 수면 그대로 둔다.
-pub fn add_approver(entries: &[ApproverEntry], member: &MemberSummary) -> Vec<ApproverEntry> {
-    let mut next = entries.to_vec();
-    if next.len() < MAX_STEPS && !next.iter().any(|e| e.approver_id == member.id) {
-        next.push(ApproverEntry {
-            approver_id: member.id,
-            approver_name: member.name.clone(),
-            kind: StepKind::Approve,
-        });
-    }
-    next
-}
-
-pub fn remove_at(entries: &[ApproverEntry], index: usize) -> Vec<ApproverEntry> {
-    let mut next = entries.to_vec();
-    if index < next.len() {
-        next.remove(index);
-    }
-    next
-}
-
-/// `index` 단계를 한 칸 앞(`up`) 또는 뒤로 옮긴다. 끝에서는 그대로 둔다.
-pub fn move_step(entries: &[ApproverEntry], index: usize, up: bool) -> Vec<ApproverEntry> {
-    let mut next = entries.to_vec();
-    let target = if up {
-        index.checked_sub(1)
-    } else {
-        index.checked_add(1)
-    };
-    if let Some(target) = target.filter(|t| *t < next.len() && index < next.len()) {
-        next.swap(index, target);
-    }
-    next
-}
-
-pub fn set_kind(entries: &[ApproverEntry], index: usize, kind: StepKind) -> Vec<ApproverEntry> {
-    let mut next = entries.to_vec();
-    if let Some(entry) = next.get_mut(index) {
-        entry.kind = kind;
-    }
-    next
-}
-
 /// 서버에 보내기 전에 알 수 있는 결재선 문제. 없으면 `None`.
-pub fn line_problem(entries: &[ApproverEntry]) -> Option<&'static str> {
-    if entries.is_empty() {
+pub fn line_problem(steps: &[ApproverEntry]) -> Option<&'static str> {
+    if steps.is_empty() {
         return Some("결재자를 한 명 이상 지정해 주세요.");
     }
-    if entries.len() > MAX_STEPS {
+    if steps.len() > MAX_STEPS {
         return Some("결재선은 10단계까지 지정할 수 있습니다.");
     }
-    if entries.last().map(|e| e.kind) != Some(StepKind::Approve) {
+    if steps.last().map(|step| step.kind) != Some(StepKind::Approve) {
         return Some("마지막 단계는 결재여야 합니다.");
     }
     None
-}
-
-pub fn step_kind_label(kind: StepKind) -> &'static str {
-    match kind {
-        StepKind::Approve => "결재",
-        StepKind::Agree => "합의",
-    }
 }
 
 /// 결재선 편집기.
 ///
 /// - `steps`: 현재 결재선(순서대로).
 /// - `onchange`: 추가·삭제·순서·종류가 바뀐 새 목록.
-/// - `exclude`: 고를 수 없는 구성원(보통 기안자 본인).
+/// - `exclude`: 고를 수 없는 구성원(보통 기안자 본인). 추천 결재선에서도 뺀다.
+/// - `disabled`: 보내는 중 등 편집을 막을 때.
+/// - `error`: 결재선 아래에 붙여 보여 줄 문구(검증·서버 오류).
 #[component]
 pub fn ApprovalLineEditor(
     steps: Vec<ApproverEntry>,
     onchange: EventHandler<Vec<ApproverEntry>>,
     #[props(default)] exclude: Vec<MemberId>,
     #[props(default)] disabled: bool,
-    /// 서버 검증 오류 등 결재선에 붙여 보여 줄 문구.
-    #[props(into, default)]
-    error: String,
+    #[props(into, default)] error: String,
 ) -> Element {
-    let problem = line_problem(&steps).unwrap_or_default();
-    let shown_error = if error.is_empty() {
-        problem.to_owned()
-    } else {
-        error
-    };
-    let picker_exclude: Vec<MemberId> = exclude
-        .iter()
-        .copied()
-        .chain(steps.iter().map(|e| e.approver_id))
-        .collect();
+    let mut loading = use_signal(|| false);
+    let mut toasts = use_toasts();
+    let full = steps.len() >= MAX_STEPS;
+    let picker_exclude = excluded(&exclude, &steps);
     let count = steps.len();
-    let full = count >= MAX_STEPS;
+
+    let suggest = {
+        let exclude = exclude.clone();
+        move |_| {
+            let exclude = exclude.clone();
+            async move {
+                if loading() {
+                    return;
+                }
+                loading.set(true);
+                match api::get::<LineSuggestion>("/approval/line-suggestion").await {
+                    Ok(suggestion) => {
+                        let next = from_suggestion(&exclude, &suggestion.steps);
+                        if next.is_empty() {
+                            toasts
+                                .success("추천할 결재선이 없습니다. 결재자를 직접 지정해 주세요.");
+                        } else {
+                            onchange.call(next);
+                        }
+                    }
+                    Err(error) => report_error(&error),
+                }
+                loading.set(false);
+            }
+        }
+    };
 
     rsx! {
         div { class: "line-editor",
+            div { class: "line-editor-head",
+                span { class: "field-label", "결재선 ({count} / {MAX_STEPS})" }
+                Button {
+                    kind: ButtonKind::Ghost,
+                    small: true,
+                    busy: loading(),
+                    disabled,
+                    onclick: suggest,
+                    "추천 결재선 불러오기"
+                }
+            }
             if steps.is_empty() {
-                p { class: "line-empty", "지정된 결재자가 없습니다." }
+                p { class: "line-empty", "결재자를 추가해 주세요." }
             } else {
                 ol { class: "line-steps",
-                    for (index , entry) in steps.iter().cloned().enumerate() {
-                        li { key: "{entry.approver_id}", class: "line-step",
-                            span { class: "line-order", "aria-hidden": "true", "{index + 1}" }
-                            Avatar { name: entry.approver_name.clone() }
-                            span { class: "line-name", "{entry.approver_name}" }
-                            select {
-                                class: "input line-kind",
-                                "aria-label": "{entry.approver_name} 단계 종류",
-                                disabled,
-                                onchange: {
-                                    let steps = steps.clone();
-                                    move |event: FormEvent| {
-                                        let kind = StepKind::parse(&event.value()).unwrap_or(StepKind::Approve);
-                                        onchange.call(set_kind(&steps, index, kind));
-                                    }
-                                },
+                    for (index , step) in steps.iter().enumerate() {
+                        li { key: "{step.approver_id}", class: "line-step",
+                            span { class: "line-step-order", "aria-hidden": "true", "{index + 1}" }
+                            Avatar { name: step.approver_name.clone() }
+                            span { class: "line-step-name",
+                                span { class: "sr-only", "{index + 1}번째 " }
+                                "{step.approver_name}"
+                            }
+                            div {
+                                class: "segmented",
+                                role: "group",
+                                "aria-label": "{step.approver_name} 단계 종류",
                                 for kind in StepKind::ALL.iter().copied() {
-                                    option {
-                                        value: "{kind.as_str()}",
-                                        selected: kind == entry.kind,
-                                        {step_kind_label(kind)}
+                                    button {
+                                        key: "{kind.as_str()}",
+                                        class: if step.kind == kind { "segmented-item segmented-item-active" } else { "segmented-item" },
+                                        r#type: "button",
+                                        "aria-pressed": step.kind == kind,
+                                        disabled,
+                                        onclick: {
+                                            let steps = steps.clone();
+                                            move |_| onchange.call(set_kind(&steps, index, kind))
+                                        },
+                                        "{text::step_kind_label(kind)}"
                                     }
                                 }
                             }
-                            div { class: "line-actions",
+                            div { class: "line-step-actions",
                                 button {
-                                    class: "icon-btn line-up",
+                                    class: "icon-btn line-step-up",
                                     r#type: "button",
-                                    "aria-label": "{entry.approver_name} 앞으로",
+                                    "aria-label": "{step.approver_name} 앞으로",
                                     disabled: disabled || index == 0,
                                     onclick: {
                                         let steps = steps.clone();
-                                        move |_| onchange.call(move_step(&steps, index, true))
+                                        move |_| onchange.call(move_up(&steps, index))
                                     },
                                     Icon { name: IconName::Chevron }
                                 }
                                 button {
-                                    class: "icon-btn line-down",
+                                    class: "icon-btn line-step-down",
                                     r#type: "button",
-                                    "aria-label": "{entry.approver_name} 뒤로",
+                                    "aria-label": "{step.approver_name} 뒤로",
                                     disabled: disabled || index + 1 == count,
                                     onclick: {
                                         let steps = steps.clone();
-                                        move |_| onchange.call(move_step(&steps, index, false))
+                                        move |_| onchange.call(move_down(&steps, index))
                                     },
                                     Icon { name: IconName::Chevron }
                                 }
                                 button {
                                     class: "icon-btn",
                                     r#type: "button",
-                                    "aria-label": "{entry.approver_name} 빼기",
+                                    "aria-label": "{step.approver_name} 빼기",
                                     disabled,
                                     onclick: {
                                         let steps = steps.clone();
-                                        move |_| onchange.call(remove_at(&steps, index))
+                                        move |_| onchange.call(remove(&steps, index))
                                     },
                                     Icon { name: IconName::Close }
                                 }
@@ -205,19 +263,25 @@ pub fn ApprovalLineEditor(
                     }
                 }
             }
-            if !disabled && !full {
+            if full {
+                p { class: "field-hint", "결재자는 최대 {MAX_STEPS}명까지 지정할 수 있습니다." }
+            } else if !disabled {
                 MemberPicker {
                     label: "결재자 추가",
                     exclude: picker_exclude,
                     onpick: {
                         let steps = steps.clone();
-                        move |member: MemberSummary| onchange.call(add_approver(&steps, &member))
+                        let exclude = exclude.clone();
+                        move |member: MemberSummary| {
+                            onchange.call(add(&steps, &exclude, member.id, member.name))
+                        }
                     },
                 }
             }
-            if !shown_error.is_empty() {
-                span { class: "field-error", role: "alert", "{shown_error}" }
+            if !error.is_empty() {
+                p { class: "field-error", role: "alert", "{error}" }
             }
+            p { class: "field-hint", "위에서부터 순서대로 처리합니다. 마지막 단계는 결재여야 합니다." }
         }
     }
 }
@@ -225,8 +289,10 @@ pub fn ApprovalLineEditor(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pango_api::approval::SuggestedStep;
-    use pango_core::member::MemberStatus;
+
+    fn step(name: &str) -> ApproverEntry {
+        entry(name, StepKind::Approve)
+    }
 
     fn entry(name: &str, kind: StepKind) -> ApproverEntry {
         ApproverEntry {
@@ -236,35 +302,21 @@ mod tests {
         }
     }
 
-    fn member(name: &str) -> MemberSummary {
-        MemberSummary {
-            id: MemberId::new(),
-            name: name.into(),
-            email: None,
-            phone: None,
-            department_id: None,
-            department_name: None,
-            position_id: None,
-            position_name: None,
-            status: MemberStatus::Active,
-        }
-    }
-
-    fn names(entries: &[ApproverEntry]) -> Vec<&str> {
-        entries.iter().map(|e| e.approver_name.as_str()).collect()
+    fn names(steps: &[ApproverEntry]) -> Vec<&str> {
+        steps.iter().map(|s| s.approver_name.as_str()).collect()
     }
 
     #[test]
-    fn add_skips_duplicates_and_stops_at_max() {
-        let kim = member("김");
-        let line = add_approver(&[], &kim);
-        assert_eq!(names(&line), ["김"]);
-        assert_eq!(line[0].kind, StepKind::Approve);
-        assert_eq!(add_approver(&line, &kim), line, "같은 사람은 한 번만");
-        let full: Vec<_> = (0..MAX_STEPS)
-            .map(|i| entry(&i.to_string(), StepKind::Approve))
-            .collect();
-        assert_eq!(add_approver(&full, &member("초과")).len(), MAX_STEPS);
+    fn moving_swaps_neighbours_and_ignores_edges() {
+        let steps = vec![step("a"), step("b"), step("c")];
+        assert_eq!(names(&move_up(&steps, 1)), ["b", "a", "c"]);
+        assert_eq!(names(&move_up(&steps, 0)), ["a", "b", "c"]);
+        assert_eq!(names(&move_up(&steps, 9)), ["a", "b", "c"]);
+        assert_eq!(names(&move_down(&steps, 1)), ["a", "c", "b"]);
+        assert_eq!(names(&move_down(&steps, 2)), ["a", "b", "c"]);
+        assert_eq!(names(&move_down(&steps, usize::MAX)), ["a", "b", "c"]);
+        assert!(move_up(&[], 0).is_empty());
+        assert!(move_down(&[], 0).is_empty());
     }
 
     #[test]
@@ -274,18 +326,133 @@ mod tests {
             entry("b", StepKind::Approve),
             entry("c", StepKind::Approve),
         ];
-        assert_eq!(names(&move_step(&line, 1, true)), ["b", "a", "c"]);
-        assert_eq!(names(&move_step(&line, 1, false)), ["a", "c", "b"]);
-        assert_eq!(move_step(&line, 0, true), line);
-        assert_eq!(move_step(&line, 2, false), line);
-        assert_eq!(move_step(&line, 9, true), line);
-        assert_eq!(names(&remove_at(&line, 0)), ["b", "c"]);
-        assert_eq!(remove_at(&line, 3), line);
+        assert_eq!(move_up(&line, 0), line);
+        assert_eq!(move_down(&line, 2), line);
+        assert_eq!(move_up(&line, 9), line);
+        assert_eq!(names(&remove(&line, 0)), ["b", "c"]);
+        assert_eq!(remove(&line, 3), line);
         assert_eq!(
             set_kind(&line, 0, StepKind::Approve)[0].kind,
             StepKind::Approve
         );
         assert_eq!(set_kind(&line, 7, StepKind::Agree), line);
+    }
+
+    #[test]
+    fn removing_and_changing_kind_respect_bounds() {
+        let steps = vec![step("a"), step("b")];
+        assert_eq!(names(&remove(&steps, 0)), ["b"]);
+        assert_eq!(names(&remove(&steps, 5)), ["a", "b"]);
+        assert!(remove(&[], 0).is_empty());
+        let changed = set_kind(&steps, 1, StepKind::Agree);
+        assert_eq!(changed[1].kind, StepKind::Agree);
+        assert_eq!(changed[0].kind, StepKind::Approve);
+        assert_eq!(set_kind(&steps, 7, StepKind::Agree), steps);
+    }
+
+    #[test]
+    fn adding_skips_excluded_duplicates_and_overflow() {
+        let drafter = MemberId::new();
+        let other = MemberId::new();
+        let one = add(&[], &[drafter], other, "b".into());
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].kind, StepKind::Approve);
+        assert_eq!(add(&one, &[drafter], other, "b".into()), one, "중복");
+        assert_eq!(add(&one, &[drafter], drafter, "me".into()), one, "본인");
+        let full: Vec<_> = (0..MAX_STEPS).map(|i| step(&i.to_string())).collect();
+        assert_eq!(
+            add(&full, &[drafter], MemberId::new(), "x".into()).len(),
+            MAX_STEPS
+        );
+    }
+
+    #[test]
+    fn add_without_exclusions_skips_duplicates_and_stops_at_max() {
+        let kim = MemberId::new();
+        let line = add(&[], &[], kim, "김".into());
+        assert_eq!(names(&line), ["김"]);
+        assert_eq!(line[0].kind, StepKind::Approve);
+        assert_eq!(
+            add(&line, &[], kim, "김".into()),
+            line,
+            "같은 사람은 한 번만"
+        );
+        let full: Vec<_> = (0..MAX_STEPS)
+            .map(|i| entry(&i.to_string(), StepKind::Approve))
+            .collect();
+        assert_eq!(
+            add(&full, &[], MemberId::new(), "초과".into()).len(),
+            MAX_STEPS
+        );
+    }
+
+    #[test]
+    fn suggestion_is_filtered_like_manual_adds() {
+        let drafter = MemberId::new();
+        let head = MemberId::new();
+        let suggested = |id, kind| SuggestedStep {
+            approver_id: id,
+            approver_name: "n".into(),
+            kind,
+        };
+        let line = from_suggestion(
+            &[drafter],
+            &[
+                suggested(head, StepKind::Agree),
+                suggested(head, StepKind::Approve),
+                suggested(drafter, StepKind::Approve),
+            ],
+        );
+        assert_eq!(line.len(), 1);
+        assert_eq!(line[0].approver_id, head);
+        assert_eq!(
+            line[0].kind,
+            StepKind::Agree,
+            "처음 나온 단계의 종류를 쓴다"
+        );
+        let many: Vec<_> = (0..MAX_STEPS + 3)
+            .map(|_| suggested(MemberId::new(), StepKind::Approve))
+            .collect();
+        assert_eq!(from_suggestion(&[drafter], &many).len(), MAX_STEPS);
+        assert!(from_suggestion(&[drafter], &[]).is_empty());
+    }
+
+    #[test]
+    fn suggestion_round_trips_to_step_inputs() {
+        let id = MemberId::new();
+        let line = from_suggestion(
+            &[],
+            &[SuggestedStep {
+                approver_id: id,
+                approver_name: "팀장".into(),
+                kind: StepKind::Approve,
+            }],
+        );
+        assert_eq!(names(&line), ["팀장"]);
+        assert_eq!(
+            to_inputs(&line),
+            vec![StepInput {
+                approver_id: id,
+                kind: StepKind::Approve
+            }]
+        );
+    }
+
+    #[test]
+    fn inputs_keep_order_and_kind() {
+        let steps = vec![
+            step("a"),
+            set_kind(&[step("b")], 0, StepKind::Agree).remove(0),
+        ];
+        let inputs = to_inputs(&steps);
+        assert_eq!(inputs.len(), 2);
+        assert_eq!(inputs[0].approver_id, steps[0].approver_id);
+        assert_eq!(inputs[1].kind, StepKind::Agree);
+        let drafter = MemberId::new();
+        assert_eq!(
+            excluded(&[drafter], &steps),
+            vec![drafter, steps[0].approver_id, steps[1].approver_id]
+        );
     }
 
     #[test]
@@ -299,29 +466,5 @@ mod tests {
             .map(|i| entry(&i.to_string(), StepKind::Approve))
             .collect();
         assert!(line_problem(&too_many).is_some());
-    }
-
-    #[test]
-    fn suggestion_round_trips_to_step_inputs() {
-        let id = MemberId::new();
-        let suggestion = LineSuggestion {
-            steps: vec![SuggestedStep {
-                approver_id: id,
-                approver_name: "팀장".into(),
-                kind: StepKind::Approve,
-            }],
-        };
-        let line = from_suggestion(&suggestion);
-        assert_eq!(names(&line), ["팀장"]);
-        assert_eq!(
-            to_step_inputs(&line),
-            vec![StepInput {
-                approver_id: id,
-                kind: StepKind::Approve
-            }]
-        );
-        for kind in StepKind::ALL {
-            assert!(!step_kind_label(*kind).is_empty());
-        }
     }
 }

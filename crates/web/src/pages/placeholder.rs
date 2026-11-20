@@ -12,23 +12,7 @@ pub fn ComingSoon(title: String) -> Element {
     }
 }
 
-macro_rules! placeholders {
-    ($($name:ident => $title:literal),+ $(,)?) => {$(
-        #[component]
-        pub fn $name() -> Element {
-            rsx! { ComingSoon { title: $title } }
-        }
-    )+};
-}
-
-placeholders! {
-    Home => "홈",
-    ApprovalList => "결재",
-    ApprovalNew => "새 결재 문서",
-}
-
 #[component]
-pub fn ApprovalDetail(id: String) -> Element {
-    let _ = id;
-    rsx! { ComingSoon { title: "결재 문서" } }
+pub fn Home() -> Element {
+    rsx! { ComingSoon { title: "홈" } }
 }
