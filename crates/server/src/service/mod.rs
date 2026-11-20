@@ -9,6 +9,8 @@
 pub mod attendance;
 pub mod auth;
 pub mod maintenance;
+pub mod members;
+pub mod org;
 pub mod setup;
 pub mod support;
 

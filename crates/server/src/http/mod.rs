@@ -3,6 +3,8 @@
 pub mod attendance;
 pub mod auth;
 pub mod extract;
+pub mod members;
+pub mod org;
 pub mod web;
 
 use axum::extract::DefaultBodyLimit;
@@ -25,6 +27,8 @@ fn api_routes() -> Router<AppState> {
         .route("/health", get(health))
         .merge(auth::routes())
         .merge(attendance::routes())
+        .merge(org::routes())
+        .merge(members::routes())
         .fallback(not_found)
 }
 

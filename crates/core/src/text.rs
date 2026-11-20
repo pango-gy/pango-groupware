@@ -148,6 +148,10 @@ text_type!(
     /// 반드시 적어야 하는 사유.
     Reason, block("reason", 1, 1_000)
 );
+text_type!(
+    /// 목록 검색어. 비어 있으면 검색하지 않는다.
+    SearchTerm, line("search", 0, 100)
+);
 
 /// 로그인 아이디. 소문자 영문·숫자와 `.`, `_`, `-`만 쓰며 영문·숫자로 시작한다.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -233,6 +237,47 @@ impl Email {
             return Err(err(ValidationReason::InvalidFormat));
         }
         Ok(Self(value.to_ascii_lowercase()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// 전화번호. 국가마다 형식이 달라 숫자·공백·`-`와 맨 앞의 `+`만 허용하고 길이만 제한한다.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Phone(String);
+
+impl Phone {
+    pub const MIN_LEN: usize = 5;
+    pub const MAX_LEN: usize = 20;
+
+    pub fn parse(raw: &str) -> DomainResult<Self> {
+        let err = |reason| DomainError::validation("phone", reason);
+        let value = raw.trim();
+        if value.is_empty() {
+            return Err(err(ValidationReason::Empty));
+        }
+        // 허용 문자가 모두 ASCII이므로, 문자 검사를 통과하면 바이트 길이 = 글자 수다.
+        if value.len() > Self::MAX_LEN * 4 {
+            return Err(err(ValidationReason::TooLong { max: Self::MAX_LEN }));
+        }
+        let allowed = |(i, b): (usize, u8)| {
+            b.is_ascii_digit() || b == b' ' || b == b'-' || (b == b'+' && i == 0)
+        };
+        if !value.bytes().enumerate().all(allowed) {
+            return Err(err(ValidationReason::InvalidCharacter));
+        }
+        if value.len() < Self::MIN_LEN {
+            return Err(err(ValidationReason::TooShort { min: Self::MIN_LEN }));
+        }
+        if value.len() > Self::MAX_LEN {
+            return Err(err(ValidationReason::TooLong { max: Self::MAX_LEN }));
+        }
+        if !value.bytes().any(|b| b.is_ascii_digit()) {
+            return Err(err(ValidationReason::InvalidFormat));
+        }
+        Ok(Self(value.to_owned()))
     }
 
     pub fn as_str(&self) -> &str {
@@ -483,6 +528,68 @@ mod tests {
             .expect("valid")
             .is_some());
         assert!(optional(Some("nope"), Email::parse).is_err());
+    }
+
+    #[test]
+    fn phone_rules() {
+        assert_eq!(
+            Phone::parse(" +82 10-1234-5678 ").expect("valid").as_str(),
+            "+82 10-1234-5678"
+        );
+        assert!(Phone::parse("12345").is_ok());
+        assert!(Phone::parse(&"1".repeat(20)).is_ok());
+        assert_eq!(reason(Phone::parse("   ")), ValidationReason::Empty);
+        assert_eq!(
+            reason(Phone::parse("1234")),
+            ValidationReason::TooShort { min: 5 }
+        );
+        assert_eq!(
+            reason(Phone::parse(&"1".repeat(21))),
+            ValidationReason::TooLong { max: 20 }
+        );
+        assert_eq!(
+            reason(Phone::parse(&"1".repeat(10_000))),
+            ValidationReason::TooLong { max: 20 }
+        );
+        for bad in [
+            "010.1234.5678",
+            "010-1234-567８",
+            "82+10123456",
+            "++8210123",
+            "010\u{0}1234567",
+            "010\u{202E}1234",
+            "(02) 123-4567",
+            "010-abcd-5678",
+            "<script>",
+        ] {
+            assert_eq!(
+                reason(Phone::parse(bad)),
+                ValidationReason::InvalidCharacter,
+                "{bad:?}"
+            );
+        }
+        assert_eq!(
+            reason(Phone::parse("+ - -")),
+            ValidationReason::InvalidFormat
+        );
+    }
+
+    #[test]
+    fn search_term_may_be_empty_but_is_bounded() {
+        assert_eq!(SearchTerm::parse("  ").expect("empty ok").as_str(), "");
+        assert_eq!(
+            SearchTerm::parse("100%_'").expect("valid").as_str(),
+            "100%_'"
+        );
+        assert!(SearchTerm::parse(&"가".repeat(100)).is_ok());
+        assert_eq!(
+            reason(SearchTerm::parse(&"가".repeat(101))),
+            ValidationReason::TooLong { max: 100 }
+        );
+        assert_eq!(
+            reason(SearchTerm::parse("a\0b")),
+            ValidationReason::InvalidCharacter
+        );
     }
 
     proptest! {

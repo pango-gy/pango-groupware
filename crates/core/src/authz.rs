@@ -8,8 +8,9 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{DomainError, DomainResult, ValidationReason};
+use crate::error::{ConflictReason, DomainError, DomainResult, ValidationReason};
 use crate::id::{DepartmentId, MemberId};
+use crate::member::MemberStatus;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -220,6 +221,44 @@ pub fn change_role(actor: &Actor, subject: &Subject) -> DomainResult<()> {
     require_owner(actor)?;
     if actor.member_id == subject.member_id {
         Err(DomainError::Forbidden)
+    } else {
+        Ok(())
+    }
+}
+
+/// 구성원 디렉터리에서 정지·퇴사 계정까지 볼 수 있는지(관리자만).
+pub fn view_inactive_members(actor: &Actor) -> bool {
+    actor.is_admin()
+}
+
+/// 구성원 한 명의 공개 정보를 볼 수 있는지. 재직 중이면 누구나, 아니면 관리자만.
+/// 관리자가 아니면 정지·퇴사 계정은 존재 자체를 숨긴다.
+pub fn view_member(actor: &Actor, status: MemberStatus) -> DomainResult<()> {
+    if status.can_sign_in() || view_inactive_members(actor) {
+        Ok(())
+    } else {
+        Err(DomainError::NotFound)
+    }
+}
+
+/// 팀 메뉴의 범위. 관리자는 전체(`None`), 조직장은 관할 부서, 그 외는 403.
+pub fn team_scope(actor: &Actor) -> DomainResult<Option<&BTreeSet<DepartmentId>>> {
+    require_manager(actor)?;
+    Ok((!actor.is_admin()).then_some(&actor.managed_departments))
+}
+
+/// 역할·상태 변경 뒤에도 로그인할 수 있는 최고 관리자가 한 명은 남는지.
+///
+/// `active_owners`는 변경 전, 대상을 포함한 수다. 최고 관리자가 없으면 역할을 바꿀 수
+/// 있는 사람이 없어 시스템을 되돌릴 수 없으므로, 마지막 한 명은 내리거나 막을 수 없다.
+pub fn keep_an_owner(
+    before: (Role, MemberStatus),
+    after: (Role, MemberStatus),
+    active_owners: i64,
+) -> DomainResult<()> {
+    let counts = |(role, status): (Role, MemberStatus)| role == Role::Owner && status.can_sign_in();
+    if counts(before) && !counts(after) && active_owners <= 1 {
+        Err(ConflictReason::LastOwner.into())
     } else {
         Ok(())
     }
@@ -504,6 +543,81 @@ mod tests {
                 manage_roles: true,
                 team: false
             }
+        );
+    }
+
+    #[test]
+    fn inactive_members_are_hidden_from_non_admins() {
+        let w = world();
+        let member = actor(Role::Member, Some(w.dept_a), &[]);
+        let manager = actor(Role::Member, Some(w.dept_a), &[w.dept_a]);
+        let admin = actor(Role::Admin, None, &[]);
+        for status in [MemberStatus::Suspended, MemberStatus::Retired] {
+            assert_eq!(view_member(&member, status), Err(DomainError::NotFound));
+            assert_eq!(view_member(&manager, status), Err(DomainError::NotFound));
+            assert_eq!(view_member(&admin, status), Ok(()));
+        }
+        assert_eq!(view_member(&member, MemberStatus::Active), Ok(()));
+        assert!(!view_inactive_members(&manager));
+        assert!(view_inactive_members(&actor(Role::Owner, None, &[])));
+    }
+
+    #[test]
+    fn team_scope_is_all_for_admins_and_managed_for_heads() {
+        let w = world();
+        let manager = actor(Role::Member, Some(w.dept_a), &[w.dept_a, w.dept_a_child]);
+        assert_eq!(
+            team_scope(&manager),
+            Ok(Some(&BTreeSet::from([w.dept_a, w.dept_a_child])))
+        );
+        let admin_head = actor(Role::Admin, Some(w.dept_b), &[w.dept_b]);
+        assert_eq!(
+            team_scope(&admin_head),
+            Ok(None),
+            "관리자는 관할과 무관하게 전체"
+        );
+        assert_eq!(
+            team_scope(&actor(Role::Member, Some(w.dept_a), &[])),
+            Err(DomainError::Forbidden)
+        );
+    }
+
+    #[test]
+    fn last_active_owner_cannot_be_removed() {
+        use MemberStatus::{Active, Retired, Suspended};
+        let last = Err(ConflictReason::LastOwner.into());
+        assert_eq!(
+            keep_an_owner((Role::Owner, Active), (Role::Admin, Active), 1),
+            last
+        );
+        assert_eq!(
+            keep_an_owner((Role::Owner, Active), (Role::Owner, Suspended), 1),
+            last
+        );
+        assert_eq!(
+            keep_an_owner((Role::Owner, Active), (Role::Member, Retired), 0),
+            last
+        );
+        assert_eq!(
+            keep_an_owner((Role::Owner, Active), (Role::Admin, Active), 2),
+            Ok(())
+        );
+        assert_eq!(
+            keep_an_owner((Role::Owner, Active), (Role::Owner, Active), 1),
+            Ok(())
+        );
+        // 이미 로그인할 수 없는 최고 관리자는 세지 않으므로 바꿔도 남은 수는 그대로다.
+        assert_eq!(
+            keep_an_owner((Role::Owner, Suspended), (Role::Member, Suspended), 1),
+            Ok(())
+        );
+        assert_eq!(
+            keep_an_owner((Role::Admin, Active), (Role::Member, Active), 1),
+            Ok(())
+        );
+        assert_eq!(
+            keep_an_owner((Role::Member, Active), (Role::Owner, Active), 0),
+            Ok(())
         );
     }
 }

@@ -326,6 +326,20 @@ pub async fn count_with_position(conn: &mut Conn, position_id: PositionId) -> Db
     Ok(count)
 }
 
+/// 부서별 재직(`active`) 구성원 수. 구성원이 없는 부서는 결과에 없다.
+pub async fn count_active_by_department(conn: &mut Conn) -> DbResult<Vec<(DepartmentId, i64)>> {
+    let rows: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT department_id, COUNT(*) FROM members
+         WHERE status = 'active' AND department_id IS NOT NULL
+         GROUP BY department_id",
+    )
+    .fetch_all(conn)
+    .await?;
+    rows.into_iter()
+        .map(|(id, count)| Ok((codec::parse("department_id", &id)?, count)))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
