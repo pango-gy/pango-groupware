@@ -795,8 +795,8 @@ async fn parallel_accrual_runs_insert_each_grant_once() {
         let unique: std::collections::BTreeSet<&str> = keys.iter().copied().collect();
         assert_eq!(keys.len(), 13);
         assert_eq!(unique.len(), 13);
-        assert!(unique.contains("annual:2026-03-02"));
-        assert!(unique.contains("monthly:2024-04-02"));
+        assert!(unique.contains("annual:2"));
+        assert!(unique.contains("monthly:1"));
     }
     assert_eq!(remaining(&w.app, &w.kim).await, FULL);
     assert_eq!(stored_ledger(&w.app, w.kim.id).await.len(), 13);
@@ -858,7 +858,7 @@ async fn new_grant_appears_on_the_anniversary_and_the_old_one_expires() {
     let records = stored_ledger(&w.app, w.kim.id).await;
     let new_grant: Vec<&LedgerRecord> = records
         .iter()
-        .filter(|record| record.grant_key.as_deref() == Some("annual:2027-03-02"))
+        .filter(|record| record.grant_key.as_deref() == Some("annual:3"))
         .collect();
     assert_eq!(new_grant.len(), 1);
     assert_eq!(new_grant[0].entry.amount.quarters(), 64);
@@ -2006,4 +2006,118 @@ async fn units_by_date_reports_approved_working_days_with_the_larger_unit() {
         .await
         .expect("units");
     assert!(other.is_empty());
+}
+
+// ── 입사일 정정과 자동 부여 ───────────────────────────────────────────────
+
+async fn set_hired_on(w: &World, member: MemberId, hired_on: &str) {
+    let current = w
+        .app
+        .get(&format!("/admin/members/{member}"))
+        .bearer(&w.owner)
+        .send()
+        .await
+        .expect(StatusCode::OK);
+    let mut body = json!({
+        "version": current["version"], "name": current["name"], "hired_on": hired_on,
+    });
+    body["department_id"] = current["department_id"].clone();
+    w.app
+        .patch(&format!("/admin/members/{member}"))
+        .bearer(&w.owner)
+        .json(&body)
+        .send()
+        .await
+        .expect(StatusCode::OK);
+}
+
+fn grant_keys(records: &[LedgerRecord]) -> Vec<String> {
+    records
+        .iter()
+        .filter_map(|record| record.grant_key.clone())
+        .collect()
+}
+
+/// 부여 키가 날짜였을 때는 입사일을 하루만 고쳐도 모든 키가 새것이 되어 한 벌이 더 들어갔다
+/// (잔여 15일 → 30일). 키는 차수이므로 이미 받은 차수는 다시 들어가지 않는다.
+#[tokio::test]
+async fn correcting_the_hire_date_does_not_duplicate_grants() {
+    let w = world().await;
+    // 전원의 부여를 먼저 반영해 둔다(아래에서 "더 들어간 것이 없다"를 세기 위해).
+    w.app
+        .post("/admin/leave/accrual/run")
+        .bearer(&w.owner)
+        .send()
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(remaining(&w.app, &w.kim).await, FULL);
+    let granted = stored_ledger(&w.app, w.kim.id).await;
+    assert_eq!(grant_keys(&granted).len(), 13);
+
+    for hired_on in ["2024-03-01", "2024-03-03", "2024-02-29", "2024-03-02"] {
+        set_hired_on(&w, w.kim.id, hired_on).await;
+        // 본인 조회, 관리자 조회, 전원 부여 실행 모두 아무것도 더 넣지 않는다.
+        assert_eq!(remaining(&w.app, &w.kim).await, FULL, "hired_on {hired_on}");
+        let run = w
+            .app
+            .post("/admin/leave/accrual/run")
+            .bearer(&w.owner)
+            .send()
+            .await
+            .expect(StatusCode::OK);
+        assert_eq!(run["grants_inserted"], 0, "hired_on {hired_on}");
+        let balances = w
+            .app
+            .get("/admin/leave/balances")
+            .bearer(&w.owner)
+            .send()
+            .await
+            .expect(StatusCode::OK);
+        let kim = balances
+            .as_array()
+            .expect("rows")
+            .iter()
+            .find(|row| row["member_id"] == json!(w.kim.id))
+            .expect("kim");
+        assert_eq!(kim["balance"]["remaining"], FULL);
+        assert_eq!(kim["hired_on"], hired_on);
+        // 이미 들어간 부여는 날짜·만료일까지 그대로다.
+        assert_eq!(stored_ledger(&w.app, w.kim.id).await, granted);
+    }
+    let keys = grant_keys(&stored_ledger(&w.app, w.kim.id).await);
+    let unique: std::collections::BTreeSet<&String> = keys.iter().collect();
+    assert_eq!(unique.len(), keys.len(), "차수가 겹치지 않는다");
+    let expected: std::collections::BTreeSet<String> = (1..=11)
+        .map(|m| format!("monthly:{m}"))
+        .chain(["annual:1".to_owned(), "annual:2".to_owned()])
+        .collect();
+    assert_eq!(
+        keys.into_iter().collect::<std::collections::BTreeSet<_>>(),
+        expected
+    );
+    assert_ledger_invariants(&w.app, &w.kim).await;
+}
+
+/// 입사일을 앞당겨 새 차수가 생기면 그 차수만 새 입사일 기준으로 들어간다.
+#[tokio::test]
+async fn moving_the_hire_date_earlier_adds_only_the_missing_ordinals() {
+    let w = world().await;
+    assert_eq!(remaining(&w.app, &w.kim).await, FULL);
+    let before = stored_ledger(&w.app, w.kim.id).await;
+    // 2024-03-02 → 2023-03-02: 만 3년 차수(annual:3) 하나가 새로 생긴다.
+    set_hired_on(&w, w.kim.id, "2023-03-02").await;
+    balance_of(&w.app, &w.kim.token).await;
+    let after = stored_ledger(&w.app, w.kim.id).await;
+    assert_eq!(after[..before.len()], before[..], "기존 줄은 그대로");
+    assert_eq!(grant_keys(&after[before.len()..]), ["annual:3"]);
+    assert_eq!(
+        after[before.len()].entry.kind,
+        LedgerEntryKind::Grant {
+            valid_from: date("2026-03-02"),
+            expires_on: Some(date("2027-03-01")),
+        }
+    );
+    // 다시 조회해도 더 들어가지 않는다.
+    balance_of(&w.app, &w.kim.token).await;
+    assert_eq!(stored_ledger(&w.app, w.kim.id).await, after);
 }

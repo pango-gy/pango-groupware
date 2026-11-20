@@ -224,7 +224,7 @@ async fn daily_accrual_picks_up_new_grants_as_days_pass() {
     app.set_time("2026-03-10T00:00:00+09:00");
     let monthly = accrual.run_if_due(&app.state).await.expect("run");
     assert_eq!(monthly.map(|result| result.grants_inserted), Some(1));
-    assert_eq!(grant_keys(&app, newbie).await, ["monthly:2026-03-10"]);
+    assert_eq!(grant_keys(&app, newbie).await, ["monthly:1"]);
     assert_eq!(accrual_audits(&app).await.len(), 2);
 
     // 서버를 다시 띄우면(새 상태) 같은 날 한 번 더 돌지만 아무것도 바꾸지 않는다.
@@ -242,10 +242,10 @@ async fn daily_accrual_picks_up_new_grants_as_days_pass() {
     assert!(anniversary.is_some_and(|result| result.grants_inserted >= 2));
     let keys = grant_keys(&app, kim).await;
     assert_eq!(keys.len(), 14);
-    assert!(keys.contains(&"annual:2027-03-02".to_owned()));
+    assert!(keys.contains(&"annual:3".to_owned()));
     let newbie_keys = grant_keys(&app, newbie).await;
-    assert!(newbie_keys.contains(&"monthly:2027-01-10".to_owned()));
-    assert!(newbie_keys.contains(&"annual:2027-02-10".to_owned()));
+    assert!(newbie_keys.contains(&"monthly:11".to_owned()));
+    assert!(newbie_keys.contains(&"annual:1".to_owned()));
     // 잔여 조회가 보는 값과 같다(조회가 새로 넣을 부여가 남아 있지 않다).
     let rows = ledger_rows(&app).await;
     let token = app

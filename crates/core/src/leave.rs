@@ -220,8 +220,12 @@ crate::string_enum! {
 /// 있어야 하는 자동 부여 한 건. 서비스는 `grant_key`에 UNIQUE 제약을 두고 그대로 넣는다.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccrualGrant {
-    /// `monthly:YYYY-MM-DD` / `annual:YYYY-MM-DD` (날짜는 `granted_on`). 같은 입사일이면
-    /// 언제 계산해도 같은 키가 나오므로 중복 부여를 DB가 막을 수 있다.
+    /// `monthly:m`(m = 1..=11, 입사 후 만 m개월) / `annual:n`(n ≥ 1, 만 n년). 부여의 **차수**다.
+    ///
+    /// 날짜가 아니라 차수로 키를 만드는 이유: 관리자가 입사일을 바로잡으면 부여일이 전부
+    /// 달라진다. 키에 날짜가 들어 있으면 그때 모든 키가 새것이 되어, 이미 받은 부여 옆에
+    /// 한 벌이 통째로 더 들어간다(잔여 2배). 차수는 입사일이 바뀌어도 같으므로 "만 2년
+    /// 연차"는 구성원당 한 번만 들어간다. 언제 계산해도 같은 키가 나오고 DB가 중복을 막는다.
     pub grant_key: String,
     pub kind: AccrualKind,
     pub amount: LeaveAmount,
@@ -232,14 +236,16 @@ pub struct AccrualGrant {
 }
 
 impl AccrualGrant {
+    /// `ordinal`은 월 부여면 입사 후 개월 수, 연 부여면 근속 연수다.
     fn new(
         kind: AccrualKind,
+        ordinal: u32,
         amount: LeaveAmount,
         granted_on: NaiveDate,
         expires_on: NaiveDate,
     ) -> Self {
         Self {
-            grant_key: format!("{}:{granted_on}", kind.as_str()),
+            grant_key: format!("{}:{ordinal}", kind.as_str()),
             kind,
             amount,
             granted_on,
@@ -280,7 +286,9 @@ pub const fn annual_leave_days(years_of_service: u32) -> u32 {
 /// - 퇴직일 뒤의 날짜에는 부여하지 않는다. 퇴직일 당일의 부여는 포함한다.
 ///
 /// 결과는 부여일 오름차순이고 `as_of`가 늦어져도 앞부분이 바뀌지 않는다. 그래서 주기적으로
-/// 호출해 없는 키만 넣으면 된다. 근속 [`MAX_SERVICE_YEARS`]년 이후와, 만료일을 날짜로
+/// 호출해 없는 키만 넣으면 된다. 키는 차수(`monthly:1..=11`, `annual:1..`)라서 입사일이
+/// 달라져도 같은 차수의 키는 같다. 입사일을 고친 뒤 다시 호출하면 **아직 없는 차수만** 새
+/// 입사일 기준 날짜로 들어가고, 이미 들어간 부여의 날짜·만료일은 받은 그대로 남는다. 근속 [`MAX_SERVICE_YEARS`]년 이후와, 만료일을 날짜로
 /// 표현할 수 없는 부여는 만들지 않는다.
 ///
 /// 출근율 조건(1개월 개근, 연 80% 이상 출근)은 MVP에서 다루지 않는다. 조건을 채우지 못한
@@ -307,6 +315,7 @@ pub fn accrual_grants(
         match months_after(month) {
             Some(granted_on) if granted_on <= limit => grants.push(AccrualGrant::new(
                 AccrualKind::Monthly,
+                month,
                 LeaveAmount(LeaveAmount::QUARTERS_PER_DAY),
                 granted_on,
                 first_year_end,
@@ -332,6 +341,7 @@ pub fn accrual_grants(
         };
         grants.push(AccrualGrant::new(
             AccrualKind::Annual,
+            years,
             amount,
             granted_on,
             expires_on,
@@ -1073,7 +1083,7 @@ mod tests {
         assert_eq!(
             grants,
             vec![AccrualGrant {
-                grant_key: "monthly:2024-04-15".to_owned(),
+                grant_key: "monthly:1".to_owned(),
                 kind: AccrualKind::Monthly,
                 amount: q(4),
                 granted_on: d("2024-04-15"),
@@ -1096,7 +1106,7 @@ mod tests {
         let on = accrual_grants(hired, None, d("2025-03-15"));
         assert_eq!(on.len(), 12);
         let first = annual(&on)[0];
-        assert_eq!(first.grant_key, "annual:2025-03-15");
+        assert_eq!(first.grant_key, "annual:1");
         assert_eq!(first.amount, q(60));
         assert_eq!(first.granted_on, d("2025-03-15"));
         assert_eq!(first.expires_on, d("2026-03-14"));
@@ -1248,6 +1258,30 @@ mod tests {
         let grants = accrual_grants(near_end, None, NaiveDate::MAX);
         assert_eq!(grants.len(), 11);
         assert!(annual(&grants).is_empty());
+    }
+
+    /// 키는 차수다: 입사일이 며칠·몇 년 달라도 같은 차수의 부여는 같은 키를 가진다.
+    #[test]
+    fn accrual_keys_are_ordinals_independent_of_the_hire_date() {
+        let keys = |hired: &str, as_of: &str| -> Vec<String> {
+            accrual_grants(d(hired), None, d(as_of))
+                .into_iter()
+                .map(|g| g.grant_key)
+                .collect()
+        };
+        let expected: Vec<String> = (1..=11)
+            .map(|m| format!("monthly:{m}"))
+            .chain((1..=2).map(|n| format!("annual:{n}")))
+            .collect();
+        assert_eq!(keys("2024-03-02", "2026-03-02"), expected);
+        // 하루 앞·뒤로 고친 입사일, 말일·윤일 입사도 같은 차수는 같은 키다.
+        assert_eq!(keys("2024-03-01", "2026-03-01"), expected);
+        assert_eq!(keys("2024-03-03", "2026-03-03"), expected);
+        assert_eq!(keys("2024-01-31", "2026-01-31"), expected);
+        assert_eq!(keys("2024-02-29", "2026-02-28"), expected);
+        assert_eq!(keys("1990-07-15", "1992-07-15"), expected);
+        // 같은 조회일이면 하루 늦은 입사일은 마지막 차수가 아직 없을 뿐, 앞부분은 같다.
+        assert_eq!(keys("2024-03-03", "2026-03-02"), expected[..12]);
     }
 
     #[test]
@@ -1985,6 +2019,31 @@ mod tests {
     }
 
     proptest! {
+        /// 입사일을 k일 옮겨도 같은 차수의 부여는 키와 수량이 같다. 그래서 입사일을 고친 뒤
+        /// 다시 부여해도 이미 받은 차수는 유일 제약에 걸려 두 번 들어가지 않는다.
+        #[test]
+        fn accrual_keys_do_not_depend_on_the_hire_date(
+            hire in 0i64..15_000,
+            shift in -800i64..800,
+            elapsed in 0i64..12_000,
+        ) {
+            let hired = d("1990-01-01") + Duration::days(hire);
+            let moved = hired + Duration::days(shift);
+            let original = accrual_grants(hired, None, hired + Duration::days(elapsed));
+            let corrected = accrual_grants(moved, None, moved + Duration::days(elapsed));
+            let common = original.len().min(corrected.len());
+            // 말일 보정 때문에 같은 경과일에 차수 하나가 더 있거나 덜 있을 수 있다.
+            prop_assert!(original.len().abs_diff(corrected.len()) <= 1);
+            for (a, b) in original.iter().zip(&corrected).take(common) {
+                prop_assert_eq!(&a.grant_key, &b.grant_key);
+                prop_assert_eq!(a.kind, b.kind);
+                prop_assert_eq!(a.amount, b.amount);
+            }
+            // 키만으로 같은 부여인지 알 수 있다: 같은 입사일의 결과 안에서 유일하다.
+            let keys: BTreeSet<&str> = corrected.iter().map(|g| g.grant_key.as_str()).collect();
+            prop_assert_eq!(keys.len(), corrected.len());
+        }
+
         /// 나중에 다시 계산해도 이전 부여는 키·수량·날짜가 그대로다(앞부분이 일치).
         #[test]
         fn accrual_is_stable_as_time_passes(
@@ -2009,6 +2068,15 @@ mod tests {
                 prop_assert!(hired < g.granted_on && g.granted_on <= limit);
                 prop_assert!(g.granted_on <= g.expires_on);
                 prop_assert!((4..=100).contains(&g.amount.quarters()));
+            }
+            // 키는 차수다: 월 부여는 1부터, 연 부여도 1부터 빈틈없이 이어진다.
+            let (monthly, yearly): (Vec<_>, Vec<_>) =
+                earlier.iter().partition(|g| g.kind == AccrualKind::Monthly);
+            for (ordinal, g) in (1u32..).zip(&monthly) {
+                prop_assert_eq!(&g.grant_key, &format!("monthly:{ordinal}"));
+            }
+            for (ordinal, g) in (1u32..).zip(&yearly) {
+                prop_assert_eq!(&g.grant_key, &format!("annual:{ordinal}"));
             }
             // 어느 날이든 유효한 자동 부여는 "월 단위 묶음" 또는 "연 단위 1건" 중 하나뿐이다.
             let live: Vec<_> = earlier
