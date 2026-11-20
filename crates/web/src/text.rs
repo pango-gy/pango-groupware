@@ -4,7 +4,7 @@ use pango_api::leave::LedgerKind;
 use pango_core::approval::{
     DocumentKind, DocumentStatus, EventKind, Mailbox, StepKind, StepStatus,
 };
-use pango_core::attendance::{AttendanceEventKind, DayStatus, WorkType};
+use pango_core::attendance::{AttendanceEventKind, CorrectionStatus, DayStatus, WorkType};
 use pango_core::authz::Role;
 use pango_core::error::DomainError;
 use pango_core::leave::{LeaveRequestStatus, LeaveUnit};
@@ -268,6 +268,20 @@ pub const AUDIT_ACTIONS: &[(&str, &str)] = &[
     ("attendance.create", "출퇴근 기록 추가"),
     ("attendance.edit", "출퇴근 기록 수정"),
     ("attendance.export", "근태 내보내기"),
+    ("attendance.correction_request", "근태 정정 요청"),
+    ("attendance.correction_cancel", "근태 정정 요청 취소"),
+    ("attendance.correction", "근태 정정 반영"),
+    ("leave.request", "휴가 신청"),
+    ("leave.cancel", "휴가 취소"),
+    ("leave.admin_cancel", "휴가 취소(관리자)"),
+    ("leave.adjust", "휴가 수량 조정"),
+    ("leave.accrual_run", "연차 부여 실행"),
+    ("leave_type.create", "휴가 종류 추가"),
+    ("leave_type.update", "휴가 종류 수정"),
+    ("approval_form.create", "결재 양식 추가"),
+    ("approval_form.update", "결재 양식 수정"),
+    ("approval.admin_view", "결재 문서 열람(관리자)"),
+    ("approval.draft_delete", "임시저장 문서 삭제"),
     ("notice.create", "공지 게시"),
     ("notice.update", "공지 수정"),
     ("notice.archive", "공지 보관"),
@@ -294,6 +308,12 @@ pub fn audit_target_label(target_type: &str) -> String {
         "position" => "직책",
         "session" => "로그인 기기",
         "attendance_record" => "출퇴근 기록",
+        "attendance_correction" => "근태 정정 요청",
+        "leave_request" => "휴가 신청",
+        "leave_ledger" => "휴가 원장",
+        "leave_type" => "휴가 종류",
+        "approval_document" => "결재 문서",
+        "approval_form" => "결재 양식",
         "notice" => "공지",
         "company_settings" => "회사 설정",
         "holiday" => "공휴일",
@@ -343,6 +363,53 @@ pub fn attendance_event_label(kind: AttendanceEventKind) -> &'static str {
         AttendanceEventKind::AdminCreate => "관리자 추가",
         AttendanceEventKind::AdminEdit => "관리자 수정",
         AttendanceEventKind::Correction => "정정 승인",
+    }
+}
+
+pub fn correction_status_label(status: CorrectionStatus) -> &'static str {
+    match status {
+        CorrectionStatus::Pending => "결재 중",
+        CorrectionStatus::Approved => "반영됨",
+        CorrectionStatus::Rejected => "반려",
+        CorrectionStatus::Canceled => "취소",
+    }
+}
+
+/// 색만으로 구분하지 않도록 배지에는 항상 [`correction_status_label`]을 함께 쓴다.
+pub fn correction_status_tone(status: CorrectionStatus) -> Tone {
+    match status {
+        CorrectionStatus::Pending => Tone::Warning,
+        CorrectionStatus::Approved => Tone::Success,
+        CorrectionStatus::Rejected => Tone::Danger,
+        CorrectionStatus::Canceled => Tone::Neutral,
+    }
+}
+
+/// 개인 신청(휴가·근태 정정)의 결재선 오류. 서버는 최종 결재자가 신청자의 관할 조직장이나
+/// 관리자가 아니어도 `steps`의 `inconsistent`로 답하므로, 그 규칙까지 함께 알려 준다.
+const PERSONAL_LINE_INCONSISTENT: &str = "마지막 결재자는 내 조직장 또는 관리자여야 합니다. 마지막 단계는 결재여야 하고, 본인은 결재자가 될 수 없습니다.";
+
+/// 근태 정정 요청·취소 실패 문구.
+pub fn correction_error_message(code: &str, field: Option<&str>, reason: Option<&str>) -> String {
+    match (code, field, reason) {
+        ("validation_failed", Some("steps"), Some("inconsistent")) => {
+            PERSONAL_LINE_INCONSISTENT.into()
+        }
+        ("validation_failed", Some("work_date"), Some("out_of_range")) => {
+            "정정은 오늘부터 31일 전까지의 근무일만 요청할 수 있습니다.".into()
+        }
+        ("already_exists", _, _) => {
+            "이 날짜에 결재 중인 정정 요청이 이미 있습니다. 정정 요청 내역에서 확인해 주세요."
+                .into()
+        }
+        ("withdraw_too_late", _, _) => {
+            "결재가 이미 진행되어 취소할 수 없습니다. 결재자에게 반려를 요청해 주세요.".into()
+        }
+        ("document_already_closed", _, _) => "이미 처리가 끝난 요청이라 취소할 수 없습니다.".into(),
+        ("version_conflict", _, _) => {
+            "그사이 요청 상태가 바뀌었습니다. 목록을 새로 고쳤으니 다시 확인해 주세요.".into()
+        }
+        _ => error_message(code, field, reason),
     }
 }
 
@@ -702,6 +769,75 @@ mod tests {
         for unit in LeaveUnit::ALL.iter().copied() {
             assert!(!leave_unit_label(unit).is_empty());
         }
+    }
+
+    #[test]
+    fn every_correction_status_has_a_distinct_label_and_tone() {
+        let labels: std::collections::BTreeSet<_> = CorrectionStatus::ALL
+            .iter()
+            .map(|s| correction_status_label(*s))
+            .collect();
+        assert_eq!(labels.len(), CorrectionStatus::ALL.len());
+        assert!(labels.iter().all(|label| !label.is_empty()));
+        let tones: Vec<_> = CorrectionStatus::ALL
+            .iter()
+            .map(|s| correction_status_tone(*s))
+            .collect();
+        for (i, a) in tones.iter().enumerate() {
+            for b in &tones[i + 1..] {
+                assert_ne!(a, b);
+            }
+        }
+    }
+
+    #[test]
+    fn correction_errors_explain_the_rules() {
+        let line =
+            correction_error_message("validation_failed", Some("steps"), Some("inconsistent"));
+        assert!(line.contains("조직장 또는 관리자"), "{line}");
+        assert!(correction_error_message(
+            "validation_failed",
+            Some("work_date"),
+            Some("out_of_range")
+        )
+        .contains("31일"));
+        for code in [
+            "already_exists",
+            "withdraw_too_late",
+            "document_already_closed",
+            "version_conflict",
+        ] {
+            assert_ne!(
+                correction_error_message(code, None, None),
+                error_message(code, None, None),
+                "{code}"
+            );
+        }
+        // 그 밖은 공통 문구를 쓴다.
+        assert_eq!(
+            correction_error_message("validation_failed", Some("steps"), Some("empty")),
+            error_message("validation_failed", Some("steps"), Some("empty"))
+        );
+        assert_eq!(
+            correction_error_message("forbidden", None, None),
+            error_message("forbidden", None, None)
+        );
+    }
+
+    #[test]
+    fn correction_audit_codes_have_labels() {
+        for code in [
+            "attendance.correction_request",
+            "attendance.correction_cancel",
+            "attendance.correction",
+            "leave.request",
+        ] {
+            assert_ne!(audit_action_label(code), code);
+        }
+        assert_eq!(
+            audit_target_label("attendance_correction"),
+            "근태 정정 요청"
+        );
     }
 
     #[test]

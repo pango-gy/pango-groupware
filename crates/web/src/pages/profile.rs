@@ -7,7 +7,7 @@ use pango_api::Empty;
 use crate::api;
 use crate::format;
 use crate::route::Route;
-use crate::session::use_session;
+use crate::session::{self, use_session};
 use crate::text;
 use crate::ui::{
     report_error, report_success, resource_view, Avatar, Badge, Button, ButtonKind, Card,
@@ -16,20 +16,16 @@ use crate::ui::{
 
 #[component]
 pub fn Profile() -> Element {
-    let mut session = use_session();
+    let session = use_session();
     let nav = navigator();
+    let mut sessions =
+        use_resource(|| async { api::get::<Vec<SessionInfo>>("/me/sessions").await });
     let Some(me) = session.me() else {
         return rsx! {};
     };
     let tz = format::member_zone(Some(&me));
-    let mut sessions =
-        use_resource(|| async { api::get::<Vec<SessionInfo>>("/me/sessions").await });
 
-    let logout = move |_| async move {
-        let _ = api::post::<_, Empty>("/auth/logout", &Empty {}).await;
-        session.set(None);
-        nav.replace(Route::Login {});
-    };
+    let logout = move |_| session::logout(session, nav);
     let revoke = move |id: String| async move {
         match api::delete::<Empty>(&format!("/me/sessions/{id}")).await {
             Ok(_) => {

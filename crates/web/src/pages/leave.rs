@@ -58,14 +58,14 @@ pub fn Leave() -> Element {
     }
 }
 
+/// 남은 연차(크게)와 곧 소멸할 수량. 휴가 화면과 홈이 함께 쓴다.
 #[component]
-fn BalanceSummary(dto: BalanceDto) -> Element {
-    let balance = dto.balance;
+pub(crate) fn BalanceHeadline(dto: BalanceDto) -> Element {
     let expiring = dto.expiring_soon.quarters();
     rsx! {
         div { class: "leave-balance-main",
             span { class: "leave-balance-label", "남은 연차" }
-            strong { class: "leave-balance-value", {format::leave_days(balance.remaining.quarters())} }
+            strong { class: "leave-balance-value", {format::leave_days(dto.balance.remaining.quarters())} }
             if expiring > 0 {
                 p { class: "leave-expiring",
                     Badge { tone: Tone::Warning, "곧 소멸" }
@@ -73,6 +73,14 @@ fn BalanceSummary(dto: BalanceDto) -> Element {
                 }
             }
         }
+    }
+}
+
+#[component]
+fn BalanceSummary(dto: BalanceDto) -> Element {
+    let balance = dto.balance;
+    rsx! {
+        BalanceHeadline { dto }
         div { class: "leave-stats",
             Stat { label: "부여", value: format::leave_days(balance.granted.quarters()) }
             Stat { label: "사용", value: format::leave_days(balance.used.quarters()) }
@@ -169,18 +177,29 @@ fn RequestsTab(today: NaiveDate, onchanged: EventHandler<()>) -> Element {
     }
 }
 
+/// 휴가 신청 한 줄. 내 신청·홈(다가오는 휴가)·팀 휴가가 함께 쓴다.
+///
+/// - `show_member`: 신청자 이름을 앞에 붙인다(팀 휴가).
+/// - `document_link`: 결재 문서 링크. 문서의 당사자만 열 수 있으므로 본인 신청에만 켠다.
 #[component]
-fn RequestRow(
+pub(crate) fn RequestRow(
     item: LeaveRequestDto,
-    cancelable: bool,
-    oncancel: EventHandler<LeaveRequestDto>,
+    #[props(default)] cancelable: bool,
+    #[props(default)] oncancel: EventHandler<LeaveRequestDto>,
+    #[props(default)] show_member: bool,
+    #[props(default = true)] document_link: bool,
 ) -> Element {
     let period = logic::period_label(item.start_date, item.end_date);
     rsx! {
         li { class: "list-row leave-row",
             div { class: "list-row-main",
                 div { class: "leave-row-title",
-                    strong { "{item.leave_type_name}" }
+                    if show_member {
+                        strong { "{item.member_name}" }
+                        span { "{item.leave_type_name}" }
+                    } else {
+                        strong { "{item.leave_type_name}" }
+                    }
                     Badge { tone: text::leave_status_tone(item.status), {text::leave_status_label(item.status)} }
                 }
                 small {
@@ -189,9 +208,11 @@ fn RequestRow(
                 p { class: "leave-row-reason", "{item.reason}" }
             }
             div { class: "list-row-side",
-                Link {
-                    to: Route::ApprovalDetail { id: item.document_id.to_string() },
-                    "결재 문서"
+                if document_link {
+                    Link {
+                        to: Route::ApprovalDetail { id: item.document_id.to_string() },
+                        "결재 문서"
+                    }
                 }
                 if cancelable {
                     Button {

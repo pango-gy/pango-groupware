@@ -1,16 +1,19 @@
-//! 팀 현황(조직장·관리자): 하루 출근 현황, 팀원별 월 근태, 팀 휴가(준비 중).
+//! 팀 현황(조직장·관리자): 하루 출근 현황, 팀원별 월 근태, 팀 휴가.
 
 use dioxus::prelude::*;
 use pango_api::attendance::TeamAttendance;
+use pango_api::leave::LeaveRequestDto;
 use pango_api::org::MemberSummary;
 use pango_core::id::MemberId;
 
 use crate::api;
+use crate::calendar::YearMonth;
 use crate::pages::attendance::{logic as attendance_logic, MonthAttendance};
+use crate::pages::leave::RequestRow;
 use crate::session::use_session;
 use crate::ui::{
-    resource_view, Avatar, Badge, Button, ButtonKind, Card, EmptyState, IconName, PageHeader,
-    Spinner, Stat, Tabs, TextField,
+    resource_view, today, Avatar, Badge, Button, ButtonKind, Card, EmptyState, IconName,
+    MonthSwitcher, PageHeader, Spinner, Stat, Tabs, TextField,
 };
 
 use logic::TeamTab;
@@ -153,11 +156,37 @@ pub fn Team() -> Element {
                     EmptyState { title: "팀원을 고르면 그 달의 근태를 볼 수 있습니다.", icon: IconName::Person }
                 }
             },
-            // 휴가 API가 합쳐지면 이 자리에 팀 휴가 달력을 붙인다.
-            TeamTab::Leave => rsx! {
-                EmptyState { title: "팀 휴가 달력은 준비 중입니다.", icon: IconName::Calendar }
-            },
+            TeamTab::Leave => rsx! { TeamLeave {} },
         }}
+    }
+}
+
+/// 관할 부서 구성원의 한 달 휴가(결재 중·승인).
+#[component]
+fn TeamLeave() -> Element {
+    let tz = use_session().zone();
+    let mut month = use_signal(move || YearMonth::of(today(tz)));
+    let requests = use_resource(move || async move {
+        api::get::<Vec<LeaveRequestDto>>(&logic::team_leave_path(month())).await
+    });
+    rsx! {
+        Card {
+            title: "팀 휴가",
+            action: rsx! {
+                MonthSwitcher { month: month(), onchange: move |next| month.set(next) }
+            },
+            {resource_view(requests, |list: Vec<LeaveRequestDto>| rsx! {
+                if list.is_empty() {
+                    EmptyState { title: "이 달에 잡힌 팀 휴가가 없습니다.", icon: IconName::Calendar }
+                } else {
+                    ul { class: "list",
+                        for item in list {
+                            RequestRow { key: "{item.id}", item: item.clone(), show_member: true, document_link: false }
+                        }
+                    }
+                }
+            })}
+        }
     }
 }
 
@@ -175,7 +204,6 @@ mod logic {
     pub enum TeamTab {
         Today,
         Members,
-        /// 휴가 API가 합쳐질 때 채울 자리.
         Leave,
     }
 
@@ -205,6 +233,11 @@ mod logic {
                 .find(|tab| tab.key() == key)
                 .unwrap_or(Self::Today)
         }
+    }
+
+    /// `/team/leave?month=YYYY-MM`.
+    pub fn team_leave_path(month: crate::calendar::YearMonth) -> String {
+        format!("/team/leave?month={}", crate::api::encode(&month.query()))
     }
 
     /// `/team/attendance[?date=YYYY-MM-DD]`. 날짜는 형식이 맞을 때만 붙인다.
@@ -343,6 +376,22 @@ mod logic {
             assert_eq!(date_choice(" 2026-03-02 "), Some("2026-03-02".into()));
             assert_eq!(date_choice(""), None);
             assert_eq!(date_choice("2026-13-01"), None);
+        }
+
+        #[test]
+        fn team_leave_path_carries_the_month() {
+            let month = crate::calendar::YearMonth {
+                year: 2026,
+                month: 3,
+            };
+            assert_eq!(team_leave_path(month), "/team/leave?month=2026-03");
+            assert_eq!(
+                team_leave_path(crate::calendar::YearMonth {
+                    year: 2026,
+                    month: 12
+                }),
+                "/team/leave?month=2026-12"
+            );
         }
 
         #[test]

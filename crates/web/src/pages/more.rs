@@ -2,15 +2,19 @@
 
 use dioxus::prelude::*;
 
+use crate::badges::{self, use_badges};
 use crate::layout::nav_sections;
 use crate::route::Route;
-use crate::session::use_session;
+use crate::session::{self, use_session};
 use crate::ui::{Card, EmptyState, Icon, IconName, PageHeader};
 
 /// 하단 탭에 다 넣지 못한 메뉴를 모아 보여 준다.
 #[component]
 pub fn More() -> Element {
-    let Some(me) = use_session().me() else {
+    let session = use_session();
+    let nav = navigator();
+    let unread = use_badges().notifications();
+    let Some(me) = session.me() else {
         return rsx! {};
     };
     rsx! {
@@ -30,15 +34,28 @@ pub fn More() -> Element {
         }
         Card { title: "내 계정",
             div { class: "menu-list",
-                Link { class: "menu-row", to: Route::Notifications {},
+                Link {
+                    class: "menu-row",
+                    to: Route::Notifications {},
+                    "aria-label": badges::unread_label("알림", unread),
                     Icon { name: IconName::Bell }
                     span { class: "menu-row-label", "알림" }
+                    if unread > 0 {
+                        span { class: "nav-count", "aria-hidden": "true", "{badges::count_text(unread)}" }
+                    }
                     Icon { name: IconName::Chevron }
                 }
                 Link { class: "menu-row", to: Route::Profile {},
                     Icon { name: IconName::Person }
                     span { class: "menu-row-label", "내 정보" }
                     Icon { name: IconName::Chevron }
+                }
+                button {
+                    class: "menu-row menu-row-button",
+                    r#type: "button",
+                    onclick: move |_| session::logout(session, nav),
+                    Icon { name: IconName::Logout }
+                    span { class: "menu-row-label", "로그아웃" }
                 }
             }
         }

@@ -21,15 +21,18 @@ use crate::ui::{
 
 /// 상세 화면의 순수 함수: 동작 판정, 요청 변환, 구조화된 내용 요약.
 pub(crate) mod logic {
+    use chrono::NaiveDate;
     use chrono_tz::Tz;
     use pango_api::approval::{ApproveRequest, DocumentDetail, RejectRequest};
     use pango_core::approval::{DocumentKind, DocumentStatus, StepStatus};
+    use pango_core::attendance::WorkType;
     use pango_core::id::MemberId;
     use pango_core::leave::LeaveUnit;
     use pango_core::text::{Comment, Reason};
     use pango_core::time::Timestamp;
     use serde_json::{Map, Value};
 
+    use crate::pages::attendance::logic as attendance_logic;
     use crate::{format, text};
 
     /// 지금 이 사람이 할 수 있는 동작. 화면 노출용이며 서버가 매번 다시 판정한다.
@@ -126,20 +129,25 @@ pub(crate) mod logic {
             .unwrap_or_else(|_| raw.to_owned())
     }
 
-    /// 시각 값: 밀리초 숫자, RFC 3339 문자열, 또는 이미 사람이 읽는 문자열(`09:00`).
-    fn time_text(object: &Map<String, Value>, keys: &[&str], tz: Tz) -> Option<String> {
-        keys.iter().find_map(|key| match object.get(*key)? {
-            Value::Number(n) => n
-                .as_i64()
-                .and_then(|ms| Timestamp::from_millis(ms).ok())
-                .map(|at| format::datetime(at, tz)),
-            Value::String(s) if !s.trim().is_empty() => Some(
-                chrono::DateTime::parse_from_rfc3339(s.trim())
-                    .map(|at| format::datetime(Timestamp::from_utc(at.to_utc()), tz))
-                    .unwrap_or_else(|_| s.trim().to_owned()),
-            ),
-            _ => None,
-        })
+    /// 정정 요청의 시각 값(`Timestamp`는 밀리초 숫자로 직렬화된다). 근무일 기준으로 보여 준다
+    /// (`09:05`, 다음 날이면 `02:10 (+1일)`). 근무일을 모르면 날짜까지 쓴다.
+    /// 키가 없거나 해석할 수 없으면 `None`, 값이 `null`이면 `없음`.
+    fn instant_text(
+        object: &Map<String, Value>,
+        key: &str,
+        work_date: Option<NaiveDate>,
+        tz: Tz,
+    ) -> Option<String> {
+        match object.get(key)? {
+            Value::Null => Some("없음".to_owned()),
+            value => {
+                let at = Timestamp::from_millis(value.as_i64()?).ok()?;
+                Some(match work_date {
+                    Some(day) => attendance_logic::clock_text(at, day, tz),
+                    None => format::datetime(at, tz),
+                })
+            }
+        }
     }
 
     fn period(object: &Map<String, Value>) -> Option<String> {
@@ -187,21 +195,36 @@ pub(crate) mod logic {
                 ),
                 ("사유", text_of(object, &["reason"])),
             ],
-            DocumentKind::AttendanceCorrection => vec![
-                (
-                    "날짜",
-                    text_of(object, &["work_date", "date"]).map(|d| date_text(&d)),
-                ),
-                (
-                    "출근 시각",
-                    time_text(object, &["clock_in", "clock_in_at"], tz),
-                ),
-                (
-                    "퇴근 시각",
-                    time_text(object, &["clock_out", "clock_out_at"], tz),
-                ),
-                ("사유", text_of(object, &["reason"])),
-            ],
+            // 서버 `attendance::create_correction`이 싣는 모양:
+            // work_date, clock_in_at, clock_out_at(없으면 null), work_type, reason,
+            // current(요청 당시 기록 또는 null), request_id.
+            DocumentKind::AttendanceCorrection => {
+                let work_date = text_of(object, &["work_date"]);
+                let day = work_date
+                    .as_deref()
+                    .and_then(|raw| pango_core::calendar::parse_date("work_date", raw).ok());
+                vec![
+                    ("근무일", work_date.map(|d| date_text(&d))),
+                    ("요청 출근", instant_text(object, "clock_in_at", day, tz)),
+                    ("요청 퇴근", instant_text(object, "clock_out_at", day, tz)),
+                    (
+                        "근무 형태",
+                        text_of(object, &["work_type"]).map(|raw| {
+                            WorkType::parse(&raw)
+                                .map(|kind| text::work_type_label(kind).to_owned())
+                                .unwrap_or(raw)
+                        }),
+                    ),
+                    (
+                        "요청 당시 기록",
+                        object.get("current").map(|current| match current {
+                            Value::Null => "기록 없음".to_owned(),
+                            value => attendance_logic::record_snapshot(value, tz),
+                        }),
+                    ),
+                    ("사유", text_of(object, &["reason"])),
+                ]
+            }
         };
         rows.into_iter()
             .filter_map(|(label, value)| value.map(|value| (label, value)))
@@ -856,29 +879,86 @@ mod tests {
     }
 
     #[test]
-    fn attendance_correction_payload_accepts_several_shapes() {
+    fn attendance_correction_payload_matches_the_server_shape() {
+        let tz = format::zone("Asia/Seoul");
+        // 2026-03-02 09:05 KST, 다음 날 02:10 KST.
+        let clock_in = 1_772_409_900_000_i64;
+        let clock_out = clock_in + (17 * 60 + 5) * 60_000;
+        let payload = json!({
+            "request_id": "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
+            "work_date": "2026-03-02",
+            "clock_in_at": clock_in,
+            "clock_out_at": clock_out,
+            "work_type": "remote",
+            "reason": " 지문 인식 실패 ",
+            "current": {
+                "id": "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5c",
+                "member_id": "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5d",
+                "work_date": "2026-03-02",
+                "clock_in_at": clock_in + 3_600_000,
+                "clock_out_at": null,
+                "work_type": "office",
+                "note": null,
+                "version": 2,
+            },
+        });
+        assert_eq!(
+            payload_rows(DocumentKind::AttendanceCorrection, Some(&payload), tz),
+            vec![
+                ("근무일", "2026. 3. 2.".to_owned()),
+                ("요청 출근", "09:05".to_owned()),
+                ("요청 퇴근", "02:10 (+1일)".to_owned()),
+                ("근무 형태", "재택".to_owned()),
+                (
+                    "요청 당시 기록",
+                    "출근 10:05 · 퇴근 없음 · 사무실".to_owned()
+                ),
+                ("사유", "지문 인식 실패".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn attendance_correction_payload_without_record_or_clock_out() {
         let tz = format::zone("Asia/Seoul");
         let payload = json!({
             "work_date": "2026-03-02",
-            "clock_in": 1_772_409_600_000_i64,
-            "clock_out": "18:30",
-            "reason": "지문 인식 실패",
+            "clock_in_at": 1_772_409_900_000_i64,
+            "clock_out_at": null,
+            "work_type": "field",
+            "reason": "외근 후 미기록",
+            "current": null,
         });
         let rows = payload_rows(DocumentKind::AttendanceCorrection, Some(&payload), tz);
-        assert_eq!(rows[0], ("날짜", "2026. 3. 2.".to_owned()));
-        assert_eq!(rows[1].0, "출근 시각");
-        assert!(rows[1].1.starts_with("2026. 3. 2."), "{}", rows[1].1);
-        assert_eq!(rows[2], ("퇴근 시각", "18:30".to_owned()));
-        assert_eq!(rows[3], ("사유", "지문 인식 실패".to_owned()));
+        assert_eq!(rows[2], ("요청 퇴근", "없음".to_owned()));
+        assert_eq!(rows[3], ("근무 형태", "외근".to_owned()));
+        assert_eq!(rows[4], ("요청 당시 기록", "기록 없음".to_owned()));
+    }
 
-        let rfc = json!({ "date": "2026-03-02", "clock_in_at": "2026-03-02T00:05:00Z", "clock_out": -1e20 });
-        let rows = payload_rows(DocumentKind::AttendanceCorrection, Some(&rfc), tz);
+    #[test]
+    fn attendance_correction_payload_skips_broken_values() {
+        let tz = format::zone("Asia/Seoul");
+        let broken = json!({
+            "work_date": "어제",
+            "clock_in_at": "2026-03-02T00:05:00Z",
+            "clock_out_at": i64::MAX,
+            "work_type": "moon",
+            "current": { "unexpected": true },
+        });
         assert_eq!(
-            rows,
+            payload_rows(DocumentKind::AttendanceCorrection, Some(&broken), tz),
             vec![
-                ("날짜", "2026. 3. 2.".to_owned()),
-                ("출근 시각", "2026. 3. 2. 09:05".to_owned()),
-            ]
+                ("근무일", "어제".to_owned()),
+                ("근무 형태", "moon".to_owned()),
+                ("요청 당시 기록", "내용을 표시할 수 없습니다.".to_owned()),
+            ],
+            "시각은 밀리초 숫자만, 범위를 넘는 값은 건너뛴다"
+        );
+        // 근무일이 깨져도 시각은 날짜까지 보여 준다.
+        let no_day = json!({ "work_date": null, "clock_in_at": 1_772_409_900_000_i64 });
+        assert_eq!(
+            payload_rows(DocumentKind::AttendanceCorrection, Some(&no_day), tz),
+            vec![("요청 출근", "2026. 3. 2. 09:05".to_owned())]
         );
     }
 
