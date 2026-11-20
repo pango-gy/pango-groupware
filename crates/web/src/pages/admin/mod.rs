@@ -2,6 +2,7 @@
 
 pub(crate) mod attendance;
 mod audit;
+pub(crate) mod form_builder;
 mod forms;
 mod home;
 pub(crate) mod leave;
