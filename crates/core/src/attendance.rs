@@ -416,6 +416,51 @@ pub struct DayInput<'a> {
     pub now: Timestamp,
 }
 
+/// 구성원의 근태를 따지는 기간: `max(입사일, 계정 생성일)`부터 퇴사일(있으면, 포함)까지.
+///
+/// 이 기간 밖의 날은 그 구성원에게 **근무일이 아니다**. 계정이 생기기 전이나 입사 전·퇴사 후에는
+/// 출근을 찍을 수 없었으므로, 기록이 없다고 결근으로 세면 안 된다. 그런 날의 기록(관리자가
+/// 만들었거나 정정이 승인된 것)은 비근무일 근무로 판정한다([`Self::working_day`]).
+///
+/// 계정 생성일은 생성 시각의 회사 시간대 **달력 날짜**다(근무일 전환 시각을 적용하지 않는다).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrackedPeriod {
+    from: NaiveDate,
+    until: Option<NaiveDate>,
+}
+
+impl TrackedPeriod {
+    pub fn new(
+        hired_on: NaiveDate,
+        account_created_on: NaiveDate,
+        retired_on: Option<NaiveDate>,
+    ) -> Self {
+        Self {
+            from: hired_on.max(account_created_on),
+            until: retired_on,
+        }
+    }
+
+    /// 첫 추적일. 퇴사일이 이보다 앞서면 기간은 비어 있다.
+    pub fn from(&self) -> NaiveDate {
+        self.from
+    }
+
+    pub fn until(&self) -> Option<NaiveDate> {
+        self.until
+    }
+
+    pub fn contains(&self, date: NaiveDate) -> bool {
+        date >= self.from && self.until.is_none_or(|until| date <= until)
+    }
+
+    /// 회사 달력의 근무일 여부를 이 구성원 기준으로 바꾼다. 기간 밖이면 근무일이 아니다.
+    /// [`DayInput::is_working_day`]에는 이 값을 넣는다.
+    pub fn working_day(&self, date: NaiveDate, company_working_day: bool) -> bool {
+        company_working_day && self.contains(date)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct DayEvaluation {
     pub status: DayStatus,
@@ -2015,5 +2060,101 @@ mod tests {
             let without_record = DayInput { record: None, ..input };
             let _ = evaluate_day(&without_record, &policy, &zone);
         }
+    }
+
+    // ── 추적 기간 ──
+
+    #[test]
+    fn tracked_period_starts_at_later_of_hire_and_account_creation() {
+        let period = TrackedPeriod::new(date("2020-01-01"), date("2026-03-10"), None);
+        assert_eq!(period.from(), date("2026-03-10"));
+        assert!(!period.contains(date("2026-03-09")));
+        assert!(period.contains(date("2026-03-10")));
+        assert!(period.contains(date("2099-12-31")));
+
+        let hired_later = TrackedPeriod::new(date("2026-04-01"), date("2026-03-10"), None);
+        assert_eq!(hired_later.from(), date("2026-04-01"));
+        assert!(!hired_later.contains(date("2026-03-31")));
+        assert!(hired_later.contains(date("2026-04-01")));
+    }
+
+    #[test]
+    fn tracked_period_includes_retired_on_and_excludes_the_day_after() {
+        let period = TrackedPeriod::new(
+            date("2024-03-02"),
+            date("2024-03-02"),
+            Some(date("2026-03-15")),
+        );
+        assert!(period.contains(date("2026-03-15")));
+        assert!(!period.contains(date("2026-03-16")));
+        assert!(!period.contains(date("2024-03-01")));
+        assert!(period.contains(date("2024-03-02")));
+    }
+
+    #[test]
+    fn tracked_period_is_empty_when_retired_before_tracking_starts() {
+        let period = TrackedPeriod::new(
+            date("2026-03-01"),
+            date("2026-03-10"),
+            Some(date("2026-03-05")),
+        );
+        for day in [
+            "2026-03-01",
+            "2026-03-05",
+            "2026-03-06",
+            "2026-03-10",
+            "2026-03-11",
+        ] {
+            assert!(!period.contains(date(day)), "{day}");
+        }
+    }
+
+    #[test]
+    fn tracked_period_with_future_hire_date_tracks_nothing_until_then() {
+        let period = TrackedPeriod::new(date("2026-12-01"), date("2026-03-10"), None);
+        assert!(!period.contains(date("2026-03-10")));
+        assert!(!period.contains(date("2026-11-30")));
+        assert!(period.contains(date("2026-12-01")));
+    }
+
+    #[test]
+    fn untracked_day_without_record_is_day_off_and_with_record_is_off_day_work() {
+        let policy = WorkPolicy::default_korean();
+        let period = TrackedPeriod::new(date("2026-03-03"), date("2026-03-03"), None);
+        let day = date("2026-03-02");
+        let input = DayInput {
+            work_date: day,
+            is_working_day: period.working_day(day, true),
+            record: None,
+            leave: None,
+            now: ts("2026-03-10T12:00:00+09:00"),
+        };
+        assert_eq!(
+            evaluate_day(&input, &policy, &seoul()),
+            DayEvaluation::empty(DayStatus::DayOff)
+        );
+        let summary = MonthlySummary::from_days(&[evaluate_day(&input, &policy, &seoul())]);
+        assert_eq!((summary.absent_days, summary.day_off_days), (0, 1));
+
+        let record = closed(
+            "2026-03-02",
+            "2026-03-02T10:00:00+09:00",
+            "2026-03-02T15:00:00+09:00",
+        );
+        let with_record = DayInput {
+            record: Some(&record),
+            ..input
+        };
+        let evaluation = evaluate_day(&with_record, &policy, &seoul());
+        assert_eq!(evaluation.status, DayStatus::Normal);
+        assert_eq!(
+            (evaluation.late_minutes, evaluation.early_leave_minutes),
+            (0, 0)
+        );
+        assert!(evaluation.worked_minutes > 0);
+
+        let tracked = date("2026-03-03");
+        assert!(period.working_day(tracked, true));
+        assert!(!period.working_day(tracked, false));
     }
 }

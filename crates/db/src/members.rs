@@ -24,6 +24,8 @@ pub struct Member {
     pub hired_on: NaiveDate,
     pub retired_on: Option<NaiveDate>,
     pub must_change_password: bool,
+    /// 계정을 만든 시각. [`insert`]에 넘긴 `now`와 같아야 한다(저장되는 값은 `now`다).
+    pub created_at: Timestamp,
     pub version: i64,
 }
 
@@ -68,6 +70,7 @@ struct MemberRow {
     hired_on: String,
     retired_on: Option<String>,
     must_change_password: i64,
+    created_at: i64,
     version: i64,
 }
 
@@ -88,13 +91,14 @@ impl TryFrom<MemberRow> for Member {
             hired_on: codec::date("hired_on", &row.hired_on)?,
             retired_on: codec::date_opt("retired_on", row.retired_on.as_deref())?,
             must_change_password: row.must_change_password != 0,
+            created_at: codec::timestamp("created_at", row.created_at)?,
             version: row.version,
         })
     }
 }
 
 const MEMBER_COLUMNS: &str = "id, login_id, name, email, phone, department_id, position_id, \
-     role, status, hired_on, retired_on, must_change_password, version";
+     role, status, hired_on, retired_on, must_change_password, created_at, version";
 
 pub async fn find(conn: &mut Conn, id: MemberId) -> DbResult<Option<Member>> {
     sqlx::query_as::<_, MemberRow>(&format!(
@@ -234,12 +238,15 @@ pub async fn list(conn: &mut Conn, filter: &MemberFilter) -> DbResult<Vec<Member
         .collect()
 }
 
+/// 새 계정을 저장한다. 생성·수정 시각으로 저장되는 값은 `now`다. 호출자는
+/// `member.created_at`을 `now`로 채워 넘긴다(디버그 빌드에서 확인한다).
 pub async fn insert(
     conn: &mut Conn,
     member: &Member,
     password_hash: &str,
     now: Timestamp,
 ) -> DbResult<()> {
+    debug_assert_eq!(member.created_at, now, "member.created_at must equal `now`");
     sqlx::query(
         "INSERT INTO members
             (id, login_id, name, email, phone, department_id, position_id, role, status,

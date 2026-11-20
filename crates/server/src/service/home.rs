@@ -74,7 +74,7 @@ pub async fn home(state: &AppState, ctx: &AuthContext) -> ServiceResult<HomeResp
         None
     };
     Ok(HomeResponse {
-        today: attendance::today_tx(conn, member_id, now).await?,
+        today: attendance::today_tx(conn, &ctx.member, now).await?,
         leave: leave::stored_balance_tx(conn, member_id, today).await?,
         approval: approval::counts_tx(conn, member_id).await?,
         unread_notifications: notifications::unread_count_tx(conn, member_id)

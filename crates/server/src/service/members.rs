@@ -316,6 +316,7 @@ pub async fn create_member(
                 hired_on: profile.hired_on,
                 retired_on: None,
                 must_change_password: true,
+                created_at: now,
                 version: 1,
             };
             members::insert(conn, &member, &hash, now)

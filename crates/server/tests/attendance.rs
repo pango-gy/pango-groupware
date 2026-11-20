@@ -1598,3 +1598,340 @@ async fn failure_at_audit_rolls_back_admin_edit() {
     let records = month(&fx.app, &fx.org.alice.token, "2026-03").await;
     assert_eq!(day(&records, "2026-03-02")["record"], fx.record);
 }
+
+// ── 근태 추적 기간: max(입사일, 계정 생성일) ~ 퇴사일 ─────────────────────
+
+fn status_of(records: &Value, date: &str) -> String {
+    day(records, date)["evaluation"]["status"]
+        .as_str()
+        .expect("status")
+        .to_owned()
+}
+
+async fn summary_of(app: &TestApp, token: &str, query: &str) -> Value {
+    app.get(&format!("/attendance/summary?{query}"))
+        .bearer(token)
+        .send()
+        .await
+        .expect(StatusCode::OK)
+}
+
+#[tokio::test]
+async fn account_created_and_hired_today_has_no_absence_before_today() {
+    let app = TestApp::new().await;
+    // 03-16(월) 10:00에 계정을 만들고 같은 날 입사.
+    app.set_time(&kst("2026-03-16T10:00:00"));
+    let fresh = app
+        .add_member_created_at("fresh", Role::Member, None, app.state.now())
+        .await;
+    update_member(&app, fresh.id, |m| {
+        m.hired_on = "2026-03-16".parse().expect("d")
+    })
+    .await;
+
+    let records = month(&app, &fresh.token, "2026-03").await;
+    for d in 1..=15 {
+        let date = format!("2026-03-{d:02}");
+        assert_eq!(status_of(&records, &date), "day_off", "{date}");
+    }
+    assert_eq!(status_of(&records, "2026-03-16"), "scheduled");
+    assert_eq!(status_of(&records, "2026-03-17"), "scheduled");
+    let summary = summary_of(&app, &fresh.token, "month=2026-03").await;
+    assert_eq!(summary["absent_days"], 0);
+    assert_eq!(
+        summary["day_off_days"],
+        15 + 4,
+        "추적 전 15일 + 이후 주말 4일"
+    );
+
+    assert_eq!(
+        today(&app, &fresh.token).await["evaluation"]["status"],
+        "scheduled"
+    );
+    clock_in(&app, &fresh.token).await.expect(StatusCode::OK);
+    let now = today(&app, &fresh.token).await;
+    assert_eq!(now["evaluation"]["status"], "working");
+    assert_eq!(
+        now["evaluation"]["late_minutes"], 60,
+        "오늘은 추적 기간 안이다"
+    );
+}
+
+#[tokio::test]
+async fn days_before_account_creation_are_not_absent_even_if_hired_long_ago() {
+    let app = TestApp::new().await;
+    app.set_time(&kst("2026-03-20T12:00:00"));
+    // 입사 2024-03-02, 계정은 03-10(화) 10:00 KST에 생성.
+    let late = app
+        .add_member_created_at(
+            "late",
+            Role::Member,
+            None,
+            pango_server::testing::ts(&kst("2026-03-10T10:00:00")),
+        )
+        .await;
+
+    let records = month(&app, &late.token, "2026-03").await;
+    for date in ["2026-03-02", "2026-03-06", "2026-03-09"] {
+        assert_eq!(status_of(&records, date), "day_off", "{date}");
+    }
+    for date in ["2026-03-10", "2026-03-13", "2026-03-19"] {
+        assert_eq!(status_of(&records, date), "absent", "{date}");
+    }
+    assert_eq!(status_of(&records, "2026-03-20"), "scheduled");
+    let summary = summary_of(&app, &late.token, "month=2026-03").await;
+    // 03-10~13, 03-16~19.
+    assert_eq!(summary["absent_days"], 8);
+}
+
+#[tokio::test]
+async fn account_creation_date_uses_the_company_calendar_date() {
+    let app = TestApp::new().await;
+    // 2026-03-09T16:00Z = 03-10 01:00 KST. 근무일 전환(05:00) 전이지만 달력 날짜로 03-10부터다.
+    let member = app
+        .add_member_created_at(
+            "boundary",
+            Role::Member,
+            None,
+            pango_server::testing::ts("2026-03-09T16:00:00Z"),
+        )
+        .await;
+    app.set_time(&kst("2026-03-12T12:00:00"));
+    let records = month(&app, &member.token, "2026-03").await;
+    assert_eq!(status_of(&records, "2026-03-09"), "day_off");
+    assert_eq!(status_of(&records, "2026-03-10"), "absent");
+    assert_eq!(status_of(&records, "2026-03-11"), "absent");
+}
+
+#[tokio::test]
+async fn record_before_tracking_starts_is_still_evaluated_and_shown() {
+    let app = TestApp::new().await;
+    let admin = app.add_member("admin1", Role::Admin, None).await;
+    let late = app
+        .add_member_created_at(
+            "late",
+            Role::Member,
+            None,
+            pango_server::testing::ts(&kst("2026-03-10T10:00:00")),
+        )
+        .await;
+    app.set_time(&kst("2026-03-12T12:00:00"));
+    app.post("/admin/attendance")
+        .bearer(&admin.token)
+        .json(&create_body(
+            late.id,
+            "2026-03-05",
+            "2026-03-05T10:00:00",
+            Some("2026-03-05T19:00:00"),
+        ))
+        .send()
+        .await
+        .expect(StatusCode::OK);
+
+    let records = month(&app, &late.token, "2026-03").await;
+    let entry = day(&records, "2026-03-05");
+    assert_eq!(entry["record"]["work_date"], "2026-03-05");
+    assert_eq!(entry["evaluation"]["status"], "normal");
+    assert_eq!(entry["evaluation"]["worked_minutes"], 540 - 60);
+    assert_eq!(entry["evaluation"]["late_minutes"], 0);
+    assert_eq!(status_of(&records, "2026-03-04"), "day_off");
+
+    let summary = summary_of(&app, &late.token, "month=2026-03").await;
+    assert_eq!(summary["normal_days"], 1);
+    assert_eq!(summary["absent_days"], 2, "03-10, 03-11");
+    assert_eq!(summary["total_worked_minutes"], 480);
+
+    let list = app
+        .get("/admin/attendance?from=2026-03-01&to=2026-03-31")
+        .bearer(&admin.token)
+        .send()
+        .await
+        .expect(StatusCode::OK);
+    let items = list["items"].as_array().expect("items");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["evaluation"]["status"], "normal");
+    assert_eq!(items[0]["evaluation"]["worked_minutes"], 480);
+}
+
+#[tokio::test]
+async fn days_after_retirement_are_not_absent_in_admin_views() {
+    let app = TestApp::new().await;
+    let admin = app.add_member("admin1", Role::Admin, None).await;
+    let alice = app.add_member("alice", Role::Member, None).await;
+    update_member(&app, alice.id, |m| {
+        m.status = MemberStatus::Retired;
+        m.retired_on = Some("2026-03-05".parse().expect("d"));
+    })
+    .await;
+    app.set_time(&kst("2026-03-12T12:00:00"));
+    // 퇴사 후 날짜(03-09)의 기록: 10:00 출근이지만 근무일이 아니므로 지각이 아니다.
+    for date in ["2026-03-04", "2026-03-09"] {
+        app.post("/admin/attendance")
+            .bearer(&admin.token)
+            .json(&create_body(
+                alice.id,
+                date,
+                &format!("{date}T10:00:00"),
+                Some(&format!("{date}T19:00:00")),
+            ))
+            .send()
+            .await
+            .expect(StatusCode::OK);
+    }
+
+    let query = format!("month=2026-03&member_id={}", alice.id);
+    let records = app
+        .get(&format!("/attendance/records?{query}"))
+        .bearer(&admin.token)
+        .send()
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(status_of(&records, "2026-03-03"), "absent");
+    assert_eq!(status_of(&records, "2026-03-04"), "late");
+    assert_eq!(
+        status_of(&records, "2026-03-05"),
+        "absent",
+        "퇴사일 당일은 추적한다"
+    );
+    for date in ["2026-03-06", "2026-03-10", "2026-03-11"] {
+        assert_eq!(status_of(&records, date), "day_off", "{date}");
+    }
+    assert_eq!(status_of(&records, "2026-03-09"), "normal");
+    let summary = summary_of(&app, &admin.token, &query).await;
+    // 03-02, 03-03, 03-05.
+    assert_eq!(summary["absent_days"], 3);
+    assert_eq!(summary["late_days"], 1);
+    assert_eq!(summary["normal_days"], 1);
+
+    let list = app
+        .get(&format!(
+            "/admin/attendance?from=2026-03-01&to=2026-03-31&member_id={}",
+            alice.id
+        ))
+        .bearer(&admin.token)
+        .send()
+        .await
+        .expect(StatusCode::OK);
+    let statuses: Vec<_> = list["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .map(|i| {
+            (
+                i["record"]["work_date"].as_str().expect("d").to_owned(),
+                i["evaluation"]["status"].as_str().expect("s").to_owned(),
+                i["evaluation"]["late_minutes"].as_u64().expect("late"),
+            )
+        })
+        .collect();
+    assert!(
+        statuses.contains(&("2026-03-04".into(), "late".into(), 60)),
+        "{statuses:?}"
+    );
+    assert!(
+        statuses.contains(&("2026-03-09".into(), "normal".into(), 0)),
+        "{statuses:?}"
+    );
+
+    let csv = app
+        .get("/admin/attendance/export.csv?from=2026-03-01&to=2026-03-31")
+        .bearer(&admin.token)
+        .send()
+        .await;
+    assert_eq!(csv.status, StatusCode::OK);
+    let body = csv.body.as_str().expect("csv").to_owned();
+    let line = |date: &str| {
+        body.lines()
+            .find(|l| l.starts_with(date))
+            .unwrap_or_else(|| panic!("no line for {date}: {body}"))
+            .to_owned()
+    };
+    assert!(line("2026-03-04").ends_with(",late"), "{body}");
+    assert!(line("2026-03-09").ends_with(",normal"), "{body}");
+    assert!(!body.contains("absent"), "{body}");
+}
+
+#[tokio::test]
+async fn home_and_dashboard_count_only_tracked_members_today() {
+    let app = TestApp::new().await;
+    let admin = app.add_member("admin1", Role::Admin, None).await;
+    let bob = app.add_member("bob", Role::Member, None).await;
+    let carol = app.add_member("carol", Role::Member, None).await;
+    let dave = app.add_member("dave", Role::Member, None).await;
+    // bob은 03-02 09:00에 출근하고 퇴근을 찍지 않는다.
+    clock_in(&app, &bob.token).await.expect(StatusCode::OK);
+
+    // 03-04(수) 10:00.
+    app.set_time(&kst("2026-03-04T10:00:00"));
+    let now = app.state.now();
+    // 오늘 만들고 오늘 입사: 오늘은 추적한다.
+    let fresh = app
+        .add_member_created_at("fresh", Role::Member, None, now)
+        .await;
+    update_member(&app, fresh.id, |m| {
+        m.hired_on = "2026-03-04".parse().expect("d")
+    })
+    .await;
+    // 내일 입사 예정: 오늘은 추적하지 않는다.
+    let early = app
+        .add_member_created_at("early", Role::Member, None, now)
+        .await;
+    let idle = app
+        .add_member_created_at("idle", Role::Member, None, now)
+        .await;
+    for m in [&early, &idle] {
+        update_member(&app, m.id, |m| {
+            m.hired_on = "2026-03-05".parse().expect("d")
+        })
+        .await;
+    }
+    clock_in(&app, &dave.token).await.expect(StatusCode::OK);
+    clock_in(&app, &early.token).await.expect(StatusCode::OK);
+    let _ = carol;
+
+    let board = app
+        .get("/admin/dashboard")
+        .bearer(&admin.token)
+        .send()
+        .await
+        .expect(StatusCode::OK);
+    // 재직: owner, admin1, bob, carol, dave, fresh, early, idle.
+    assert_eq!(board["today"]["active_members"], 8);
+    assert_eq!(board["today"]["clocked_in"], 2, "dave, early");
+    assert_eq!(
+        board["today"]["late"], 1,
+        "dave만. early는 추적 전이라 지각이 아니다"
+    );
+    // owner, admin1, bob, carol, fresh. idle은 추적 전이라 빠진다.
+    assert_eq!(board["today"]["not_clocked_in"], 5);
+    let missing = board["missing_clock_out"].as_array().expect("missing");
+    assert_eq!(missing.len(), 1, "{missing:?}");
+    assert_eq!(missing[0]["member_id"], bob.id.to_string());
+    assert_eq!(missing[0]["dates"], json!(["2026-03-02"]));
+
+    let home = app
+        .get("/home")
+        .bearer(&admin.token)
+        .send()
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(home["team_today"]["total"], 8);
+    assert_eq!(home["team_today"]["present"], 2);
+    assert_eq!(home["team_today"]["not_yet"], 5);
+
+    let fresh_home = app
+        .get("/home")
+        .bearer(&fresh.token)
+        .send()
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(fresh_home["today"]["evaluation"]["status"], "scheduled");
+    let early_home = app
+        .get("/home")
+        .bearer(&early.token)
+        .send()
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(early_home["today"]["evaluation"]["status"], "working");
+    assert_eq!(early_home["today"]["evaluation"]["late_minutes"], 0);
+}

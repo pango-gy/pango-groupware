@@ -24,7 +24,7 @@ use pango_core::attendance::{
     decide_clock_in, decide_clock_out, decide_correction_close, evaluate_day,
     validate_correction_date, validate_edit, AttendanceEventKind, ClockInDecision,
     ClockOutDecision, CorrectionDecision, CorrectionStatus, DayEvaluation, DayInput, DayStatus,
-    MonthlySummary,
+    MonthlySummary, TrackedPeriod,
 };
 use pango_core::authz::{self, Actor};
 use pango_core::calendar::{parse_date, parse_month, DateRange, WorkCalendar};
@@ -155,16 +155,30 @@ impl Evaluator {
         })
     }
 
+    /// 구성원의 근태 추적 기간. 계정 생성일은 회사 시간대의 달력 날짜다.
+    fn tracked_period(&self, member: &Member) -> TrackedPeriod {
+        TrackedPeriod::new(
+            member.hired_on,
+            self.company.zone.calendar_date(member.created_at),
+            member.retired_on,
+        )
+    }
+
+    /// `member`의 `date` 하루를 판정한다. 추적 기간 밖의 날은 그 구성원에게 근무일이 아니다.
     fn evaluate(
         &self,
+        member: &Member,
         date: NaiveDate,
         record: Option<&AttendanceRecord>,
         leave: Option<LeaveUnit>,
     ) -> DayEvaluation {
         let state = record.map(AttendanceRecord::state);
+        let is_working_day = self
+            .tracked_period(member)
+            .working_day(date, self.calendar.is_working_day(date));
         let input = DayInput {
             work_date: date,
-            is_working_day: self.calendar.is_working_day(date),
+            is_working_day,
             record: state.as_ref(),
             leave,
             now: self.now,
@@ -200,6 +214,28 @@ fn member_ids_of(rows: &[RecordWithMember]) -> Vec<MemberId> {
     rows.iter().map(|r| r.record.member_id).collect()
 }
 
+/// 기록 주인들을 한 번씩만 읽어 둔다(판정에 추적 기간이 필요하다).
+async fn record_owners(
+    conn: &mut Conn,
+    member_ids: Vec<MemberId>,
+) -> ServiceResult<HashMap<MemberId, Member>> {
+    let mut ids = member_ids;
+    ids.sort();
+    ids.dedup();
+    Ok(members::find_many(conn, &ids)
+        .await?
+        .into_iter()
+        .map(|m| (m.id, m))
+        .collect())
+}
+
+/// 기록의 주인. 기록은 외래 키로 구성원에 묶여 있으므로 없으면 내부 오류다.
+fn owner_of(owners: &HashMap<MemberId, Member>, member_id: MemberId) -> ServiceResult<&Member> {
+    owners
+        .get(&member_id)
+        .ok_or_else(|| ServiceError::internal("attendance record has no member"))
+}
+
 fn leave_on(
     leaves: &HashMap<MemberId, BTreeMap<NaiveDate, LeaveUnit>>,
     member_id: MemberId,
@@ -226,15 +262,16 @@ async fn holiday_names(
 /// 오늘 근무일의 기록이 없어도, 전날 시작한 야간 근무가 아직 퇴근으로 닫을 수 있으면 그 기록을
 /// 보여 준다(그래야 06:00에 "퇴근" 버튼이 나온다). 판정은 퇴근 규칙(`decide_clock_out`)을 그대로 쓴다.
 pub async fn today(state: &AppState, ctx: &AuthContext) -> ServiceResult<TodayResponse> {
-    today_tx(&mut *state.read().await?, ctx.member_id(), state.now()).await
+    today_tx(&mut *state.read().await?, &ctx.member, state.now()).await
 }
 
 /// [`today`]의 본체. 홈 화면이 다른 요약과 한 연결에서 함께 읽을 때도 이것을 쓴다.
 pub async fn today_tx(
     conn: &mut Conn,
-    member_id: MemberId,
+    member: &Member,
     now: Timestamp,
 ) -> ServiceResult<TodayResponse> {
+    let member_id = member.id;
     let company = Company::load(conn).await?;
     let work_date = company.work_date(now);
     let latest = attendance::latest_for_member(conn, member_id).await?;
@@ -258,6 +295,7 @@ pub async fn today_tx(
         is_working_day: evaluator.calendar.is_working_day(work_date),
         holiday_name,
         evaluation: evaluator.evaluate(
+            member,
             evaluated_date,
             record.as_ref(),
             leaves.get(&evaluated_date).copied(),
@@ -384,10 +422,11 @@ async fn viewable_member(
 /// 한 달의 날짜별 기록과 판정.
 async fn month_days(
     conn: &mut Conn,
-    member_id: MemberId,
+    member: &Member,
     range: DateRange,
     now: Timestamp,
 ) -> ServiceResult<Vec<DayEntry>> {
+    let member_id = member.id;
     let records: BTreeMap<_, _> = attendance::list_for_members(conn, &[member_id], range)
         .await?
         .into_iter()
@@ -406,7 +445,7 @@ async fn month_days(
                 is_working_day: evaluator.calendar.is_working_day(date),
                 holiday_name: holidays.remove(&date),
                 record: record.map(record_dto),
-                evaluation: evaluator.evaluate(date, record, leaves.get(&date).copied()),
+                evaluation: evaluator.evaluate(member, date, record, leaves.get(&date).copied()),
             }
         })
         .collect())
@@ -420,7 +459,7 @@ pub async fn month_records(
     let mut conn = state.read().await?;
     let member = viewable_member(&mut conn, ctx, query.member_id).await?;
     let range = parse_month(&query.month)?;
-    let days = month_days(&mut conn, member.id, range, state.now()).await?;
+    let days = month_days(&mut conn, &member, range, state.now()).await?;
     Ok(MonthRecords {
         member_id: member.id,
         month: query.month.clone(),
@@ -436,7 +475,7 @@ pub async fn month_summary(
     let mut conn = state.read().await?;
     let member = viewable_member(&mut conn, ctx, query.member_id).await?;
     let range = parse_month(&query.month)?;
-    let days = month_days(&mut conn, member.id, range, state.now()).await?;
+    let days = month_days(&mut conn, &member, range, state.now()).await?;
     let evaluations: Vec<_> = days.iter().map(|d| d.evaluation).collect();
     Ok(MonthlySummaryDto {
         member_id: member.id,
@@ -513,7 +552,7 @@ pub async fn team(
         .map(|m| {
             let record = records.get(&m.id);
             TeamAttendanceEntry {
-                evaluation: evaluator.evaluate(date, record, leave_on(&leaves, m.id, date)),
+                evaluation: evaluator.evaluate(&m, date, record, leave_on(&leaves, m.id, date)),
                 record: record.map(record_dto),
                 member_id: m.id,
                 department_name: m.department_id.and_then(|d| departments.get(&d).cloned()),
@@ -591,7 +630,7 @@ pub async fn headcount_tx(
     };
     for member in members {
         let record = records.get(&member.id);
-        let evaluation = evaluator.evaluate(date, record, leaves.get(&member.id).copied());
+        let evaluation = evaluator.evaluate(member, date, record, leaves.get(&member.id).copied());
         if record.is_some() {
             count.present += 1;
             if evaluation.late_minutes > 0 {
@@ -623,13 +662,15 @@ pub async fn missing_clock_outs_tx(
         .ok_or_else(|| DomainError::validation("date", ValidationReason::OutOfRange))?;
     let range = DateRange::new(start, today)?;
     let open = attendance::list_open(conn, range).await?;
+    let owners = record_owners(conn, member_ids_of(&open)).await?;
     let evaluator = Evaluator::new(conn, company, range, now).await?;
     let mut missing: Vec<MissingClockOut> = Vec::new();
     for row in open {
         let record = &row.record;
         // 누락 여부는 출근 후 지난 시간만으로 정해지므로 휴가는 넘기지 않아도 된다.
+        let owner = owner_of(&owners, record.member_id)?;
         let status = evaluator
-            .evaluate(record.work_date, Some(record), None)
+            .evaluate(owner, record.work_date, Some(record), None)
             .status;
         if status != DayStatus::MissingClockOut {
             continue;
@@ -1042,6 +1083,7 @@ pub async fn admin_list(
     let filter = admin_filter(&mut conn, range, query).await?;
     let (rows, has_more) = attendance::list_page(&mut conn, &filter, after, limit).await?;
     let leaves = leaves_for(&mut conn, member_ids_of(&rows), range).await?;
+    let owners = record_owners(&mut conn, member_ids_of(&rows)).await?;
     let company = Company::load(&mut conn).await?;
     let evaluator = Evaluator::new(&mut conn, company, range, now).await?;
     let next_cursor = rows.last().filter(|_| has_more).map(|last| {
@@ -1054,8 +1096,9 @@ pub async fn admin_list(
         .into_iter()
         .map(|row| {
             let record = &row.record;
-            AdminAttendanceItem {
+            Ok(AdminAttendanceItem {
                 evaluation: evaluator.evaluate(
+                    owner_of(&owners, record.member_id)?,
                     record.work_date,
                     Some(record),
                     leave_on(&leaves, record.member_id, record.work_date),
@@ -1064,9 +1107,9 @@ pub async fn admin_list(
                 member_name: row.member_name,
                 login_id: row.login_id,
                 department_name: row.department_name,
-            }
+            })
         })
-        .collect();
+        .collect::<ServiceResult<_>>()?;
     Ok(Page { items, next_cursor })
 }
 
@@ -1219,11 +1262,12 @@ pub struct CsvFile {
 fn csv_line(
     out: &mut String,
     evaluator: &Evaluator,
+    owner: &Member,
     row: &RecordWithMember,
     leave: Option<LeaveUnit>,
 ) {
     let record = &row.record;
-    let evaluation = evaluator.evaluate(record.work_date, Some(record), leave);
+    let evaluation = evaluator.evaluate(owner, record.work_date, Some(record), leave);
     push_csv_row(
         out,
         [
@@ -1263,13 +1307,15 @@ pub async fn export_csv(
             };
             let rows = attendance::list_for_export(conn, &filter).await?;
             let leaves = leaves_for(conn, member_ids_of(&rows), range).await?;
+            let owners = record_owners(conn, member_ids_of(&rows)).await?;
             let company = Company::load(conn).await?;
             let evaluator = Evaluator::new(conn, company, range, now).await?;
             let mut body = String::from("\u{feff}");
             push_csv_row(&mut body, CSV_HEADER);
             for row in &rows {
                 let leave = leave_on(&leaves, row.record.member_id, row.record.work_date);
-                csv_line(&mut body, &evaluator, row, leave);
+                let owner = owner_of(&owners, row.record.member_id)?;
+                csv_line(&mut body, &evaluator, owner, row, leave);
             }
             let (from, to) = (
                 range.start().format("%Y-%m-%d"),

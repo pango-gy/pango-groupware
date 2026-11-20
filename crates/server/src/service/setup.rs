@@ -92,6 +92,7 @@ pub async fn initialize(state: &AppState, input: InitInput) -> ServiceResult<Ini
         hired_on,
         retired_on: None,
         must_change_password: temporary_password.is_some(),
+        created_at: now,
         version: 1,
     };
 

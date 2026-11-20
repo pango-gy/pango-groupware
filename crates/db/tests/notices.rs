@@ -31,6 +31,7 @@ async fn insert_member(db: &Db, login_id: &str) -> MemberId {
         hired_on: NaiveDate::from_ymd_opt(2024, 3, 2).expect("date"),
         retired_on: None,
         must_change_password: false,
+        created_at: ts(1),
         version: 1,
     };
     let mut tx = db.begin_write().await.expect("begin");

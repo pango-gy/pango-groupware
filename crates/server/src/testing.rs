@@ -290,11 +290,32 @@ impl TestApp {
     }
 
     /// 구성원을 DB에 직접 만들고 로그인까지 해 둔다. 입사일은 2024-03-02.
+    ///
+    /// 계정도 입사일 0시(UTC)에 만든 것으로 저장한다. 그래야 시계를 앞뒤로 옮겨 지난 날짜를
+    /// 판정하는 테스트가 계정 생성 전이라는 이유로 근태 추적 기간 밖에 떨어지지 않는다.
+    /// 최근에 만든 계정이 필요하면 [`Self::add_member_created_at`]을 쓴다.
     pub async fn add_member(
         &self,
         login_id: &str,
         role: Role,
         department_id: Option<DepartmentId>,
+    ) -> TestMember {
+        let created_at = Timestamp::from_utc(
+            "2024-03-02T00:00:00Z"
+                .parse::<chrono::DateTime<chrono::Utc>>()
+                .expect("time"),
+        );
+        self.add_member_created_at(login_id, role, department_id, created_at)
+            .await
+    }
+
+    /// [`Self::add_member`]와 같되 계정 생성 시각을 `created_at`으로 저장한다.
+    pub async fn add_member_created_at(
+        &self,
+        login_id: &str,
+        role: Role,
+        department_id: Option<DepartmentId>,
+        created_at: Timestamp,
     ) -> TestMember {
         let member = Member {
             id: MemberId::new(),
@@ -309,12 +330,13 @@ impl TestApp {
             hired_on: "2024-03-02".parse().expect("date"),
             retired_on: None,
             must_change_password: false,
+            created_at,
             version: 1,
         };
         let password = PlainPassword::for_verification(MEMBER_PASSWORD).expect("password");
         let hash = self.state.passwords.hash(&password).await.expect("hash");
         let mut tx = self.state.db.begin_write().await.expect("begin");
-        members::insert(&mut tx, &member, &hash, self.state.now())
+        members::insert(&mut tx, &member, &hash, created_at)
             .await
             .expect("member");
         tx.commit().await.expect("commit");

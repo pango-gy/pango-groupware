@@ -34,6 +34,7 @@ async fn add_member(db: &Db, login_id: &str) -> MemberId {
         hired_on: "2024-03-02".parse().expect("date"),
         retired_on: None,
         must_change_password: false,
+        created_at: ts(1),
         version: 1,
     };
     let mut tx = db.begin_write().await.expect("begin");
