@@ -5,7 +5,7 @@ use pango_core::org::DepartmentNode;
 use pango_core::time::Timestamp;
 
 use crate::codec;
-use crate::error::DbResult;
+use crate::error::{DbError, DbResult};
 use crate::pool::Conn;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -209,6 +209,11 @@ pub async fn find_position(conn: &mut Conn, id: PositionId) -> DbResult<Option<P
     .await?
     .map(Position::try_from)
     .transpose()
+}
+
+/// 보관되지 않은 직책끼리의 이름 유일 제약(`positions.name`) 위반인지.
+pub fn is_duplicate_position_name(error: &DbError) -> bool {
+    error.is_unique_violation("positions.name")
 }
 
 pub async fn insert_position(conn: &mut Conn, position: &Position, now: Timestamp) -> DbResult<()> {

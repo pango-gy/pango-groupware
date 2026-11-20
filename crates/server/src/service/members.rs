@@ -273,7 +273,7 @@ impl Profile {
 }
 
 fn login_id_taken(error: DbError) -> ServiceError {
-    if error.is_unique_violation("members.login_id") {
+    if members::is_duplicate_login_id(&error) {
         DomainError::Conflict(ConflictReason::LoginIdTaken).into()
     } else {
         error.into()

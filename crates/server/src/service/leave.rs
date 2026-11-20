@@ -929,10 +929,9 @@ async fn notify_canceled_tx(
     actor_id: MemberId,
     now: Timestamp,
 ) -> ServiceResult<()> {
-    let approvers = pango_db::approval::list_steps(conn, request.document_id).await?;
+    let approvers = approval::approvers_tx(conn, request.document_id).await?;
     let recipients = approvers
-        .iter()
-        .map(|step| step.approver)
+        .into_iter()
         .chain([request.member_id])
         .filter(|member| *member != actor_id);
     let dedupe_key = format!("leave.canceled:{}", request.id);
@@ -963,11 +962,8 @@ pub async fn cancel_request(
     let now = state.now();
     state
         .write(async |conn: &mut Conn| {
-            let request = found(
-                leave::find_request(conn, id)
-                    .await?
-                    .filter(|request| request.member_id == ctx.member_id()),
-            )?;
+            let request = found(leave::find_request(conn, id).await?)?;
+            authz::require_own(&ctx.actor, request.member_id, DomainError::NotFound)?;
             cancel_tx(conn, ctx, &request, false, now).await?;
             request_dto(conn, id).await
         })

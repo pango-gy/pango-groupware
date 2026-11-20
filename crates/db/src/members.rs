@@ -7,7 +7,7 @@ use pango_core::member::MemberStatus;
 use pango_core::time::Timestamp;
 
 use crate::codec;
-use crate::error::DbResult;
+use crate::error::{DbError, DbResult};
 use crate::pool::Conn;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -178,6 +178,12 @@ pub struct MemberFilter {
     /// 검색어를 로그인 아이디와도 비교할지. 관리자 조회에서만 켠다
     /// (일반 조회에서 켜면 검색 결과로 남의 아이디를 추측할 수 있다).
     pub search_login_id: bool,
+}
+
+/// 로그인 아이디 유일 제약(`members.login_id`) 위반인지. 같은 아이디로 동시에 만들거나 바꾼
+/// 요청의 패자가 이 오류를 받는다.
+pub fn is_duplicate_login_id(error: &DbError) -> bool {
+    error.is_unique_violation("members.login_id")
 }
 
 impl MemberFilter {

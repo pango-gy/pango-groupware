@@ -293,7 +293,7 @@ fn position_dto(position: Position) -> PositionDto {
 
 /// 보관되지 않은 직책끼리 이름이 겹치면 DB 유일 제약이 막는다. 그 위반을 충돌로 바꾼다.
 fn position_name_taken(error: DbError) -> ServiceError {
-    if error.is_unique_violation("positions.name") {
+    if org::is_duplicate_position_name(&error) {
         DomainError::Conflict(ConflictReason::AlreadyExists).into()
     } else {
         error.into()

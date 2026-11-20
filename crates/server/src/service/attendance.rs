@@ -828,11 +828,8 @@ pub async fn cancel_correction(
     let now = state.now();
     state
         .write(async |conn: &mut Conn| {
-            let correction = found(
-                corrections::find(conn, id)
-                    .await?
-                    .filter(|correction| correction.member_id == ctx.member_id()),
-            )?;
+            let correction = found(corrections::find(conn, id).await?)?;
+            authz::require_own(&ctx.actor, correction.member_id, DomainError::NotFound)?;
             let decision = decide_correction_close(correction.status, CorrectionStatus::Canceled)?;
             if decision == CorrectionDecision::Close {
                 approval::withdraw_linked_tx(conn, ctx.member_id(), correction.document_id, now)

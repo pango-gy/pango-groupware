@@ -250,6 +250,12 @@ struct Loaded {
     document: Document,
 }
 
+/// 문서 결재선의 결재자(단계 순서대로). 연결된 기능이 결재했던 사람들에게 알릴 때 쓴다.
+pub async fn approvers_tx(conn: &mut Conn, id: DocumentId) -> ServiceResult<Vec<MemberId>> {
+    let steps = approval::list_steps(conn, id).await?;
+    Ok(steps.into_iter().map(|step| step.approver).collect())
+}
+
 /// 문서를 읽어 불변식을 확인한다. 저장된 값이 손상돼 있으면 어떤 동작도 하지 않고 내부 오류다.
 async fn load(conn: &mut Conn, id: DocumentId) -> ServiceResult<Loaded> {
     let record = found(approval::find_document(conn, id).await?)?;
@@ -1005,9 +1011,11 @@ pub async fn delete_document(
         .write(async |conn: &mut Conn| {
             let loaded = load(conn, id).await?;
             rules::view(&ctx.actor, &loaded.document)?;
-            if loaded.document.drafter() != ctx.member_id() {
-                return Err(DomainError::Forbidden.into());
-            }
+            authz::require_own(
+                &ctx.actor,
+                loaded.document.drafter(),
+                DomainError::Forbidden,
+            )?;
             if loaded.document.status() != DocumentStatus::Draft
                 || !approval::delete_draft(conn, id).await?
             {

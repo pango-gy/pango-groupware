@@ -122,6 +122,17 @@ pub fn require_admin(actor: &Actor) -> DomainResult<()> {
     }
 }
 
+/// 본인의 것만 다룰 수 있는 동작(본인 신청의 취소, 본인 임시저장의 삭제 등). 관리자도 예외가
+/// 아니다. 남의 것이면 `denial`: 볼 수도 없는 자원이면 `NotFound`(ID 추측 방지), 볼 수는
+/// 있지만 이 동작만 금지면 `Forbidden`.
+pub fn require_own(actor: &Actor, owner_id: MemberId, denial: DomainError) -> DomainResult<()> {
+    if actor.member_id == owner_id {
+        Ok(())
+    } else {
+        Err(denial)
+    }
+}
+
 /// 최고 관리자 전용 동작.
 pub fn require_owner(actor: &Actor) -> DomainResult<()> {
     if actor.role == Role::Owner {
@@ -397,6 +408,27 @@ mod tests {
             role,
             department_id: dept,
             managed_departments: managed.iter().copied().collect(),
+        }
+    }
+
+    #[test]
+    fn require_own_allows_only_the_owner_even_for_admins() {
+        let w = world();
+        for role in [Role::Member, Role::Admin, Role::Owner] {
+            let me = actor(role, Some(w.dept_a), &[w.dept_a]);
+            assert_eq!(
+                require_own(&me, me.member_id, DomainError::NotFound),
+                Ok(())
+            );
+            let other = MemberId::new();
+            assert_eq!(
+                require_own(&me, other, DomainError::NotFound),
+                Err(DomainError::NotFound)
+            );
+            assert_eq!(
+                require_own(&me, other, DomainError::Forbidden),
+                Err(DomainError::Forbidden)
+            );
         }
     }
 
