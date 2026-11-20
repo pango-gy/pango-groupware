@@ -72,6 +72,7 @@ pub fn error_message(code: &str, field: Option<&str>, reason: Option<&str>) -> S
         "not_clocked_in" => "출근 기록이 없습니다.",
         "already_clocked_out" => "이미 퇴근 처리되었습니다.",
         "clock_out_before_clock_in" => "퇴근 시각이 출근 시각보다 빠릅니다.",
+        "not_working_member" => "재직 중인 구성원만 출퇴근을 기록할 수 있습니다.",
         "insufficient_leave_balance" => "남은 연차가 부족합니다.",
         "leave_overlap" => "이미 신청한 휴가와 기간이 겹칩니다.",
         "leave_no_working_days" => "선택한 기간에 근무일이 없습니다.",
