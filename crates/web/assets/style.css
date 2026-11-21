@@ -1569,3 +1569,4 @@ body:has(.action-bar) .toasts { bottom: calc(24px + var(--action-bar-h) + env(sa
 .guide summary { cursor: pointer; font-weight: 600; color: var(--grey-800); }
 .guide-body { margin-top: 10px; display: grid; gap: 10px; color: var(--grey-700); font-size: 14px; }
 .guide-body h3 { font-size: 14px; font-weight: 600; color: var(--grey-800); }
+.guide-body ol { margin: 4px 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; }

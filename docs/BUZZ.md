@@ -121,6 +121,20 @@ buzz users set-profile --name "결재 알림"
 | `http_429` | 요청 한도 | 자동 재시도. 잦으면 6단계의 한도 조정 |
 | `recipient_unlinked` | 보내기 전에 구성원이 연결을 끊음 | 정상 |
 
+## 한 사람이 여러 기기에서 쓰기
+
+Buzz는 기기에 저장된 키가 곧 계정입니다. 모바일 앱에서 커뮤니티 주소를 넣은 뒤 **"Create an identity and join"**을 누르면 새 키가 만들어져 데스크톱과 **다른 계정**이 됩니다(그룹웨어에는 한 계정만 연결되므로 다른 기기에는 알림이 가지 않습니다).
+
+- 먼저 데스크톱 **Settings… → Identity → Community sign-ins**에서 로그인 방식을 확인합니다.
+  - **Builderlab(회사 이메일) 계정**이면 Pair mobile 화면이 없고, **Settings… → Mobile app**에 "휴대폰에서 Builderlab에 같은 이메일로 로그인하라"는 안내가 나옵니다. 모바일에서 Sign out 후 같은 이메일로 Builderlab 로그인을 합니다. 커뮤니티 초대 QR을 찍으면 새 계정이 생깁니다(실제로 확인한 사례).
+  - 키로만 쓰는 계정이면: 데스크톱 **Settings… → Pair mobile**에서 커뮤니티 주소를 넣고 QR을 띄운 뒤, 모바일 **Add community → Scan a QR code**(또는 **Use a pairing code**)로 연결합니다. 키는 종단 간 암호화로 전달되고, 두 기기에 뜬 확인 코드를 비교합니다(근거: buzz-app `src/bundled/pairing/PairingSettings.tsx`, buzz `mobile/lib/features/pairing/`).
+- 이미 두 번째 계정이 생겼으면:
+  1. 모바일 **Settings → Sign out**으로 나간 뒤 위 방법으로 다시 연결합니다(키는 기기의 저장된 신원 목록에 남을 수 있습니다).
+  2. 릴레이에서 그 키를 구성원에서 뺍니다. 관리자는 데스크톱 **Settings… → Membership**에서 그 계정의 ⋯ → Remove로 뺄 수 있습니다(검색은 npub 전체가 아니라 이름이나 hex 공개키 앞부분으로 됩니다). 서버에서는 `./run.sh remove-member <npub>`(직접 실행: `buzz-admin remove-member --pubkey <npub|hex>`). 그 키로 쓴 메시지·프로필이 남는지는 확인하지 못했습니다.
+- 예방:
+  - `BUZZ_REQUIRE_RELAY_MEMBERSHIP=true`(코드 기본값은 `false`라 아무 새 키나 쓸 수 있습니다).
+  - 초대 링크는 기본으로 **사용 횟수 무제한·72시간** 유효이고, 받은 새 키를 바로 구성원으로 넣습니다. 초대는 `POST /api/invites` `{"max_uses":1,"ttl_secs":…}`로 1회용·단기 발급하고, 남은 초대는 `/api/invites/revoke`로 회수합니다. 이미 계정이 있는 사람에게는 초대 대신 Pair mobile을 안내합니다.
+
 ## 모바일 푸시에 대해
 
 Buzz 모바일 앱의 푸시 알림은 Buzz 쪽 **실험 기능**이고, 별도의 `buzz-push-gateway`와 APNs/FCM 설정을 따로 배포해야 합니다. 그룹웨어는 DM을 보낼 뿐이므로, 푸시가 오는지는 회사 Buzz의 푸시 설정에 달려 있습니다. 또 봇과의 **새 DM에 온 첫 메시지**는 앱이 그 DM을 아직 모르는 상태라 푸시가 늦거나 오지 않을 수 있습니다(추론: 소스 기준으로 확인하지 못했습니다). 연결할 때 확인 코드 DM이 이미 한 번 오가므로 보통 알림부터는 같은 DM으로 갑니다.

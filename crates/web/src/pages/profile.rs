@@ -375,6 +375,19 @@ fn BuzzGuide(bot_npub: Option<String>) -> Element {
                     }
                 }
                 div {
+                    h3 { "데스크톱과 휴대폰이 다른 계정이에요" }
+                    p {
+                        "Buzz는 기기에 저장된 키가 곧 계정이라, 휴대폰에서 QR로 커뮤니티에 들어가거나 새 신원 만들기(Create an identity and join)를 누르면 데스크톱과 다른 계정이 생겨요. 데스크톱과 같은 방법으로 로그인해야 같은 계정이 돼요."
+                    }
+                    ol {
+                        li { "데스크톱 Buzz의 설정(Settings…) → 신원(Identity) → 커뮤니티 로그인(Community sign-ins)에서 어떤 방식으로 로그인했는지 봐요." }
+                        li { "회사 이메일(Builderlab)로 로그인했다면: 휴대폰에서 설정(Settings) → 로그아웃(Sign out) 후, 같은 회사 이메일로 Builderlab 로그인을 해요. 데스크톱 설정의 모바일 앱(Mobile app) 화면에 쓸 이메일이 나와요." }
+                        li { "키로만 쓰는 계정이라면: 데스크톱 설정 → 모바일 연결(Pair mobile)의 QR을 휴대폰 커뮤니티 추가 → QR 스캔(Scan a QR code)으로 찍어요." }
+                        li { "두 기기의 Buzz ID(공개키)가 같은지 확인해요. 잘못 생긴 계정은 관리자에게 구성원에서 빼 달라고 해 주세요." }
+                    }
+                    p { "비밀키(nsec)를 메신저나 메모로 옮기지 마세요." }
+                }
+                div {
                     h3 { "코드가 오지 않아요" }
                     p {
                         "Buzz의 DM 목록에서 알림 봇이 보낸 메시지를 찾아 주세요. 1분 뒤 다시 받을 수 있고, 계속 오지 않으면 관리자에게 문의해 주세요(알림 봇이 아직 Buzz에 등록되지 않았을 수 있어요)."
