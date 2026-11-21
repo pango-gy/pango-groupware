@@ -24,7 +24,7 @@ crates/
 ├── api/     pango-api     요청/응답 DTO, 오류 코드, 경로. 서버와 웹이 함께 사용.
 ├── db/      pango-db      SQLite 스키마, 마이그레이션, 저장소(repository).
 ├── server/  pango-server  서비스(유스케이스) + HTTP + 실행 파일.
-└── web/     pango-web     Dioxus UI (WASM). iOS/Android도 같은 코드.
+└── web/     pango-web     Dioxus UI. 웹(WASM)과 iOS/Android 앱(Dioxus mobile)이 같은 코드.
 xtask/                     웹 번들 빌드 등 개발 작업.
 ```
 
@@ -91,7 +91,7 @@ UUID v7을 타입별 newtype(`MemberId`, `DocumentId` …)으로 감쌉니다. D
 
 ## 4. 인증
 
-- **세션 토큰**: 256비트 난수. DB에는 SHA-256 해시만 저장. 웹은 `HttpOnly; Secure; SameSite=Strict` 쿠키, 모바일은 `Authorization: Bearer`.
+- **세션 토큰**: 256비트 난수. DB에는 SHA-256 해시만 저장. 웹은 `HttpOnly; Secure; SameSite=Strict` 쿠키, 모바일 앱은 로그인 응답 본문으로 받은 토큰을 `Authorization: Bearer`로 보낸다(iOS 키체인 보관, `token_in_body`).
 - 유휴 만료 14일, 절대 만료 90일. 비밀번호 변경 시 다른 세션 전부 폐기. 비활성화·퇴사 처리 시 전부 폐기.
 - 쿠키 인증으로 들어온 변경 요청은 `Sec-Fetch-Site`/`Origin`을 검사해 교차 출처를 거부합니다. 운영에서는 `--public-origin`으로 서비스 주소를 지정해 `Origin`을 정확히 비교합니다.
 - 비밀번호: Argon2id. 길이 10~128자, 로그인 아이디와 같으면 거부.

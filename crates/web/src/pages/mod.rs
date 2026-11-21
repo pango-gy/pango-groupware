@@ -22,7 +22,7 @@ pub use approval::ApprovalList;
 pub use approval_detail::ApprovalDetail;
 pub use approval_new::ApprovalNew;
 pub use attendance::Attendance;
-pub use auth::{ChangePassword, Login};
+pub use auth::{ChangePassword, Login, ServerSetup};
 pub use calendar::{Calendar, CalendarEvent};
 pub use home::Home;
 pub use leave::Leave;

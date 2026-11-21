@@ -889,6 +889,12 @@ body:has(.action-bar) .toasts { bottom: calc(24px + var(--action-bar-h) + env(sa
 .auth-title { font-size: 26px; font-weight: 700; line-height: 1.35; letter-spacing: -0.02em; margin-top: -12px; }
 .auth-hint { font-size: 13px; color: var(--grey-600); }
 .auth-link { text-align: center; font-size: 14px; }
+.auth-lead { font-size: 15px; color: var(--grey-700); margin-top: -12px; }
+.auth-server {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding-top: 16px; border-top: 1px solid var(--grey-100); font-size: 13px; color: var(--grey-600);
+}
+.auth-server-origin { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 959px) {
   .auth { padding: 0; place-items: stretch; background: var(--panel); }
   .auth-card { width: 100%; border-radius: 0; padding: 48px 24px; align-self: center; }

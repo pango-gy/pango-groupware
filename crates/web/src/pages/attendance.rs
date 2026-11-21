@@ -76,7 +76,7 @@ pub fn TodayBody(state: TodayResponse, onchange: EventHandler<()>) -> Element {
     // 경과 시간 표시를 위해 30초마다 시각을 갱신한다.
     use_future(move || async move {
         loop {
-            gloo_timers::future::TimeoutFuture::new(30_000).await;
+            crate::platform::sleep_ms(30_000).await;
             now.set(crate::ui::now());
         }
     });

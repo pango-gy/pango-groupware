@@ -6,20 +6,23 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+# 렌더러는 기능으로 고른다. 웹(WASM)은 기본값, 앱은 `dx ... --platform ios|android`가 `mobile`을 켠다.
+[features]
+default = ["web"]
+web = ["dioxus/web"]
+mobile = ["dioxus/mobile"]
+
 [dependencies]
 pango-core.workspace = true
 pango-api.workspace = true
 # devtools(개발 서버 연결)는 쓰지 않으므로 기본 기능에서 뺀다.
-dioxus = { version = "0.7", default-features = false, features = ["launch", "logger", "lib", "web", "router"] }
+dioxus = { version = "0.7", default-features = false, features = ["launch", "logger", "lib", "router"] }
 serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
 chrono-tz.workspace = true
-gloo-net = { version = "0.6", default-features = false, features = ["http", "json"] }
-gloo-timers = { version = "0.3", features = ["futures"] }
-wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4"
-js-sys = "0.3"
+# 브라우저 DOM 바인딩. 쓰는 곳은 WASM뿐이지만, 호스트에서 `web` 기능(dioxus-web)으로 단위 테스트를
+# 빌드할 때도 dioxus-web이 이 기능들(Location 등)을 필요로 하므로 모든 타깃에 둔다(네이티브에서는 빈 껍데기).
 web-sys = { version = "0.3", features = [
     "AddEventListenerOptions",
     "Document",
@@ -27,6 +30,7 @@ web-sys = { version = "0.3", features = [
     "Element",
     "EventTarget",
     "HtmlElement",
+    "Location",
     "Node",
     "NodeList",
     "RequestCredentials",
@@ -34,6 +38,23 @@ web-sys = { version = "0.3", features = [
     "VisibilityState",
     "Window",
 ] }
+
+# 브라우저(WASM): DOM·fetch를 직접 쓴다.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+gloo-net = { version = "0.6", default-features = false, features = ["http", "json"] }
+gloo-timers = { version = "0.3", features = ["futures"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+
+# 네이티브(iOS·Android 앱, 그리고 호스트에서 도는 단위 테스트): HTTP는 Rust에서 보낸다.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio = { workspace = true }
+
+# 로그인 토큰은 iOS 키체인에 둔다.
+[target.'cfg(target_os = "ios")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
 
 [lints]
 workspace = true

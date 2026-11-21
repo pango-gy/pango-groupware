@@ -219,28 +219,14 @@ pub mod logic {
 mod store {
     use super::logic;
 
-    fn storage() -> Option<web_sys::Storage> {
-        // 저장소를 막아 둔 브라우저에서는 `local_storage()`가 예외(Err)를 낸다.
-        web_sys::window()?.local_storage().ok().flatten()
-    }
-
     pub fn load(list: &str, member: &str, max: usize) -> Vec<String> {
-        storage()
-            .and_then(|storage| {
-                storage
-                    .get_item(&logic::storage_key(list, member))
-                    .ok()
-                    .flatten()
-            })
+        crate::platform::local_get(&logic::storage_key(list, member))
             .map(|raw| logic::parse_ids(&raw, max))
             .unwrap_or_default()
     }
 
     pub fn save(list: &str, member: &str, ids: &[String]) {
-        if let Some(storage) = storage() {
-            // 용량 초과·비공개 창 등으로 못 써도 이번 화면에서는 그대로 쓸 수 있으므로 넘어간다.
-            let _ = storage.set_item(&logic::storage_key(list, member), &logic::encode_ids(ids));
-        }
+        crate::platform::local_set(&logic::storage_key(list, member), &logic::encode_ids(ids));
     }
 }
 

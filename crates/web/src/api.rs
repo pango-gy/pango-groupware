@@ -1,13 +1,14 @@
 //! 서버 API 클라이언트.
 //!
-//! 웹에서는 같은 출처의 HttpOnly 쿠키로 인증한다(스크립트가 토큰을 볼 수 없다).
+//! 웹은 같은 출처의 HttpOnly 쿠키로, 앱은 `Authorization: Bearer`로 인증한다
+//! (전송은 [`crate::platform::send`]).
 //! 모든 호출은 [`ApiError`]로 실패하며, 화면은 `ApiError::message`로 문구를 얻는다.
 
-use gloo_net::http::{Method, RequestBuilder, Response};
 use pango_api::{ErrorBody, FieldErrorDto, API_PREFIX};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
+use crate::platform::{self, Method, RawResponse, Request};
 use crate::text;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,15 +59,14 @@ fn url(path: &str) -> String {
     format!("{API_PREFIX}{path}")
 }
 
-async fn decode<T: DeserializeOwned>(response: Response) -> ApiResult<T> {
-    let status = response.status();
-    if response.ok() {
-        return response
-            .json::<T>()
-            .await
+/// 응답을 해석한다. 2xx는 `T`로, 그 밖은 서버의 오류 본문으로 읽는다.
+fn decode<T: DeserializeOwned>(response: &RawResponse) -> ApiResult<T> {
+    let status = response.status;
+    if (200..300).contains(&status) {
+        return serde_json::from_slice::<T>(&response.body)
             .map_err(|_| ApiError::unexpected(status));
     }
-    match response.json::<ErrorBody>().await {
+    match serde_json::from_slice::<ErrorBody>(&response.body) {
         Ok(body) => Err(ApiError {
             status,
             code: body.error.code,
@@ -81,24 +81,18 @@ async fn decode<T: DeserializeOwned>(response: Response) -> ApiResult<T> {
 async fn send<T: DeserializeOwned>(
     method: Method,
     path: &str,
-    body: Option<String>,
+    json: Option<String>,
     idempotency_key: Option<&str>,
 ) -> ApiResult<T> {
-    let mut builder = RequestBuilder::new(&url(path))
-        .method(method)
-        .credentials(web_sys::RequestCredentials::SameOrigin);
-    if let Some(key) = idempotency_key {
-        builder = builder.header("Idempotency-Key", key);
-    }
-    let request = match body {
-        Some(json) => builder
-            .header("Content-Type", "application/json")
-            .body(json),
-        None => builder.build(),
-    }
-    .map_err(|_| ApiError::network())?;
-    let result = match request.send().await {
-        Ok(response) => decode(response).await,
+    let path = url(path);
+    let request = Request {
+        method,
+        path: &path,
+        json,
+        idempotency_key,
+    };
+    let result = match platform::send(request).await {
+        Ok(response) => decode(&response),
         Err(_) => Err(ApiError::network()),
     };
     if let Err(error) = &result {
@@ -117,11 +111,11 @@ fn to_json<B: Serialize>(body: &B) -> ApiResult<Option<String>> {
 }
 
 pub async fn get<T: DeserializeOwned>(path: &str) -> ApiResult<T> {
-    send(Method::GET, path, None, None).await
+    send(Method::Get, path, None, None).await
 }
 
 pub async fn post<B: Serialize, T: DeserializeOwned>(path: &str, body: &B) -> ApiResult<T> {
-    send(Method::POST, path, to_json(body)?, None).await
+    send(Method::Post, path, to_json(body)?, None).await
 }
 
 /// 생성 요청. 같은 `key`로 다시 보내면 서버가 처음 응답을 그대로 돌려준다
@@ -131,19 +125,19 @@ pub async fn post_once<B: Serialize, T: DeserializeOwned>(
     body: &B,
     key: &str,
 ) -> ApiResult<T> {
-    send(Method::POST, path, to_json(body)?, Some(key)).await
+    send(Method::Post, path, to_json(body)?, Some(key)).await
 }
 
 pub async fn patch<B: Serialize, T: DeserializeOwned>(path: &str, body: &B) -> ApiResult<T> {
-    send(Method::PATCH, path, to_json(body)?, None).await
+    send(Method::Patch, path, to_json(body)?, None).await
 }
 
 pub async fn put<B: Serialize, T: DeserializeOwned>(path: &str, body: &B) -> ApiResult<T> {
-    send(Method::PUT, path, to_json(body)?, None).await
+    send(Method::Put, path, to_json(body)?, None).await
 }
 
 pub async fn delete<T: DeserializeOwned>(path: &str) -> ApiResult<T> {
-    send(Method::DELETE, path, None, None).await
+    send(Method::Delete, path, None, None).await
 }
 
 /// 쿼리 문자열 값을 인코딩한다(RFC 3986 비예약 문자만 그대로 둔다).
@@ -191,6 +185,40 @@ pub fn new_idempotency_key() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn raw(status: u16, body: &str) -> RawResponse {
+        RawResponse {
+            status,
+            body: body.as_bytes().to_vec(),
+        }
+    }
+
+    #[test]
+    fn success_bodies_decode_into_the_requested_type() {
+        assert_eq!(decode::<Vec<u32>>(&raw(200, "[1,2]")), Ok(vec![1, 2]));
+        assert_eq!(decode::<Vec<u32>>(&raw(201, "[]")), Ok(vec![]));
+        // 2xx인데 본문이 기대와 다르면 서버 오류 본문으로 읽지 않는다.
+        let wrong = decode::<Vec<u32>>(&raw(200, "{\"a\":1}")).unwrap_err();
+        assert_eq!(
+            (wrong.status, wrong.code.as_str()),
+            (200, "unexpected_response")
+        );
+    }
+
+    #[test]
+    fn error_bodies_carry_the_server_code() {
+        let body = r#"{"error":{"code":"unauthenticated","message":"x"}}"#;
+        let error = decode::<Vec<u32>>(&raw(401, body)).unwrap_err();
+        assert!(error.is_unauthenticated());
+        // 오류 본문이 아닌 응답(프록시 HTML 등)은 상태만 남긴다.
+        let html = decode::<Vec<u32>>(&raw(502, "<html>bad gateway</html>")).unwrap_err();
+        assert_eq!(
+            (html.status, html.code.as_str()),
+            (502, "unexpected_response")
+        );
+        let empty = decode::<Vec<u32>>(&raw(204, "")).unwrap_err();
+        assert_eq!(empty.code, "unexpected_response");
+    }
 
     #[test]
     fn values_are_percent_encoded() {

@@ -5,6 +5,7 @@ use pango_api::auth::{ChangePasswordRequest, LoginRequest, LoginResponse};
 use pango_api::Empty;
 
 use crate::api;
+use crate::platform::{self, server_url};
 use crate::route::Route;
 use crate::session::{self, use_session, SessionState};
 use crate::ui::{Button, ButtonKind, ErrorState, FormError, Skeleton, TextField};
@@ -35,11 +36,15 @@ pub fn Login() -> Element {
         let request = LoginRequest {
             login_id: login_id(),
             password: password(),
-            token_in_body: false,
+            // 앱은 토큰을 본문으로 받아 키체인 등에 둔다. 웹은 HttpOnly 쿠키.
+            token_in_body: platform::BEARER,
         };
         match api::post::<_, LoginResponse>("/auth/login", &request).await {
             Ok(response) => {
                 password.set(String::new());
+                if let Some(token) = response.token {
+                    platform::set_token(Some(token));
+                }
                 session.set(Some(response.me));
             }
             Err(failure) => error.set(failure.message()),
@@ -86,6 +91,82 @@ pub fn Login() -> Element {
                 }
                 Button { submit: true, block: true, large: true, busy: busy(), "로그인" }
                 p { class: "auth-hint", "계정은 관리자가 발급해요. 비밀번호를 잊었다면 관리자에게 초기화를 요청해 주세요." }
+                if let Some(origin) = platform::server_origin() {
+                    p { class: "auth-server",
+                        span { class: "auth-server-origin", "{origin}" }
+                        button {
+                            r#type: "button",
+                            class: "link-btn",
+                            onclick: move |_| crate::use_server_config().clear(),
+                            "서버 바꾸기"
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 앱 첫 실행: 접속할 회사 서버 주소를 받는다. 주소가 맞는지는 서버에 한 번 물어 확인한다.
+#[component]
+pub fn ServerSetup(onsaved: EventHandler<String>) -> Element {
+    let mut input = use_signal(String::new);
+    let mut error = use_signal(String::new);
+    let mut busy = use_signal(|| false);
+
+    let submit = move |event: FormEvent| async move {
+        event.prevent_default();
+        if busy() {
+            return;
+        }
+        let origin = match server_url::normalize(&input()) {
+            Ok(origin) => origin,
+            Err(failure) => {
+                error.set(failure.message().into());
+                return;
+            }
+        };
+        busy.set(true);
+        error.set(String::new());
+        // 임시로 이 주소를 써서 공개 경로(`/health`)를 물어본다. 아니면 되돌린다.
+        let previous = platform::server_origin();
+        platform::set_server_origin(Some(&origin));
+        let health = api::get::<serde_json::Value>("/health").await;
+        match health {
+            Ok(body) if body.get("status").and_then(|s| s.as_str()) == Some("ok") => {
+                onsaved.call(origin);
+            }
+            failure => {
+                let failure = failure.err();
+                platform::set_server_origin(previous.as_deref());
+                error.set(if failure.is_some_and(|f| f.status == 0) {
+                    "서버에 연결하지 못했어요. 주소와 네트워크를 확인해 주세요.".into()
+                } else {
+                    "pango 서버가 아닌 것 같아요. 주소를 확인해 주세요.".into()
+                });
+            }
+        }
+        busy.set(false);
+    };
+
+    rsx! {
+        main { class: "auth",
+            form { class: "auth-card", onsubmit: submit,
+                p { class: "auth-brand", "pango" }
+                h1 { class: "auth-title", "서버 연결" }
+                p { class: "auth-lead", "회사에서 쓰는 그룹웨어 주소를 입력해 주세요." }
+                FormError { message: error() }
+                TextField {
+                    label: "서버 주소",
+                    value: input(),
+                    placeholder: "https://gw.example.com",
+                    autocomplete: "url",
+                    required: true,
+                    maxlength: server_url::MAX_LEN as i64,
+                    oninput: move |value| input.set(value),
+                }
+                Button { submit: true, block: true, large: true, busy: busy(), "연결" }
+                p { class: "auth-hint", "주소를 모르면 관리자에게 물어봐 주세요." }
             }
         }
     }

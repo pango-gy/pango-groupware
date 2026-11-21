@@ -99,12 +99,7 @@ fn next_id() -> String {
 
 /// 고르는 줄이 목록 밖으로 나가면 보이게 굴린다.
 fn reveal(id: &str) {
-    let element = web_sys::window()
-        .and_then(|w| w.document())
-        .and_then(|d| d.get_element_by_id(id));
-    if let Some(element) = element {
-        element.scroll_into_view_with_bool(false);
-    }
+    crate::platform::scroll_into_view(id, false);
 }
 
 /// 라벨이 붙은 선택 상자. `options`는 `(값, 표시 문구)`.

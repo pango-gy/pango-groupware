@@ -20,6 +20,7 @@ use dioxus::prelude::*;
 
 use crate::api::{ApiError, ApiResult};
 use crate::format;
+use crate::platform::dialog;
 use crate::route::Route;
 use crate::session::{use_toasts, Toast, ToastKind, Toasts};
 
@@ -334,6 +335,7 @@ pub fn TextField(
     #[props(default)] disabled: bool,
     #[props(default)] maxlength: Option<i64>,
 ) -> Element {
+    let verbatim = verbatim_input(&kind, &autocomplete);
     rsx! {
         label { class: "field",
             span { class: "field-label",
@@ -343,6 +345,9 @@ pub fn TextField(
                 }
             }
             input {
+                autocapitalize: verbatim.then_some("none"),
+                autocorrect: verbatim.then_some("off"),
+                spellcheck: verbatim.then_some("false"),
                 class: if error.is_empty() { "input" } else { "input input-error" },
                 r#type: "{kind}",
                 value: "{value}",
@@ -361,6 +366,16 @@ pub fn TextField(
             }
         }
     }
+}
+
+/// 아이디·비밀번호·주소·이메일처럼 글자 그대로 받아야 하는 칸인지. 그런 칸은 휴대폰 키보드의
+/// 자동 대문자·자동 수정을 끈다("admin"이 "Admin"이 되면 로그인이 안 된다).
+pub fn verbatim_input(kind: &str, autocomplete: &str) -> bool {
+    matches!(kind, "password" | "email" | "url")
+        || matches!(
+            autocomplete,
+            "username" | "current-password" | "new-password" | "email" | "url"
+        )
 }
 
 #[component]
@@ -407,14 +422,14 @@ pub fn Modal(
     class: String,
     children: Element,
 ) -> Element {
-    let id = use_hook(dialog::next_id);
+    let id = use_hook(next_dialog_id);
     // 첫 렌더는 대화 상자가 그려지기 전이라 아직 연 버튼에 초점이 있다.
-    let opener = use_hook(dialog::active_element);
+    let opener = use_hook(dialog::opener);
     {
         let id = id.clone();
         use_effect(move || dialog::focus(&id));
     }
-    use_drop(move || dialog::restore(opener.as_ref()));
+    use_drop(move || dialog::restore(&opener));
     let keydown = {
         let id = id.clone();
         move |event: KeyboardEvent| match event.key() {
@@ -460,6 +475,7 @@ pub fn Modal(
 
 /// Tab을 눌렀을 때 초점을 어디로 둘지.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))] // 앱은 Tab 가두기를 하지 않는다.
 pub enum TabMove {
     /// 브라우저 기본 이동에 맡긴다(대화 상자 안에서 다음·이전 칸으로 간다).
     Browser,
@@ -471,6 +487,7 @@ pub enum TabMove {
 
 /// 대화 상자 안의 초점 칸 `count`개 중 지금 `current`에 있을 때 Tab(`backward`면 Shift+Tab).
 /// 지금 초점이 칸이 아니면(대화 상자 자체 등) 앞으로는 첫 칸, 뒤로는 마지막 칸이다.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub fn tab_move(count: usize, current: Option<usize>, backward: bool) -> TabMove {
     let Some(last) = count.checked_sub(1) else {
         return TabMove::Stay;
@@ -485,85 +502,11 @@ pub fn tab_move(count: usize, current: Option<usize>, backward: bool) -> TabMove
     }
 }
 
-/// 대화 상자의 초점 처리(브라우저 DOM). 계산은 [`tab_move`]가 한다.
-mod dialog {
+/// 겹쳐 뜬 대화 상자도 서로 구분하는 요소 ID.
+fn next_dialog_id() -> String {
     use std::sync::atomic::{AtomicU32, Ordering};
-
-    use wasm_bindgen::JsCast;
-    use web_sys::HtmlElement;
-
-    use super::{tab_move, TabMove};
-
-    /// 초점을 받을 수 있는 칸.
-    const FOCUSABLE: &str =
-        "a[href], button:not([disabled]), input:not([disabled]):not([type=\"hidden\"]), \
-        select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex=\"-1\"])";
-
-    /// 겹쳐 뜬 대화 상자도 서로 구분하는 요소 ID.
-    pub fn next_id() -> String {
-        static NEXT: AtomicU32 = AtomicU32::new(0);
-        format!("dialog-{}", NEXT.fetch_add(1, Ordering::Relaxed))
-    }
-
-    fn document() -> Option<web_sys::Document> {
-        web_sys::window()?.document()
-    }
-
-    pub fn active_element() -> Option<HtmlElement> {
-        document()?.active_element()?.dyn_into::<HtmlElement>().ok()
-    }
-
-    fn element(id: &str) -> Option<HtmlElement> {
-        document()?
-            .get_element_by_id(id)?
-            .dyn_into::<HtmlElement>()
-            .ok()
-    }
-
-    /// 열릴 때: 대화 상자 자체에 초점(화면 낭독기가 제목을 읽고, Tab은 첫 칸부터).
-    /// 입력 칸에 바로 두지 않는 것은 모바일에서 키보드가 바로 올라오지 않게 하려는 것이다.
-    pub fn focus(id: &str) {
-        if let Some(dialog) = element(id) {
-            let _ = dialog.focus();
-        }
-    }
-
-    /// 닫힐 때: 연 버튼이 아직 화면에 있으면 그리로 돌려준다.
-    pub fn restore(opener: Option<&HtmlElement>) {
-        if let Some(opener) = opener.filter(|el| el.is_connected()) {
-            let _ = opener.focus();
-        }
-    }
-
-    /// Tab을 대화 상자 안에 가둔다. 초점을 직접 옮겼으면(기본 동작을 막아야 하면) `true`.
-    pub fn trap_tab(id: &str, backward: bool) -> bool {
-        let Some(dialog) = element(id) else {
-            return false;
-        };
-        let Ok(nodes) = dialog.query_selector_all(FOCUSABLE) else {
-            return false;
-        };
-        let items: Vec<HtmlElement> = (0..nodes.length())
-            .filter_map(|index| nodes.item(index))
-            .filter_map(|node| node.dyn_into::<HtmlElement>().ok())
-            // 숨겨진 칸(`display: none` 등)은 건너뛴다.
-            .filter(|el| el.get_client_rects().length() > 0)
-            .collect();
-        let active = active_element();
-        let current = active
-            .as_ref()
-            .and_then(|active| items.iter().position(|el| el == active));
-        match tab_move(items.len(), current, backward) {
-            TabMove::Browser => false,
-            TabMove::Focus(index) => {
-                if let Some(target) = items.get(index) {
-                    let _ = target.focus();
-                }
-                true
-            }
-            TabMove::Stay => true,
-        }
-    }
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    format!("dialog-{}", NEXT.fetch_add(1, Ordering::Relaxed))
 }
 
 /// 탭 목록. `tabs`는 `(키, 문구, 배지 숫자)`.
@@ -867,7 +810,7 @@ pub fn MonthCalendar(
 
 /// 지금 시각(브라우저 시계). 서버가 다시 판정하므로 표시·기본값 용도로만 쓴다.
 pub fn now() -> pango_core::time::Timestamp {
-    let millis = js_sys::Date::now() as i64;
+    let millis = crate::platform::now_millis();
     pango_core::time::Timestamp::from_millis(millis)
         .unwrap_or_else(|_| pango_core::time::Timestamp::from_utc(chrono::DateTime::UNIX_EPOCH))
 }
@@ -1224,6 +1167,18 @@ pub fn YearSwitcher(year: i32, min: i32, max: i32, onchange: EventHandler<i32>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identifiers_and_secrets_are_typed_verbatim() {
+        assert!(verbatim_input("text", "username"));
+        assert!(verbatim_input("password", ""));
+        assert!(verbatim_input("text", "url"));
+        assert!(verbatim_input("email", ""));
+        // 이름·사유 같은 문장 칸은 키보드 기본 동작을 그대로 둔다.
+        assert!(!verbatim_input("text", ""));
+        assert!(!verbatim_input("text", "name"));
+        assert!(!verbatim_input("date", "off"));
+    }
 
     #[test]
     fn tab_wraps_inside_the_dialog() {

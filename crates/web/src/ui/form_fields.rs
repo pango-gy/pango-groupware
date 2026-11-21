@@ -558,29 +558,7 @@ pub fn focus_field(key: &str) {
     focus_element(&logic::field_dom_id(key));
 }
 
-/// `id` 요소로 화면을 옮기고, 그 요소(또는 그 안의 첫 입력란)에 초점을 준다.
-pub fn focus_element(id: &str) {
-    use wasm_bindgen::JsCast;
-    let Some(element) = web_sys::window()
-        .and_then(|window| window.document())
-        .and_then(|document| document.get_element_by_id(id))
-    else {
-        return;
-    };
-    element.scroll_into_view();
-    let target = if matches!(element.tag_name().as_str(), "INPUT" | "TEXTAREA" | "SELECT") {
-        Some(element)
-    } else {
-        element
-            .query_selector("input, textarea, select, button")
-            .ok()
-            .flatten()
-    };
-    if let Some(target) = target.and_then(|found| found.dyn_into::<web_sys::HtmlElement>().ok()) {
-        // 초점을 줄 수 없는 요소면 화면만 옮겨진 채로 둔다.
-        let _ = target.focus();
-    }
-}
+pub use crate::platform::focus_element;
 
 /// 양식의 필드들.
 ///

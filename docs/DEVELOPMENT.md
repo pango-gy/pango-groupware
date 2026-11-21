@@ -115,3 +115,34 @@ cargo clippy -p pango-web --target wasm32-unknown-unknown -- -D warnings
 - 세로로 스크롤되는 영역을 만들면 `style.css` 상단의 "스크롤 영역 공통 처리" 선택자 목록에 추가한다(`scrollbar-gutter: stable` — 스크롤바가 생겨도 내용이 밀리지 않게).
 - 모바일(폭 959px 이하)에서 가로 스크롤이 생기지 않아야 한다. 표는 `.table-wrap`으로 감싸거나 목록(`.list`)으로 바꾼다.
 - 훅(`use_*`)은 컴포넌트 본문 최상단에서만 부른다. 이벤트 핸들러 안에서는 `report_error` 같은 비-훅 함수를 쓴다.
+- DOM·시계·타이머·로컬 저장·HTTP는 직접 부르지 않고 `platform`만 쓴다(`web_sys`·`gloo`·`js_sys`는 `platform/web.rs` 밖에서 쓰지 않는다). 그래야 같은 화면이 iOS·Android 앱에서도 돈다.
+
+## iOS·Android 앱
+
+앱은 웹과 **같은 `pango-web` 코드**를 Dioxus mobile로 빌드한 것이다. Rust는 네이티브로 돌고 화면은 시스템 WebView(iOS WKWebView, Android WebView)에 그려진다.
+
+| | 웹 (`web` 기능, 기본값) | 앱 (`mobile` 기능) |
+|---|---|---|
+| 실행 | 브라우저 WASM | 네이티브 Rust + 시스템 WebView |
+| DOM | `web_sys` | `dioxus::document::eval` (값은 `platform::js_string`으로만 넣는다) |
+| HTTP | 같은 출처 `fetch` + HttpOnly 쿠키 | reqwest(rustls) → 설정한 서버 + `Authorization: Bearer`, 리다이렉트는 따라가지 않음 |
+| 로그인 토큰 | 브라우저 쿠키(스크립트 접근 불가) | iOS 키체인 / Android 앱 전용 폴더 |
+| 글꼴·스타일 | `index.html` (xtask가 복사) | `AppStyles`가 `asset!()`으로 싣는다 |
+
+- 첫 실행에 **서버 주소** 화면이 뜬다. `https`만 받고, 개발용 `localhost`·`127.0.0.1`·`[::1]`·`10.0.2.2`(안드로이드 에뮬레이터에서 본 이 컴퓨터)만 `http`를 허용한다(`platform/server_url.rs`). 주소를 바꾸면 저장된 토큰을 지운다.
+- 로그아웃하거나 서버가 401을 주면 토큰을 지운다.
+- iOS 시뮬레이터 빌드는 `crates/web/build.rs`가 `ios/simulator.entitlements`(키체인 접근 권한)를 실행 파일에 넣는다(dx는 시뮬레이터 빌드에 서명하지 않는다). 실제 기기는 `--codesign`으로 개발자 인증서·프로비저닝 프로파일 서명을 받는다.
+- 알려진 한계: Android 토큰은 Keystore가 아니라 앱 전용 폴더(다른 앱은 읽을 수 없지만 루팅된 기기에서는 읽힌다)에 둔다. 푸시 알림·생체 인증은 아직 없다.
+
+```bash
+rustup target add aarch64-apple-ios aarch64-apple-ios-sim            # iOS (Xcode 필요)
+rustup target add aarch64-linux-android x86_64-linux-android         # Android (SDK·NDK 필요)
+cargo run -p pango-server -- --data-dir ./data serve --bind 127.0.0.1:8080 --insecure-cookies  # 개발 서버
+
+# 워크스페이스 루트에서 실행한다(-p로 크레이트를 고른다).
+dx serve -p pango-web --platform ios --no-default-features --features mobile      # 시뮬레이터에서 실행
+dx build -p pango-web --platform ios --device --codesign --no-default-features --features mobile  # 실제 기기(Apple 개발자 계정 필요)
+dx build -p pango-web --platform android --no-default-features --features mobile  # ANDROID_HOME·ANDROID_NDK_HOME 필요
+```
+
+시뮬레이터에서는 서버 주소에 `http://127.0.0.1:8080`, 안드로이드 에뮬레이터에서는 `http://10.0.2.2:8080`을 넣는다.

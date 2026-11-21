@@ -1,0 +1,7 @@
+# `dx`(Dioxus CLI) 설정. 웹 번들은 `cargo xtask web`이 만들고, 이 파일은 iOS·Android 앱 빌드에 쓴다.
+[application]
+name = "pango"
+
+[bundle]
+identifier = "dev.pango.groupware"
+publisher = "pango-groupware"

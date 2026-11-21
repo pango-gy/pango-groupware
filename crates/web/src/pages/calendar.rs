@@ -60,43 +60,16 @@ fn use_compact() -> Signal<bool> {
     compact
 }
 
-/// 브라우저 창(DOM). 계산은 [`logic`]이 한다.
+/// 창 크기·스크롤. 계산은 [`logic`]이 한다.
 mod viewport {
     /// 모바일 배치로 바뀌는 폭(style.css의 `max-width: 959px`와 같다).
     const COMPACT_MAX: f64 = 959.0;
 
     pub fn is_compact() -> bool {
-        web_sys::window()
-            .and_then(|window| window.inner_width().ok())
-            .and_then(|width| width.as_f64())
-            .is_some_and(|width| width <= COMPACT_MAX)
+        crate::platform::inner_width().is_some_and(|width| width <= COMPACT_MAX)
     }
 
-    /// 창 크기가 한 번 바뀔 때까지 기다린다. 창이 없는 환경(네이티브)에서는 끝나지 않는다.
-    pub async fn resized() {
-        let Some(window) = web_sys::window() else {
-            return std::future::pending().await;
-        };
-        let promise = js_sys::Promise::new(&mut |resolve, _reject| {
-            let options = web_sys::AddEventListenerOptions::new();
-            options.set_once(true);
-            // 등록에 실패하면 이 기다림은 끝나지 않는다(폭 전환만 빠진다).
-            let _ = window.add_event_listener_with_callback_and_add_event_listener_options(
-                "resize", &resolve, &options,
-            );
-        });
-        let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
-    }
-
-    /// 세로로 스크롤되는 영역을 `top`(px)으로 옮긴다(주 보기의 첫 화면을 업무 시간 근처로).
-    pub fn scroll_to(id: &str, top: f64) {
-        if let Some(element) = web_sys::window()
-            .and_then(|window| window.document())
-            .and_then(|document| document.get_element_by_id(id))
-        {
-            element.set_scroll_top(top as i32);
-        }
-    }
+    pub use crate::platform::{resized, set_scroll_top as scroll_to};
 }
 
 #[component]
@@ -654,7 +627,7 @@ fn WeekView(
     let mut clock = use_signal(now);
     use_future(move || async move {
         loop {
-            gloo_timers::future::TimeoutFuture::new(60_000).await;
+            crate::platform::sleep_ms(60_000).await;
             clock.set(now());
         }
     });

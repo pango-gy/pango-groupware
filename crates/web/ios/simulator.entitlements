@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- iOS 시뮬레이터 전용. 키체인을 쓰려면 앱 식별자가 필요하다(build.rs가 실행 파일에 넣는다).
+     실제 기기 빌드는 `dx ... --codesign`이 개발자 인증서·프로비저닝 프로파일로 서명한다. -->
+<plist version="1.0">
+<dict>
+    <key>application-identifier</key>
+    <string>SIMULATOR.dev.pango.groupware</string>
+    <key>keychain-access-groups</key>
+    <array>
+        <string>SIMULATOR.dev.pango.groupware</string>
+    </array>
+</dict>
+</plist>

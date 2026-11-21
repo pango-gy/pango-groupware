@@ -122,6 +122,8 @@ impl Session {
     pub fn observe(mut self, error: &ApiError) {
         match error_effect(error) {
             ErrorEffect::SignOut => {
+                // 앱: 끝난 세션의 토큰을 지운다(다시 보내지 않는다).
+                crate::platform::set_token(None);
                 if !matches!(*self.state.peek(), SessionState::SignedOut) {
                     self.state.set(SessionState::SignedOut);
                 }
@@ -144,29 +146,8 @@ impl Session {
     }
 }
 
-/// 브라우저 시계(ms).
 fn now_ms() -> i64 {
-    js_sys::Date::now() as i64
-}
-
-/// 문서의 보임 상태가 바뀔 때까지 기다린다. 바뀐 뒤 보이는 상태면 `true`.
-/// 문서가 없는 환경(네이티브)에서는 끝나지 않는다.
-async fn visibility_change() -> bool {
-    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
-        return std::future::pending().await;
-    };
-    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
-        let options = web_sys::AddEventListenerOptions::new();
-        options.set_once(true);
-        // 등록에 실패하면 이 기다림은 끝나지 않는다(다시 읽기만 빠진다).
-        let _ = document.add_event_listener_with_callback_and_add_event_listener_options(
-            "visibilitychange",
-            &resolve,
-            &options,
-        );
-    });
-    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
-    document.visibility_state() == web_sys::VisibilityState::Visible
+    crate::platform::now_millis()
 }
 
 /// 로그아웃 요청 결과를 화면에 어떻게 반영할지.
@@ -196,6 +177,7 @@ pub async fn logout(mut session: Session, nav: dioxus::router::Navigator) {
     let result = api::post::<_, Empty>("/auth/logout", &Empty {}).await;
     match logout_outcome(&result) {
         LogoutOutcome::SignedOut => {
+            crate::platform::set_token(None);
             session.set(None);
             nav.replace(Route::Login {});
         }
@@ -212,7 +194,7 @@ pub fn provide_session() -> Session {
         session.refresh().await;
         // 권한(조직장·관리자)은 다른 사람이 바꾼다. 앱으로 돌아올 때 오래됐으면 다시 읽는다.
         loop {
-            if visibility_change().await {
+            if crate::platform::visibility_change().await {
                 session.refresh_if_stale().await;
             }
         }
@@ -257,7 +239,7 @@ impl Toasts {
         self.items.write().push(Toast { id, kind, message });
         let mut items = self.items;
         spawn(async move {
-            gloo_timers::future::TimeoutFuture::new(Self::VISIBLE_MS).await;
+            crate::platform::sleep_ms(Self::VISIBLE_MS).await;
             items.write().retain(|toast| toast.id != id);
         });
     }
