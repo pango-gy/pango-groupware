@@ -15,6 +15,7 @@ pub mod leave;
 pub mod macros;
 pub mod member;
 pub mod org;
+pub mod outbound;
 pub mod password;
 pub mod text;
 pub mod time;

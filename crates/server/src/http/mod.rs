@@ -7,6 +7,7 @@ pub mod auth;
 pub mod calendar;
 pub mod extract;
 pub mod home;
+pub mod integrations;
 pub mod leave;
 pub mod members;
 pub mod notices;
@@ -43,6 +44,7 @@ fn api_routes() -> Router<AppState> {
         .merge(leave::routes())
         .merge(home::routes())
         .merge(calendar::routes())
+        .merge(integrations::routes())
         .fallback(not_found)
 }
 

@@ -9,6 +9,7 @@ pub mod auth;
 pub mod calendar;
 pub mod common;
 pub mod home;
+pub mod integration;
 pub mod leave;
 pub mod notice;
 pub mod notification;

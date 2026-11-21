@@ -1,9 +1,9 @@
-//! 주기적 작업: 정리(만료된 세션, 지난 시도 제한 기록, 오래된 멱등성 키)와 하루 한 번의
-//! 연차 자동 부여.
+//! 주기적 작업: 정리(만료된 세션, 지난 시도 제한 기록, 오래된 멱등성 키, 끝난 외부 알림 발송
+//! 기록)와 하루 한 번의 연차 자동 부여.
 
 use chrono::{Duration, NaiveDate};
 use pango_api::leave::AccrualRunResult;
-use pango_db::{idempotency, sessions, settings, Conn};
+use pango_db::{idempotency, outbound, sessions, settings, Conn};
 
 use super::leave;
 use super::support::Company;
@@ -14,12 +14,15 @@ use crate::state::AppState;
 const IDEMPOTENCY_RETENTION: Duration = Duration::hours(24);
 /// 폐기·만료된 세션을 지우기 전 보관 기간(사고 조사용).
 const SESSION_RETENTION: Duration = Duration::days(30);
+/// 끝난(보냄·실패) 외부 알림 발송 기록의 보관 기간.
+const OUTBOUND_RETENTION: Duration = Duration::days(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Cleanup {
     pub sessions: u64,
     pub throttle_buckets: u64,
     pub idempotency_keys: u64,
+    pub outbound_messages: u64,
 }
 
 /// 한 번 정리한다. 여러 번 실행해도 안전하다.
@@ -38,12 +41,14 @@ pub async fn run_once(state: &AppState) -> ServiceResult<Cleanup> {
             .max(state.config.login_ip_window),
     )?;
     let idempotency_cutoff = before(IDEMPOTENCY_RETENTION)?;
+    let outbound_cutoff = before(OUTBOUND_RETENTION)?;
     state
         .write(async |conn: &mut Conn| {
             Ok(Cleanup {
                 sessions: sessions::purge(conn, session_cutoff).await?,
                 throttle_buckets: sessions::throttle_purge(conn, throttle_cutoff).await?,
                 idempotency_keys: idempotency::purge(conn, idempotency_cutoff).await?,
+                outbound_messages: outbound::purge(conn, outbound_cutoff).await?,
             })
         })
         .await

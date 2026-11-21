@@ -246,7 +246,8 @@ async fn insert_audit(
     Ok(audit::insert(conn, &entry).await?)
 }
 
-/// 앱 내 알림을 만든다. `dedupe_key`가 같으면 한 번만 만들어진다.
+/// 앱 내 알림을 만든다. `dedupe_key`가 같으면 한 번만 만들어진다. 외부 알림 연동이 켜져 있으면
+/// 같은 트랜잭션에서 외부로 보낼 일도 남긴다([`super::outbound::enqueue_tx`]).
 pub struct Notify<'a> {
     pub to: MemberId,
     pub kind: &'static str,
@@ -268,7 +269,9 @@ pub async fn notify(conn: &mut Conn, now: Timestamp, message: Notify<'_>) -> Ser
         read_at: None,
         created_at: now,
     };
-    notifications::insert(conn, &notification).await?;
+    if notifications::insert(conn, &notification).await? {
+        super::outbound::enqueue_tx(conn, now, notification.id, notification.member_id).await?;
+    }
     Ok(())
 }
 

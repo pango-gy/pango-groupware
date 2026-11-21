@@ -1,6 +1,7 @@
 //! 통합 테스트 도우미.
 
-use std::sync::Arc;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 
 use axum::body::Body;
 use axum::Router;
@@ -23,6 +24,7 @@ use tower::ServiceExt;
 use crate::config::Config;
 use crate::error::{ServiceError, ServiceResult};
 use crate::security::SessionToken;
+use crate::service::outbound::{Delivery, OutboundSender, SendError, SendFuture};
 use crate::service::setup::{self, InitInput};
 use crate::service::{auth, AuthContext, RequestMeta};
 use crate::state::AppState;
@@ -181,7 +183,16 @@ impl TestApp {
     }
 
     pub async fn with_config(config: Config) -> Self {
-        let app = Self::uninitialized(config).await;
+        Self::initialized(config, None).await
+    }
+
+    /// 외부 알림 발송기를 `sender`(보통 [`FakeSender`])로 바꾼 서버.
+    pub async fn with_outbound_sender(sender: Arc<dyn OutboundSender>) -> Self {
+        Self::initialized(Config::for_tests(), Some(sender)).await
+    }
+
+    async fn initialized(config: Config, sender: Option<Arc<dyn OutboundSender>>) -> Self {
+        let app = Self::build(config, sender).await;
         let output = setup::initialize(
             &app.state,
             InitInput {
@@ -202,9 +213,16 @@ impl TestApp {
 
     /// 초기화 전 상태의 서버.
     pub async fn uninitialized(config: Config) -> Self {
+        Self::build(config, None).await
+    }
+
+    async fn build(config: Config, sender: Option<Arc<dyn OutboundSender>>) -> Self {
         let db = TestDb::new().await;
         let clock = Arc::new(ManualClock::new(ts(START)));
-        let state = AppState::new(db.db.clone(), clock.clone(), config).expect("state");
+        let mut state = AppState::new(db.db.clone(), clock.clone(), config).expect("state");
+        if let Some(sender) = sender {
+            state = state.with_outbound_sender(sender);
+        }
         let router = crate::http::router(state.clone());
         Self {
             state,
@@ -534,6 +552,75 @@ impl TestApp {
         let mut tx = self.state.db.begin_write().await.expect("begin");
         sqlx::query(sql).execute(&mut *tx).await.expect("execute");
         tx.commit().await.expect("commit");
+    }
+}
+
+/// 외부 알림 발송을 기록하는 가짜 발송기. 정해 둔 응답을 차례로 돌려주고, 다 쓰면 200으로 답한다.
+#[derive(Default)]
+pub struct FakeSender {
+    calls: Mutex<Vec<Delivery>>,
+    responses: Mutex<VecDeque<Result<u16, SendError>>>,
+    /// 응답 전에 기다릴 시간(동시 발송 테스트용).
+    delay: Option<std::time::Duration>,
+}
+
+impl FakeSender {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    pub fn with_delay(delay: std::time::Duration) -> Arc<Self> {
+        Arc::new(Self {
+            delay: Some(delay),
+            ..Self::default()
+        })
+    }
+
+    /// 다음 발송의 응답을 정해 둔다.
+    pub fn respond(&self, response: Result<u16, SendError>) {
+        self.responses.lock().expect("lock").push_back(response);
+    }
+
+    pub fn calls(&self) -> Vec<Delivery> {
+        self.calls.lock().expect("lock").clone()
+    }
+}
+
+impl OutboundSender for FakeSender {
+    fn send<'a>(&'a self, delivery: &'a Delivery) -> SendFuture<'a> {
+        Box::pin(async move {
+            self.calls.lock().expect("lock").push(delivery.clone());
+            if let Some(delay) = self.delay {
+                tokio::time::sleep(delay).await;
+            }
+            self.responses
+                .lock()
+                .expect("lock")
+                .pop_front()
+                .unwrap_or(Ok(200))
+        })
+    }
+}
+
+impl TestApp {
+    /// 웹훅 연동을 DB에서 바로 켠다(주소와 서명 키 `test-secret`).
+    pub async fn enable_webhook(&self, url: &str) {
+        self.execute(&format!(
+            "UPDATE outbound_settings SET webhook_enabled = 1, webhook_url = '{url}',
+                 webhook_secret = 'test-secret', version = version + 1 WHERE id = 1"
+        ))
+        .await;
+    }
+
+    /// 아웃박스의 `(상태, 시도 수, 마지막 사유)`를 만든 순서대로.
+    pub async fn outbox(&self) -> Vec<(String, i64, Option<String>)> {
+        let mut conn = self.state.read().await.expect("read");
+        sqlx::query_as(
+            "SELECT status, attempts, last_error FROM outbound_messages ORDER BY created_at, id",
+        )
+        .fetch_all(&mut *conn)
+        .await
+        .expect("outbox")
     }
 }
 

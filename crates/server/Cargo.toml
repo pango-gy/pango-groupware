@@ -28,9 +28,12 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 argon2 = { workspace = true, features = ["std"] }
 sha2.workspace = true
+hmac.workspace = true
 subtle.workspace = true
 getrandom.workspace = true
 clap.workspace = true
+# 외부 알림 웹훅 발송. 리다이렉트는 따라가지 않는다(코드에서 끈다).
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 rust-embed = { version = "8", features = ["interpolate-folder-path"] }
 tempfile = { workspace = true, optional = true }
 sqlx = { workspace = true, optional = true }

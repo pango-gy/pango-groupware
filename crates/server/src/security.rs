@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use argon2::password_hash::{PasswordHash, PasswordHasher as _, PasswordVerifier as _, SaltString};
 use argon2::{Algorithm, Argon2, Params, Version};
+use hmac::{Hmac, Mac};
 use pango_core::password::PlainPassword;
 use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
@@ -135,13 +136,31 @@ impl std::fmt::Debug for SessionToken {
     }
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     bytes
         .iter()
         .flat_map(|b| [DIGITS[usize::from(b >> 4)], DIGITS[usize::from(b & 0x0f)]])
         .map(char::from)
         .collect()
+}
+
+/// 외부 알림 웹훅의 서명 키: 256비트 난수의 16진수(64자). 받는 쪽은 이 문자열의 바이트를
+/// 그대로 HMAC 키로 쓴다.
+pub fn new_webhook_secret() -> ServiceResult<String> {
+    Ok(hex(&random_bytes::<32>()?))
+}
+
+/// 웹훅 서명 `sha256=<hex>`: `"{timestamp}.{body}"`의 HMAC-SHA256(키 = 서명 키 문자열).
+/// 시각을 함께 서명하므로 받는 쪽은 오래된 요청의 재전송을 거를 수 있다.
+pub fn webhook_signature(secret: &str, timestamp: i64, body: &[u8]) -> String {
+    // HMAC은 어떤 길이의 키든 받는다(`new_from_slice`는 실패하지 않는다).
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(secret.as_bytes())
+        .unwrap_or_else(|_| unreachable!("HMAC accepts keys of any length"));
+    mac.update(timestamp.to_string().as_bytes());
+    mac.update(b".");
+    mac.update(body);
+    format!("sha256={}", hex(&mac.finalize().into_bytes()))
 }
 
 /// 요청 지문: 같은 멱등성 키로 다른 요청이 왔는지 구분하는 데 쓴다.
@@ -178,6 +197,36 @@ mod tests {
     use crate::config::Config;
     use pango_core::text::LoginId;
     use std::collections::HashSet;
+
+    /// 받는 쪽 구현이 맞춰 볼 수 있는 기준값(파이썬 `hmac.new(key, msg, sha256)`으로 계산).
+    #[test]
+    fn webhook_signature_matches_a_known_answer() {
+        let secret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        assert_eq!(
+            webhook_signature(secret, 1_767_225_600, br#"{"event":"test"}"#),
+            "sha256=10413878eae66899e60a011545cd94274b162b2d328404748184e6d77858de0d"
+        );
+        assert_eq!(
+            webhook_signature("key", 0, b""),
+            "sha256=85841b4efc3cd7776c3c8f9b7cca9e281c550e5d19889d78e9e669c6337f000d"
+        );
+        // 본문·시각·키 중 하나만 달라도 서명이 바뀐다.
+        let base = webhook_signature("key", 1, b"a");
+        assert_ne!(base, webhook_signature("key", 2, b"a"));
+        assert_ne!(base, webhook_signature("key", 1, b"b"));
+        assert_ne!(base, webhook_signature("kez", 1, b"a"));
+    }
+
+    #[test]
+    fn webhook_secrets_are_random_256_bit_hex() {
+        let first = new_webhook_secret().expect("secret");
+        let second = new_webhook_secret().expect("secret");
+        assert_eq!(first.len(), 64);
+        assert!(first
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
+        assert_ne!(first, second);
+    }
 
     fn hasher() -> PasswordHasher {
         PasswordHasher::new(&Config::for_tests().password).expect("hasher")

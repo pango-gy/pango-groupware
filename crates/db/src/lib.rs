@@ -17,6 +17,7 @@ pub mod members;
 pub mod notices;
 pub mod notifications;
 pub mod org;
+pub mod outbound;
 pub mod pool;
 pub mod sessions;
 pub mod settings;

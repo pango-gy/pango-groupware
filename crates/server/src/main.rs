@@ -122,6 +122,11 @@ async fn run(cli: Cli) -> Result<(), AnyError> {
                 state.clone(),
                 std::time::Duration::from_secs(3600),
             ));
+            // 외부 알림(웹훅) 발송. 연동이 꺼져 있으면 보낼 일이 생기지 않는다.
+            tokio::spawn(pango_server::service::outbound::run_forever(
+                state.clone(),
+                std::time::Duration::from_secs(5),
+            ));
             let app = pango_server::http::router(state)
                 .into_make_service_with_connect_info::<SocketAddr>();
             let listener = tokio::net::TcpListener::bind(bind).await?;

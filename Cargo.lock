@@ -4108,6 +4108,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "unicode-normalization",
+ "url",
  "uuid",
 ]
 
@@ -4136,11 +4137,13 @@ dependencies = [
  "chrono-tz",
  "clap",
  "getrandom 0.3.4",
+ "hmac",
  "http",
  "pango-api",
  "pango-core",
  "pango-db",
  "pango-server",
+ "reqwest",
  "rust-embed",
  "serde",
  "serde_json",
