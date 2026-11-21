@@ -80,7 +80,7 @@ pango-groupware는 다음을 목표로 합니다.
 | 서버 | [axum](https://github.com/tokio-rs/axum) + [tokio](https://tokio.rs) | REST/JSON API |
 | DB | SQLite + [sqlx](https://github.com/launchbadge/sqlx) | WAL 모드, 쓰기 연결 1개 + 읽기 풀, 내장 마이그레이션 |
 | 웹 UI | [Dioxus](https://dioxuslabs.com) | Rust → WASM. 서버 실행 파일에 포함 |
-| 모바일 | Dioxus (iOS/Android) | 웹과 같은 UI 코드를 사용 (예정) |
+| 모바일 | Dioxus mobile (iOS/Android) | 웹과 같은 UI 코드를 네이티브 Rust + 시스템 WebView로 실행. 빌드 방법은 [개발 문서](docs/DEVELOPMENT.md#iosandroid-앱) |
 | 비밀번호 | Argon2id | |
 | 푸시 | APNs / FCM | [모바일 앱 배포](#모바일-앱-배포) 참고 (예정) |
 
