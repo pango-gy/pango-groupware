@@ -34,6 +34,9 @@ pub enum ServiceError {
     PayloadTooLarge,
     #[error("unsupported media type")]
     UnsupportedMediaType,
+    /// 바깥 서비스(사내 메신저 릴레이)가 요청을 처리하지 못했다. 코드는 짧은 고정값이다.
+    #[error("upstream failed: {0}")]
+    Upstream(&'static str),
     #[error("internal error: {0}")]
     Internal(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
@@ -60,6 +63,7 @@ impl ServiceError {
             Self::TooManyAttempts { .. } => StatusCode::TOO_MANY_REQUESTS,
             Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Self::UnsupportedMediaType => StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            Self::Upstream(_) => StatusCode::BAD_GATEWAY,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -76,6 +80,7 @@ impl ServiceError {
             Self::Malformed(_) => "malformed_request",
             Self::PayloadTooLarge => "payload_too_large",
             Self::UnsupportedMediaType => "unsupported_media_type",
+            Self::Upstream(code) => code,
             Self::Internal(_) => "internal_error",
         }
     }

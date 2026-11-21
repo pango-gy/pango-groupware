@@ -5,8 +5,9 @@ use pango_db::Db;
 
 use crate::config::Config;
 use crate::security::PasswordHasher;
+use crate::service::outbound::buzz::BuzzSender;
 use crate::service::outbound::webhook::WebhookSender;
-use crate::service::outbound::OutboundSender;
+use crate::service::outbound::{ChannelSender, OutboundSender};
 
 /// 요청 처리에 필요한 공유 자원. 복제 비용이 작다.
 #[derive(Clone)]
@@ -24,7 +25,15 @@ pub struct AppState {
 impl AppState {
     pub fn new(db: Db, clock: Arc<dyn Clock>, config: Config) -> crate::ServiceResult<Self> {
         let passwords = PasswordHasher::new(&config.password)?;
-        let outbound = Arc::new(WebhookSender::new(config.outbound_allow_private)?);
+        let allow_private = config.outbound_allow_private;
+        let buzz = match &config.buzz {
+            Some(buzz) => Some(BuzzSender::new(buzz, allow_private)?),
+            None => None,
+        };
+        let outbound = Arc::new(ChannelSender {
+            webhook: WebhookSender::new(allow_private)?,
+            buzz,
+        });
         Ok(Self {
             db,
             clock,

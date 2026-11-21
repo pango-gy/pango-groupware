@@ -4,9 +4,12 @@
 //! 2. [`dispatch_once`]: 차례가 된 줄을 집어(시도 수를 올리고 다음 재시도 시각으로 미룬 뒤)
 //!    트랜잭션 **밖에서** 보내고, 결과를 짧은 트랜잭션으로 남긴다.
 //!
-//! 보내는 방법은 [`OutboundSender`]로 갈아 끼운다. 지금은 서명한 JSON을 POST하는 범용 웹훅
-//! ([`webhook::WebhookSender`])뿐이고, 사내 메신저 전용 발송기도 같은 트레이트로 붙인다.
+//! 채널은 둘이다: 서명한 JSON을 POST하는 범용 웹훅([`webhook::WebhookSender`])과 사내 메신저
+//! Buzz의 DM([`buzz::BuzzSender`]). 보내는 방법은 [`OutboundSender`] 하나로 갈아 끼우고,
+//! 운영에서는 [`ChannelSender`]가 보낼 곳([`Target`])에 따라 채널별 발송기로 나눈다.
 
+pub mod buzz;
+pub(crate) mod guard;
 pub mod webhook;
 
 use std::future::Future;
@@ -62,10 +65,33 @@ impl std::fmt::Debug for WebhookTarget {
     }
 }
 
+/// Buzz DM으로 보낼 곳: 받는 사람의 공개키(16진수)와, 이미 열어 둔 DM이면 그 채널 ID.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuzzTarget {
+    pub pubkey: String,
+    pub dm_channel: Option<String>,
+}
+
+/// 보낼 곳(채널).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    Webhook(WebhookTarget),
+    Buzz(BuzzTarget),
+}
+
+impl Target {
+    pub fn channel(&self) -> &'static str {
+        match self {
+            Self::Webhook(_) => outbound::CHANNEL_WEBHOOK,
+            Self::Buzz(_) => outbound::CHANNEL_BUZZ,
+        }
+    }
+}
+
 /// 한 번의 발송.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Delivery {
-    pub target: WebhookTarget,
+    pub target: Target,
     /// 서명에 넣는 시각.
     pub timestamp: Timestamp,
     pub payload: OutboundPayload,
@@ -109,13 +135,51 @@ impl SendError {
     }
 }
 
-/// 성공하면 받는 쪽의 응답 상태.
-pub type SendFuture<'a> = Pin<Box<dyn Future<Output = Result<u16, SendError>> + Send + 'a>>;
+/// 보냈다.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sent {
+    /// 받는 쪽의 (마지막) 응답 상태.
+    pub status: u16,
+    /// Buzz: 이번에 쓴 DM 채널 ID. 새로 열었으면 저장해 다음부터 다시 쓴다.
+    pub dm_channel: Option<String>,
+}
+
+impl Sent {
+    pub fn status(status: u16) -> Self {
+        Self {
+            status,
+            dm_channel: None,
+        }
+    }
+}
+
+pub type SendFuture<'a> = Pin<Box<dyn Future<Output = Result<Sent, SendError>> + Send + 'a>>;
 
 /// 외부로 보내는 방법. 테스트는 가짜를 넣는다([`AppState::with_outbound_sender`]).
 pub trait OutboundSender: Send + Sync {
     fn send<'a>(&'a self, delivery: &'a Delivery) -> SendFuture<'a>;
 }
+
+/// 운영용 발송기: 보낼 곳의 채널에 따라 웹훅·Buzz 발송기로 나눈다. Buzz 설정이 없으면 Buzz
+/// 메시지는 보내지 않고 실패(`integration_disabled`)로 끝난다.
+pub struct ChannelSender {
+    pub webhook: webhook::WebhookSender,
+    pub buzz: Option<buzz::BuzzSender>,
+}
+
+impl OutboundSender for ChannelSender {
+    fn send<'a>(&'a self, delivery: &'a Delivery) -> SendFuture<'a> {
+        match (&delivery.target, &self.buzz) {
+            (Target::Webhook(_), _) => self.webhook.send(delivery),
+            (Target::Buzz(_), Some(buzz)) => buzz.send(delivery),
+            (Target::Buzz(_), None) => {
+                Box::pin(async { Err(SendError::reject(INTEGRATION_DISABLED)) })
+            }
+        }
+    }
+}
+
+const INTEGRATION_DISABLED: &str = "integration_disabled";
 
 /// 한 번에 집어 보내는 최대 수. 동시에 보내므로, 한 번의 시도가 끝나는 데 걸리는 시간은
 /// 발송기의 제한 시간(10초)을 넘지 않는다. 그래서 집을 때 미뤄 둔 첫 재시도 간격(30초) 안에
@@ -147,15 +211,19 @@ pub fn absolute_link(public_origin: Option<&str>, link: Option<&str>) -> Option<
     }
 }
 
-/// 새로 만든 알림을 외부로도 보낼 일로 남긴다(같은 트랜잭션). 연동이 꺼져 있거나, 받는 사람이
-/// 재직 중이 아니거나 외부 알림을 끄면 아무것도 하지 않는다. 같은 알림은 한 번만 남는다.
+/// 새로 만든 알림을 외부로도 보낼 일로 남긴다(같은 트랜잭션). 채널마다 따로 판단한다:
+/// 웹훅은 연동이 켜져 있을 때, Buzz는 Buzz 채널이 켜져 있고 받는 사람이 Buzz 계정 확인을 마쳤을
+/// 때. 둘 다 받는 사람이 재직 중이고 외부 알림을 끄지 않았어야 한다. 같은 알림은 채널마다 한 번만
+/// 남는다.
 pub async fn enqueue_tx(
     conn: &mut Conn,
     now: Timestamp,
     notification_id: NotificationId,
     member_id: MemberId,
 ) -> ServiceResult<()> {
-    if !outbound::settings(conn).await?.webhook_enabled {
+    let webhook = outbound::settings(conn).await?.webhook_enabled;
+    let buzz_on = pango_db::buzz::settings(conn).await?.enabled;
+    if !webhook && !buzz_on {
         return Ok(());
     }
     let Some(member) = members::find(conn, member_id).await? else {
@@ -165,14 +233,26 @@ pub async fn enqueue_tx(
     {
         return Ok(());
     }
-    outbound::enqueue(
-        conn,
-        OutboundMessageId::new(),
-        notification_id,
-        member_id,
-        now,
-    )
-    .await?;
+    let buzz_linked = buzz_on
+        && pango_db::buzz::find(conn, member_id)
+            .await?
+            .is_some_and(|account| account.status == pango_db::buzz::AccountStatus::Verified);
+    for (wanted, channel) in [
+        (webhook, outbound::CHANNEL_WEBHOOK),
+        (buzz_linked, outbound::CHANNEL_BUZZ),
+    ] {
+        if wanted {
+            outbound::enqueue(
+                conn,
+                OutboundMessageId::new(),
+                notification_id,
+                member_id,
+                channel,
+                now,
+            )
+            .await?;
+        }
+    }
     Ok(())
 }
 
@@ -186,11 +266,35 @@ pub struct DispatchReport {
     pub failed: u32,
 }
 
-/// 보내지 않고 끝낼 사유. 집은 뒤에 연동이 꺼졌거나 받는 사람의 상태가 바뀐 경우다.
-fn skip_reason(message: &DueMessage, target: Option<&WebhookTarget>) -> Option<&'static str> {
-    if target.is_none() {
-        Some("integration_disabled")
-    } else if message.member_status != MemberStatus::Active {
+/// 채널별로 지금 보낼 곳. 집은 뒤에 연동이 꺼졌으면 `None`.
+struct Targets {
+    webhook: Option<WebhookTarget>,
+    buzz: bool,
+}
+
+impl Targets {
+    fn for_message(&self, message: &DueMessage) -> Result<Target, &'static str> {
+        match message.channel.as_str() {
+            outbound::CHANNEL_WEBHOOK => self
+                .webhook
+                .clone()
+                .map(Target::Webhook)
+                .ok_or(INTEGRATION_DISABLED),
+            outbound::CHANNEL_BUZZ if self.buzz => match &message.buzz_pubkey {
+                Some(pubkey) => Ok(Target::Buzz(BuzzTarget {
+                    pubkey: pubkey.clone(),
+                    dm_channel: message.buzz_dm_channel.clone(),
+                })),
+                None => Err("recipient_unlinked"),
+            },
+            _ => Err(INTEGRATION_DISABLED),
+        }
+    }
+}
+
+/// 보내지 않고 끝낼 사유. 집은 뒤에 받는 사람의 상태가 바뀐 경우다.
+fn skip_reason(message: &DueMessage) -> Option<&'static str> {
+    if message.member_status != MemberStatus::Active {
         Some("recipient_inactive")
     } else if !message.external_enabled {
         Some("recipient_opted_out")
@@ -229,7 +333,7 @@ fn at(now: Timestamp, after: chrono::Duration) -> ServiceResult<Timestamp> {
 pub async fn dispatch_once(state: &AppState) -> ServiceResult<DispatchReport> {
     let now = state.now();
     let mut report = DispatchReport::default();
-    let claimed: Vec<(OutboundMessageId, u32, Delivery)> = state
+    let claimed: Vec<(OutboundMessageId, MemberId, u32, Delivery)> = state
         .write(async |conn: &mut Conn| {
             let exhausted = outbound::fail_exhausted(conn, now, MAX_ATTEMPTS, INTERRUPTED).await?;
             report.failed += u32::try_from(exhausted).unwrap_or(u32::MAX);
@@ -237,13 +341,17 @@ pub async fn dispatch_once(state: &AppState) -> ServiceResult<DispatchReport> {
             if due.is_empty() {
                 return Ok(Vec::new());
             }
-            let target = target_of(&outbound::settings(conn).await?);
+            let targets = Targets {
+                webhook: target_of(&outbound::settings(conn).await?),
+                buzz: state.config.buzz.is_some() && pango_db::buzz::settings(conn).await?.enabled,
+            };
             let mut claimed = Vec::with_capacity(due.len());
             for message in due {
-                let target = match (skip_reason(&message, target.as_ref()), &target) {
-                    (None, Some(target)) => target.clone(),
-                    (reason, _) => {
-                        let reason = reason.unwrap_or("integration_disabled");
+                let target = match skip_reason(&message)
+                    .map_or_else(|| targets.for_message(&message), Err)
+                {
+                    Ok(target) => target,
+                    Err(reason) => {
                         outbound::mark_failed(conn, message.id, reason).await?;
                         report.failed += 1;
                         continue;
@@ -260,7 +368,7 @@ pub async fn dispatch_once(state: &AppState) -> ServiceResult<DispatchReport> {
                     timestamp: now,
                     payload: payload_of(state, &message),
                 };
-                claimed.push((message.id, attempt, delivery));
+                claimed.push((message.id, message.member_id, attempt, delivery));
             }
             Ok(claimed)
         })
@@ -270,11 +378,11 @@ pub async fn dispatch_once(state: &AppState) -> ServiceResult<DispatchReport> {
     }
 
     let mut sends = tokio::task::JoinSet::new();
-    for (id, attempt, delivery) in claimed {
+    for (id, member_id, attempt, delivery) in claimed {
         let sender = state.outbound.clone();
         sends.spawn(async move {
             let result = sender.send(&delivery).await;
-            (id, attempt, result)
+            (id, member_id, attempt, delivery.target, result)
         });
     }
     let mut results = Vec::new();
@@ -289,11 +397,17 @@ pub async fn dispatch_once(state: &AppState) -> ServiceResult<DispatchReport> {
     let done = state.now();
     state
         .write(async |conn: &mut Conn| {
-            for (id, attempt, result) in &results {
+            for (id, member_id, attempt, target, result) in &results {
                 match result {
-                    Ok(_) => {
+                    Ok(sent) => {
                         outbound::mark_sent(conn, *id, done).await?;
                         report.sent += 1;
+                        if let (Target::Buzz(buzz), Some(channel)) = (target, &sent.dm_channel) {
+                            if buzz.dm_channel.as_ref() != Some(channel) {
+                                pango_db::buzz::cache_dm_channel(conn, *member_id, &buzz.pubkey, channel)
+                                    .await?;
+                            }
+                        }
                     }
                     Err(error) => match next_retry(*attempt).filter(|_| error.retry) {
                         Some(delay) => {

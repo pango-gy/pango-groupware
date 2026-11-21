@@ -24,7 +24,7 @@ use tower::ServiceExt;
 use crate::config::Config;
 use crate::error::{ServiceError, ServiceResult};
 use crate::security::SessionToken;
-use crate::service::outbound::{Delivery, OutboundSender, SendError, SendFuture};
+use crate::service::outbound::{Delivery, OutboundSender, SendError, SendFuture, Sent, Target};
 use crate::service::setup::{self, InitInput};
 use crate::service::{auth, AuthContext, RequestMeta};
 use crate::state::AppState;
@@ -189,6 +189,11 @@ impl TestApp {
     /// 외부 알림 발송기를 `sender`(보통 [`FakeSender`])로 바꾼 서버.
     pub async fn with_outbound_sender(sender: Arc<dyn OutboundSender>) -> Self {
         Self::initialized(Config::for_tests(), Some(sender)).await
+    }
+
+    /// 설정과 외부 알림 발송기를 함께 정한 서버.
+    pub async fn with_config_and_sender(config: Config, sender: Arc<dyn OutboundSender>) -> Self {
+        Self::initialized(config, Some(sender)).await
     }
 
     async fn initialized(config: Config, sender: Option<Arc<dyn OutboundSender>>) -> Self {
@@ -555,6 +560,9 @@ impl TestApp {
     }
 }
 
+/// [`FakeSender`]가 새로 연 것처럼 돌려주는 Buzz DM 채널 ID.
+pub const FAKE_DM: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
+
 /// 외부 알림 발송을 기록하는 가짜 발송기. 정해 둔 응답을 차례로 돌려주고, 다 쓰면 200으로 답한다.
 #[derive(Default)]
 pub struct FakeSender {
@@ -593,11 +601,22 @@ impl OutboundSender for FakeSender {
             if let Some(delay) = self.delay {
                 tokio::time::sleep(delay).await;
             }
-            self.responses
+            let response = self
+                .responses
                 .lock()
                 .expect("lock")
                 .pop_front()
-                .unwrap_or(Ok(200))
+                .unwrap_or(Ok(200));
+            // Buzz는 연 DM의 채널 ID를 돌려준다(없으면 새로 연 것처럼 고정값).
+            let dm_channel = match &delivery.target {
+                Target::Buzz(buzz) => Some(
+                    buzz.dm_channel
+                        .clone()
+                        .unwrap_or_else(|| FAKE_DM.to_owned()),
+                ),
+                Target::Webhook(_) => None,
+            };
+            response.map(|status| Sent { status, dm_channel })
         })
     }
 }
@@ -610,6 +629,33 @@ impl TestApp {
                  webhook_secret = 'test-secret', version = version + 1 WHERE id = 1"
         ))
         .await;
+    }
+
+    /// Buzz 채널을 DB에서 바로 켠다(실행 설정은 따로 줘야 한다).
+    pub async fn enable_buzz(&self) {
+        self.execute("UPDATE buzz_settings SET enabled = 1, version = version + 1 WHERE id = 1")
+            .await;
+    }
+
+    /// 구성원의 Buzz 계정 연결을 확인을 마친 상태로 바로 넣는다.
+    pub async fn link_buzz(&self, member: MemberId, pubkey_hex: &str) {
+        let now = self.state.now().as_millis();
+        self.execute(&format!(
+            "INSERT INTO buzz_accounts (member_id, pubkey, status, verified_at, created_at, updated_at)
+             VALUES ('{member}', '{pubkey_hex}', 'verified', {now}, {now}, {now})"
+        ))
+        .await;
+    }
+
+    /// 아웃박스의 `(채널, 상태, 마지막 사유)`를 만든 순서대로.
+    pub async fn outbox_by_channel(&self) -> Vec<(String, String, Option<String>)> {
+        let mut conn = self.state.read().await.expect("read");
+        sqlx::query_as(
+            "SELECT channel, status, last_error FROM outbound_messages ORDER BY created_at, channel",
+        )
+        .fetch_all(&mut *conn)
+        .await
+        .expect("outbox")
     }
 
     /// 아웃박스의 `(상태, 시도 수, 마지막 사유)`를 만든 순서대로.

@@ -15,7 +15,7 @@ use pango_core::DomainError;
 use pango_db::outbound::{self, OutboundSettings};
 use pango_db::Conn;
 
-use super::outbound::{Delivery, OutboundPayload, Recipient, WebhookTarget};
+use super::outbound::{Delivery, OutboundPayload, Recipient, Target, WebhookTarget};
 use super::support::{
     audit, count_u32, current_member, require_current_admin, require_updated, Audit, AuthContext,
     Changes,
@@ -29,26 +29,35 @@ pub const TEST_COOLDOWN: Duration = Duration::seconds(10);
 /// 발송 현황을 세는 기간.
 const STATS_WINDOW: Duration = Duration::hours(24);
 
-async fn dto(conn: &mut Conn, now: Timestamp) -> ServiceResult<WebhookSettingsDto> {
-    let settings = outbound::settings(conn).await?;
+/// 한 채널의 최근 발송 현황(24시간).
+pub(crate) async fn stats_dto(
+    conn: &mut Conn,
+    channel: &str,
+    now: Timestamp,
+) -> ServiceResult<DeliveryStatsDto> {
     let since = now
         .checked_sub(STATS_WINDOW)
         .ok_or_else(|| ServiceError::internal("stats window underflow"))?;
-    let stats = outbound::stats(conn, since).await?;
+    let stats = outbound::stats(conn, channel, since).await?;
     let (last_error, last_error_at) = stats.last_error.unzip();
+    Ok(DeliveryStatsDto {
+        pending: count_u32(stats.pending)?,
+        sent_24h: count_u32(stats.sent)?,
+        failed_24h: count_u32(stats.failed)?,
+        last_error,
+        last_error_at,
+    })
+}
+
+async fn dto(conn: &mut Conn, now: Timestamp) -> ServiceResult<WebhookSettingsDto> {
+    let settings = outbound::settings(conn).await?;
     Ok(WebhookSettingsDto {
         enabled: settings.webhook_enabled,
         url: settings.webhook_url,
         has_secret: settings.webhook_secret.is_some(),
         version: settings.version,
         updated_at: settings.updated_at,
-        stats: DeliveryStatsDto {
-            pending: count_u32(stats.pending)?,
-            sent_24h: count_u32(stats.sent)?,
-            failed_24h: count_u32(stats.failed)?,
-            last_error,
-            last_error_at,
-        },
+        stats: stats_dto(conn, outbound::CHANNEL_WEBHOOK, now).await?,
     })
 }
 
@@ -196,7 +205,7 @@ pub async fn test_webhook(state: &AppState, ctx: &AuthContext) -> ServiceResult<
     take_test_slot(state, now)?;
     let member = &ctx.member;
     let delivery = Delivery {
-        target: WebhookTarget { url, secret },
+        target: Target::Webhook(WebhookTarget { url, secret }),
         timestamp: now,
         payload: OutboundPayload {
             event: "test",
@@ -214,9 +223,9 @@ pub async fn test_webhook(state: &AppState, ctx: &AuthContext) -> ServiceResult<
         },
     };
     let result = match state.outbound.send(&delivery).await {
-        Ok(status) => WebhookTestResult {
+        Ok(sent) => WebhookTestResult {
             delivered: true,
-            status: Some(status),
+            status: Some(sent.status),
             error: None,
         },
         Err(error) => WebhookTestResult {
@@ -249,10 +258,16 @@ pub async fn test_webhook(state: &AppState, ctx: &AuthContext) -> ServiceResult<
     Ok(result)
 }
 
+/// 외부 채널(웹훅, 또는 실행 설정이 있는 Buzz)이 하나라도 켜져 있는지.
+async fn external_available(state: &AppState, conn: &mut Conn) -> ServiceResult<bool> {
+    Ok(outbound::settings(conn).await?.webhook_enabled
+        || (state.config.buzz.is_some() && pango_db::buzz::settings(conn).await?.enabled))
+}
+
 pub async fn my_prefs(state: &AppState, ctx: &AuthContext) -> ServiceResult<NotificationPrefsDto> {
     let mut conn = state.read().await?;
     Ok(NotificationPrefsDto {
-        external_available: outbound::settings(&mut conn).await?.webhook_enabled,
+        external_available: external_available(state, &mut conn).await?,
         external_enabled: outbound::external_enabled(&mut conn, ctx.member_id()).await?,
     })
 }
@@ -270,7 +285,7 @@ pub async fn update_my_prefs(
             let member = current_member(conn, ctx).await?;
             outbound::set_external_enabled(conn, member.id, input.external_enabled, now).await?;
             Ok(NotificationPrefsDto {
-                external_available: outbound::settings(conn).await?.webhook_enabled,
+                external_available: external_available(state, conn).await?,
                 external_enabled: input.external_enabled,
             })
         })

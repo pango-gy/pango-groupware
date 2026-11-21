@@ -59,6 +59,15 @@ enum Command {
         /// 클라우드 메타데이터·link-local 주소는 이 옵션을 켜도 막는다.
         #[arg(long, env = "PANGO_OUTBOUND_ALLOW_PRIVATE")]
         outbound_allow_private: bool,
+        /// 사내 메신저 Buzz 릴레이 주소(예: https://buzz.example.com). 봇 키와 함께 지정한다.
+        #[arg(long, env = "PANGO_BUZZ_RELAY_URL")]
+        buzz_relay_url: Option<String>,
+        /// Buzz 봇 비밀키(nsec 또는 64자 16진수)가 든 파일. Secrets Manager 마운트 등에 쓴다.
+        #[arg(long, env = "PANGO_BUZZ_BOT_KEY_FILE")]
+        buzz_bot_key_file: Option<PathBuf>,
+        /// Buzz 봇 비밀키. 명령줄 기록에 남지 않도록 환경 변수로만 받는다.
+        #[arg(skip = std::env::var("PANGO_BUZZ_BOT_KEY").ok())]
+        buzz_bot_key: Option<String>,
     },
 }
 
@@ -105,8 +114,20 @@ async fn run(cli: Cli) -> Result<(), AnyError> {
             public_origin,
             insecure_cookies,
             outbound_allow_private,
+            buzz_relay_url,
+            buzz_bot_key_file,
+            buzz_bot_key,
         } => {
+            let buzz = pango_server::config::BuzzConfig::from_settings(
+                buzz_relay_url.as_deref(),
+                buzz_bot_key.as_deref(),
+                buzz_bot_key_file.as_deref(),
+            )?;
+            if let Some(buzz) = &buzz {
+                tracing::info!(relay = %buzz.relay_url, bot = %buzz.bot_key.public_key().to_npub(), "Buzz channel configured");
+            }
             let config = Config {
+                buzz,
                 trust_proxy,
                 public_origin,
                 cookie_secure: !insecure_cookies,

@@ -8,6 +8,7 @@ pub mod approval;
 pub mod attendance;
 pub mod attendance_corrections;
 pub mod audit;
+pub mod buzz;
 pub mod calendar;
 pub mod codec;
 pub mod error;

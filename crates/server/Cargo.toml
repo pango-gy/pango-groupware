@@ -29,6 +29,8 @@ tracing-subscriber.workspace = true
 argon2 = { workspace = true, features = ["std"] }
 sha2.workspace = true
 hmac.workspace = true
+k256.workspace = true
+base64.workspace = true
 subtle.workspace = true
 getrandom.workspace = true
 clap.workspace = true

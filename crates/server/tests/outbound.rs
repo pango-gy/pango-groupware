@@ -14,8 +14,8 @@ use pango_server::security::webhook_signature;
 use pango_server::service::maintenance;
 use pango_server::service::outbound::webhook::WebhookSender;
 use pango_server::service::outbound::{
-    self, Delivery, DispatchReport, OutboundPayload, OutboundSender, Recipient, SendError,
-    WebhookTarget,
+    self, Delivery, DispatchReport, OutboundPayload, OutboundSender, Recipient, SendError, Sent,
+    Target, WebhookTarget,
 };
 use pango_server::service::support::{notify, Notify};
 use pango_server::testing::{FakeSender, TestApp, TestMember};
@@ -96,8 +96,11 @@ async fn notification_is_queued_and_sent_with_the_documented_payload() {
     let calls = fake.calls();
     assert_eq!(calls.len(), 1);
     let delivery = &calls[0];
-    assert_eq!(delivery.target.url, HOOK);
-    assert_eq!(delivery.target.secret, "test-secret");
+    let Target::Webhook(target) = &delivery.target else {
+        panic!("webhook")
+    };
+    assert_eq!(target.url, HOOK);
+    assert_eq!(target.secret, "test-secret");
     let body = serde_json::to_value(&delivery.payload).expect("json");
     assert_eq!(
         body,
@@ -940,7 +943,7 @@ fn secrets_do_not_show_up_in_debug_output() {
         secret: "s3cr3t".into(),
     };
     let delivery = Delivery {
-        target,
+        target: Target::Webhook(target),
         timestamp: pango_core::time::Timestamp::from_millis(0).expect("ts"),
         payload: OutboundPayload {
             event: "test",
@@ -1029,10 +1032,10 @@ async fn receiver() -> (String, Received) {
 
 fn delivery_to(url: String) -> Delivery {
     Delivery {
-        target: WebhookTarget {
+        target: Target::Webhook(WebhookTarget {
             url,
             secret: "receiver-secret".into(),
-        },
+        }),
         timestamp: pango_core::time::Timestamp::from_millis(1_767_225_600_123).expect("ts"),
         payload: OutboundPayload {
             event: "notification",
@@ -1061,7 +1064,7 @@ async fn the_webhook_sender_posts_signed_json() {
         .await
         .expect("sent");
 
-    assert_eq!(status, 204);
+    assert_eq!(status, Sent::status(204));
     let requests = received.requests.lock().expect("lock").clone();
     assert_eq!(requests.len(), 1);
     let (headers, body) = &requests[0];
@@ -1141,7 +1144,7 @@ async fn private_and_loopback_targets_are_blocked_unless_the_server_allows_them(
     assert_eq!(
         open.send(&delivery_to(format!("http://localhost:{port}/ok")))
             .await,
-        Ok(204)
+        Ok(Sent::status(204))
     );
     assert_eq!(received.requests.lock().expect("lock").len(), 1);
 }

@@ -145,6 +145,13 @@ conflict_reasons! {
     FormInactive => "form_inactive",
     // 공지
     NoticeArchived => "notice_archived",
+    // 외부 알림(Buzz)
+    BuzzUnavailable => "buzz_unavailable",
+    BuzzAccountTaken => "buzz_account_taken",
+    BuzzCodeWrong => "buzz_code_wrong",
+    BuzzCodeExpired => "buzz_code_expired",
+    BuzzCodeExhausted => "buzz_code_exhausted",
+    BuzzCodeMissing => "buzz_code_missing",
 }
 
 impl fmt::Display for ConflictReason {

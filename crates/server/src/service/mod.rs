@@ -10,6 +10,7 @@ pub mod approval;
 pub mod attendance;
 pub mod audit_log;
 pub mod auth;
+pub mod buzz;
 pub mod calendar;
 pub mod form_catalog;
 pub mod home;

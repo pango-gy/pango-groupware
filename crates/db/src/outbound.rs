@@ -123,8 +123,9 @@ pub async fn set_external_enabled(
     Ok(())
 }
 
-/// 채널. 지금은 범용 웹훅 하나다.
+/// 채널: 범용 웹훅과 사내 메신저 Buzz DM.
 pub const CHANNEL_WEBHOOK: &str = "webhook";
+pub const CHANNEL_BUZZ: &str = "buzz";
 
 /// 보낼 일을 남긴다. 같은 알림·채널의 줄이 이미 있으면 아무 일도 하지 않는다. 넣었으면 `true`.
 pub async fn enqueue(
@@ -132,6 +133,7 @@ pub async fn enqueue(
     id: OutboundMessageId,
     notification_id: NotificationId,
     member_id: MemberId,
+    channel: &str,
     now: Timestamp,
 ) -> DbResult<bool> {
     let result = sqlx::query(
@@ -144,7 +146,7 @@ pub async fn enqueue(
     .bind(id.to_string())
     .bind(notification_id.to_string())
     .bind(member_id.to_string())
-    .bind(CHANNEL_WEBHOOK)
+    .bind(channel)
     .bind(now.as_millis())
     .bind(now.as_millis())
     .execute(conn)
@@ -156,6 +158,8 @@ pub async fn enqueue(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DueMessage {
     pub id: OutboundMessageId,
+    pub channel: String,
+    pub member_id: MemberId,
     /// 이번 시도를 포함하지 않은 지금까지의 시도 수.
     pub attempts: u32,
     pub kind: String,
@@ -168,11 +172,18 @@ pub struct DueMessage {
     pub email: Option<String>,
     pub member_status: MemberStatus,
     pub external_enabled: bool,
+    /// Buzz 채널: 확인을 마친 계정의 공개키(16진수)와 캐시한 DM 채널 ID.
+    pub buzz_pubkey: Option<String>,
+    pub buzz_dm_channel: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
 struct DueRow {
     id: String,
+    channel: String,
+    member_id: String,
+    buzz_pubkey: Option<String>,
+    buzz_dm_channel: Option<String>,
     attempts: i64,
     kind: String,
     title: String,
@@ -194,13 +205,15 @@ pub async fn due(
     limit: u32,
 ) -> DbResult<Vec<DueMessage>> {
     let rows = sqlx::query_as::<_, DueRow>(
-        "SELECT o.id, o.attempts, n.kind, n.title, n.body, n.link, n.created_at AS notified_at,
+        "SELECT o.id, o.channel, o.member_id, b.pubkey AS buzz_pubkey,
+                b.dm_channel_id AS buzz_dm_channel, o.attempts, n.kind, n.title, n.body, n.link, n.created_at AS notified_at,
                 m.login_id, m.name, m.email, m.status AS member_status,
                 COALESCE(p.external_enabled, 1) AS external_enabled
          FROM outbound_messages o
          JOIN notifications n ON n.id = o.notification_id
          JOIN members m ON m.id = o.member_id
          LEFT JOIN member_notification_prefs p ON p.member_id = o.member_id
+         LEFT JOIN buzz_accounts b ON b.member_id = o.member_id AND b.status = 'verified'
          WHERE o.status = 'pending' AND o.next_attempt_at <= ? AND o.attempts < ?
          ORDER BY o.next_attempt_at, o.id
          LIMIT ?",
@@ -214,6 +227,10 @@ pub async fn due(
         .map(|row| {
             Ok(DueMessage {
                 id: codec::parse("id", &row.id)?,
+                channel: row.channel,
+                member_id: codec::parse("member_id", &row.member_id)?,
+                buzz_pubkey: row.buzz_pubkey,
+                buzz_dm_channel: row.buzz_dm_channel,
                 attempts: codec::narrow("attempts", row.attempts)?,
                 kind: row.kind,
                 title: row.title,
@@ -330,22 +347,25 @@ pub struct DeliveryStats {
     pub last_error: Option<(String, Timestamp)>,
 }
 
-pub async fn stats(conn: &mut Conn, since: Timestamp) -> DbResult<DeliveryStats> {
+/// 한 채널의 발송 현황.
+pub async fn stats(conn: &mut Conn, channel: &str, since: Timestamp) -> DbResult<DeliveryStats> {
     let (pending, sent, failed): (i64, i64, i64) = sqlx::query_as(
         "SELECT
             COALESCE(SUM(status = 'pending'), 0),
             COALESCE(SUM(status = 'sent' AND last_attempt_at >= ?1), 0),
             COALESCE(SUM(status = 'failed' AND last_attempt_at >= ?1), 0)
-         FROM outbound_messages",
+         FROM outbound_messages WHERE channel = ?2",
     )
     .bind(since.as_millis())
+    .bind(channel)
     .fetch_one(&mut *conn)
     .await?;
     let last: Option<(String, i64)> = sqlx::query_as(
         "SELECT last_error, last_attempt_at FROM outbound_messages
-         WHERE last_error IS NOT NULL AND last_attempt_at IS NOT NULL
+         WHERE channel = ? AND last_error IS NOT NULL AND last_attempt_at IS NOT NULL
          ORDER BY last_attempt_at DESC LIMIT 1",
     )
+    .bind(channel)
     .fetch_optional(conn)
     .await?;
     let last_error = match last {

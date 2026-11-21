@@ -5,6 +5,7 @@
 pub mod approval;
 pub mod attendance;
 pub mod authz;
+pub mod buzz;
 pub mod calendar;
 pub mod calendar_access;
 pub mod calendar_event;
@@ -14,6 +15,7 @@ pub mod id;
 pub mod leave;
 pub mod macros;
 pub mod member;
+pub mod nostr;
 pub mod org;
 pub mod outbound;
 pub mod password;

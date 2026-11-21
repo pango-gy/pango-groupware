@@ -449,3 +449,95 @@ async fn existing_forms_get_categories_and_keep_their_content() {
         .await;
     assert!(bad.is_err());
 }
+
+// ── 0008: 아웃박스에 Buzz 채널을 더한다(표 다시 만들기) ─────────────────────
+
+#[tokio::test]
+async fn outbox_rows_survive_the_buzz_channel_rebuild() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut conn = SqliteConnectOptions::new()
+        .filename(dir.path().join("staged.db"))
+        .create_if_missing(true)
+        .foreign_keys(true)
+        .connect()
+        .await
+        .expect("connect");
+    for sql in BEFORE_FORM_SCHEMA.into_iter().chain([
+        FORM_SCHEMA,
+        include_str!("../migrations/0007_outbound_notifications.sql"),
+    ]) {
+        sqlx::raw_sql(sql).execute(&mut conn).await.expect("schema");
+    }
+    let member = add_member(&mut conn, "kim", "2024-03-02").await;
+    sqlx::raw_sql(&format!(
+        "INSERT INTO notifications (id, member_id, kind, title, created_at)
+         VALUES ('n1', '{member}', 'notice.new', '제목', 1);
+         INSERT INTO outbound_messages
+            (id, notification_id, member_id, channel, status, attempts, next_attempt_at,
+             last_attempt_at, last_error, created_at, sent_at)
+         VALUES ('o1', 'n1', '{member}', 'webhook', 'failed', 3, 10, 9, 'http_404', 1, NULL)"
+    ))
+    .execute(&mut conn)
+    .await
+    .expect("rows");
+
+    let mut tx = conn.begin().await.expect("begin");
+    sqlx::raw_sql(include_str!("../migrations/0008_buzz_channel.sql"))
+        .execute(&mut *tx)
+        .await
+        .expect("0008");
+    tx.commit().await.expect("commit");
+
+    let row: (String, String, i64, Option<String>) = sqlx::query_as(
+        "SELECT channel, status, attempts, last_error FROM outbound_messages WHERE id = 'o1'",
+    )
+    .fetch_one(&mut conn)
+    .await
+    .expect("row");
+    assert_eq!(
+        row,
+        (
+            "webhook".into(),
+            "failed".into(),
+            3,
+            Some("http_404".into())
+        )
+    );
+    // 같은 알림에 Buzz 줄을 더할 수 있고, 모르는 채널은 받지 않는다.
+    sqlx::raw_sql(&format!(
+        "INSERT INTO outbound_messages (id, notification_id, member_id, channel, status,
+             next_attempt_at, created_at) VALUES ('o2', 'n1', '{member}', 'buzz', 'pending', 1, 1)"
+    ))
+    .execute(&mut conn)
+    .await
+    .expect("buzz row");
+    let unknown = sqlx::raw_sql(&format!(
+        "INSERT INTO outbound_messages (id, notification_id, member_id, channel, status,
+             next_attempt_at, created_at) VALUES ('o3', 'n1', '{member}', 'sms', 'pending', 1, 1)"
+    ))
+    .execute(&mut conn)
+    .await;
+    assert!(unknown.is_err());
+    // 알림을 지우면 함께 지워진다(외래 키가 다시 걸려 있다).
+    sqlx::query("DELETE FROM notifications WHERE id = 'n1'")
+        .execute(&mut conn)
+        .await
+        .expect("delete");
+    let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM outbound_messages")
+        .fetch_one(&mut conn)
+        .await
+        .expect("count");
+    assert_eq!(left, 0);
+    // 한 Buzz 계정은 한 구성원만 확인할 수 있다.
+    let other = add_member(&mut conn, "lee", "2024-03-02").await;
+    let key = "ab".repeat(32);
+    for (who, expect_ok) in [(member, true), (other, false)] {
+        let result = sqlx::raw_sql(&format!(
+            "INSERT INTO buzz_accounts (member_id, pubkey, status, verified_at, created_at, updated_at)
+             VALUES ('{who}', '{key}', 'verified', 1, 1, 1)"
+        ))
+        .execute(&mut conn)
+        .await;
+        assert_eq!(result.is_ok(), expect_ok);
+    }
+}
