@@ -1146,6 +1146,11 @@ body:has(.action-bar) .toasts { bottom: calc(24px + var(--action-bar-h) + env(sa
 .cal-month .calendar-cell-outside { background: var(--grey-50); }
 .cal-month .calendar-cell:has(.cal-day-today) { background: color-mix(in srgb, var(--blue-weak) 55%, transparent); }
 .cal-month .cal-day { height: 100%; cursor: pointer; }
+/* 칸이 좁으면 시간을 빼고 제목을 남긴다(시간은 눌러서 보는 상세·그날 목록에 있다). */
+.cal-month .calendar-cell { container-type: inline-size; }
+@container (max-width: 120px) {
+  .cal-line-time, .cal-bar-time { display: none; }
+}
 @media (hover: hover) {
   .cal-month .calendar-cell:hover:not(:has(.cal-day-today)) { background: var(--grey-50); }
   .cal-month .calendar-cell-outside:hover { background: var(--grey-100); }
@@ -1161,7 +1166,9 @@ body:has(.action-bar) .toasts { bottom: calc(24px + var(--action-bar-h) + env(sa
 .calendar-row > .calendar-cell:first-child:not(.calendar-cell-outside) .cal-date { color: var(--red-strong); }
 .calendar-row > .calendar-cell:last-child:not(.calendar-cell-outside) .cal-date { color: var(--blue-strong); }
 .cal-day-holiday .cal-date { color: var(--red-strong); }
-.cal-day-today .cal-date, .cal-day-today .cal-date:hover { background: var(--blue); color: var(--on-blue); font-weight: 700; }
+/* 주말·공휴일 글자색 규칙(.calendar-row > .calendar-cell …)보다 우선해야 토요일·일요일의 오늘도 흰 글자로 보인다. */
+.calendar-row > .calendar-cell .cal-day.cal-day-today .cal-date,
+.calendar-row > .calendar-cell .cal-day.cal-day-today .cal-date:hover { background: var(--blue); color: var(--on-blue); font-weight: 700; }
 .cal-holiday-name {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: 11px; font-weight: 500; color: var(--red-strong);
