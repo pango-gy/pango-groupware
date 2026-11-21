@@ -2,7 +2,10 @@
 
 use dioxus::prelude::*;
 use pango_api::auth::SessionInfo;
-use pango_api::integration::{NotificationPrefsDto, NotificationPrefsInput};
+use pango_api::integration::{
+    BuzzLinkStart, BuzzLinkStatus, BuzzLinkVerify, MyBuzzDto, NotificationPrefsDto,
+    NotificationPrefsInput,
+};
 use pango_api::Empty;
 
 use crate::api;
@@ -11,8 +14,8 @@ use crate::route::Route;
 use crate::session::{self, use_session};
 use crate::text;
 use crate::ui::{
-    report_error, report_success, resource_view, Avatar, Badge, Button, ButtonKind, Card, Checkbox,
-    Meta, PageHeader, Tone,
+    report_error, report_form_error, report_success, resource_view, Avatar, Badge, Button,
+    ButtonKind, Card, Checkbox, ConfirmModal, FormError, Meta, PageHeader, TextField, Tone,
 };
 
 #[component]
@@ -76,6 +79,7 @@ pub fn Profile() -> Element {
             }
         }
         ExternalNotifyCard {}
+        BuzzLinkCard {}
         Card { title: "로그인된 기기",
             {resource_view(sessions, |list: Vec<SessionInfo>| rsx! {
                 ul { class: "list",
@@ -158,6 +162,233 @@ fn ExternalNotifyCard() -> Element {
                 checked: current.external_enabled,
                 disabled: saving(),
                 onchange: toggle,
+            }
+        }
+    }
+}
+
+const BUZZ_PATH: &str = "/me/buzz";
+
+/// 사내 메신저 Buzz 연결. 회사가 Buzz 채널을 켰을 때만 보인다.
+#[component]
+fn BuzzLinkCard() -> Element {
+    let mut link = use_resource(|| async { api::get::<MyBuzzDto>(BUZZ_PATH).await });
+    let mut pubkey = use_signal(String::new);
+    let mut code = use_signal(String::new);
+    let mut form_error = use_signal(String::new);
+    let mut busy = use_signal(|| false);
+    // 코드를 기다리는 중에 다른 ID로 바꾸려고 입력 칸을 다시 연다.
+    let mut editing = use_signal(|| false);
+    let mut confirm_unlink = use_signal(|| false);
+    let current = match &*link.read() {
+        Some(Ok(current)) if current.available || current.status != BuzzLinkStatus::None => {
+            current.clone()
+        }
+        _ => return rsx! {},
+    };
+
+    let send_code = move |value: String| async move {
+        if busy() {
+            return;
+        }
+        busy.set(true);
+        form_error.set(String::new());
+        match api::post::<_, MyBuzzDto>(BUZZ_PATH, &BuzzLinkStart { pubkey: value }).await {
+            Ok(_) => {
+                report_success("Buzz DM으로 확인 코드를 보냈어요.");
+                editing.set(false);
+                code.set(String::new());
+                link.restart();
+            }
+            Err(error) => report_form_error(&error, form_error),
+        }
+        busy.set(false);
+    };
+    let submit_id = move |event: FormEvent| {
+        event.prevent_default();
+        send_code(pubkey())
+    };
+    let submit_code = move |event: FormEvent| async move {
+        event.prevent_default();
+        if busy() {
+            return;
+        }
+        busy.set(true);
+        form_error.set(String::new());
+        let request = BuzzLinkVerify { code: code() };
+        match api::post::<_, MyBuzzDto>(&format!("{BUZZ_PATH}/verify"), &request).await {
+            Ok(_) => {
+                report_success("Buzz를 연결했어요. 이제 알림이 Buzz DM으로도 와요.");
+                link.restart();
+            }
+            Err(error) => {
+                report_form_error(&error, form_error);
+                link.restart();
+            }
+        }
+        busy.set(false);
+    };
+    let unlink = move |_| async move {
+        if busy() {
+            return;
+        }
+        busy.set(true);
+        match api::delete::<MyBuzzDto>(BUZZ_PATH).await {
+            Ok(_) => {
+                report_success("Buzz 연결을 끊었어요.");
+                link.restart();
+            }
+            Err(error) => report_error(&error),
+        }
+        confirm_unlink.set(false);
+        busy.set(false);
+    };
+
+    let pending_npub = current.npub.clone().unwrap_or_default();
+    let resend_wait = current
+        .resend_available_at
+        .map(|at| (at.as_millis() - crate::ui::now().as_millis()).max(0) / 1000)
+        .unwrap_or(0);
+    let show_id_form = current.status == BuzzLinkStatus::None || editing();
+
+    rsx! {
+        Card {
+            title: "Buzz 연결",
+            action: rsx! {
+                match current.status {
+                    BuzzLinkStatus::Verified => rsx! { Badge { tone: Tone::Success, "연결됨" } },
+                    BuzzLinkStatus::Pending => rsx! { Badge { tone: Tone::Warning, "확인 기다림" } },
+                    BuzzLinkStatus::None => rsx! {},
+                }
+            },
+            if !current.available {
+                p { class: "field-hint", "회사에서 Buzz 연동을 꺼 두어 지금은 Buzz로 알림이 가지 않아요." }
+            }
+            FormError { message: form_error() }
+            if current.status == BuzzLinkStatus::Verified && !editing() {
+                dl { class: "detail-list",
+                    dt { "Buzz ID" }
+                    dd { class: "mono-wrap", "{pending_npub}" }
+                }
+                div { class: "panel-actions",
+                    Button {
+                        kind: ButtonKind::Grey,
+                        onclick: move |_| confirm_unlink.set(true),
+                        "연결 해제"
+                    }
+                }
+            } else if show_id_form {
+                p { class: "field-hint",
+                    "Buzz에서 복사한 내 Buzz ID를 붙여 넣으면 알림 봇이 Buzz DM으로 6자리 확인 코드를 보내요."
+                }
+                form { class: "form", onsubmit: submit_id,
+                    TextField {
+                        label: "내 Buzz ID",
+                        value: pubkey(),
+                        placeholder: "npub1…",
+                        autocomplete: "off",
+                        maxlength: 100,
+                        oninput: move |value| pubkey.set(value),
+                    }
+                    div { class: "panel-actions",
+                        Button { submit: true, busy: busy(), "확인 코드 받기" }
+                        if editing() {
+                            Button { kind: ButtonKind::Grey, onclick: move |_| editing.set(false), "취소" }
+                        }
+                    }
+                }
+            } else {
+                p { class: "field-hint",
+                    "Buzz에서 알림 봇이 보낸 DM의 6자리 코드를 입력해 주세요. 코드는 10분 동안 쓸 수 있어요."
+                }
+                dl { class: "detail-list",
+                    dt { "Buzz ID" }
+                    dd { class: "mono-wrap", "{pending_npub}" }
+                    if let Some(left) = current.attempts_left {
+                        dt { "남은 기회" }
+                        dd { "{left}번" }
+                    }
+                }
+                form { class: "form", onsubmit: submit_code,
+                    TextField {
+                        label: "확인 코드",
+                        value: code(),
+                        placeholder: "6자리 숫자",
+                        autocomplete: "one-time-code",
+                        maxlength: 7,
+                        oninput: move |value| code.set(value),
+                    }
+                    div { class: "panel-actions",
+                        Button { submit: true, busy: busy(), "확인" }
+                        Button {
+                            kind: ButtonKind::Grey,
+                            disabled: busy() || resend_wait > 0,
+                            onclick: {
+                                let npub = pending_npub.clone();
+                                move |_| send_code(npub.clone())
+                            },
+                            if resend_wait > 0 { "{resend_wait}초 뒤 다시 받기" } else { "코드 다시 받기" }
+                        }
+                        Button {
+                            kind: ButtonKind::Grey,
+                            onclick: move |_| {
+                                pubkey.set(String::new());
+                                editing.set(true);
+                            },
+                            "다른 ID로 바꾸기"
+                        }
+                    }
+                }
+            }
+            BuzzGuide { bot_npub: current.bot_npub.clone() }
+        }
+        if confirm_unlink() {
+            ConfirmModal {
+                title: "Buzz 연결을 끊을까요?",
+                message: "끊으면 아직 보내지 않은 알림도 Buzz로 가지 않아요. 앱 알림은 그대로 와요. 언제든 다시 연결할 수 있어요.",
+                confirm_label: "연결 해제",
+                busy: busy(),
+                onconfirm: unlink,
+                oncancel: move |_| confirm_unlink.set(false),
+            }
+        }
+    }
+}
+
+/// Buzz ID 찾는 법과 자주 묻는 것. Buzz 화면은 영어라 원문을 괄호로 함께 적는다.
+#[component]
+fn BuzzGuide(bot_npub: Option<String>) -> Element {
+    rsx! {
+        details { class: "guide",
+            summary { "내 Buzz ID는 어디서 찾나요?" }
+            div { class: "guide-body",
+                div {
+                    h3 { "데스크톱 앱" }
+                    p {
+                        "메뉴의 설정(Settings…, ⌘ + ,) → 신원(Identity) → 내 Buzz ID(Your Buzz ID) 카드에서 복사 버튼(Copy Buzz ID)을 눌러요."
+                    }
+                }
+                div {
+                    h3 { "모바일 앱" }
+                    p {
+                        "홈 메뉴의 설정(Settings) → 상태(Status) → 공개키 복사(Copy public key (npub))를 눌러요."
+                    }
+                }
+                div {
+                    h3 { "코드가 오지 않아요" }
+                    p {
+                        "Buzz의 DM 목록에서 알림 봇이 보낸 메시지를 찾아 주세요. 1분 뒤 다시 받을 수 있고, 계속 오지 않으면 관리자에게 문의해 주세요(알림 봇이 아직 Buzz에 등록되지 않았을 수 있어요)."
+                    }
+                    if let Some(bot) = bot_npub {
+                        p { "알림 봇 ID: " span { class: "mono-wrap", "{bot}" } }
+                    }
+                }
+                div {
+                    h3 { "Buzz로 무엇이 가나요?" }
+                    p {
+                        "앱 알림의 제목, 짧은 본문, 그룹웨어 링크만 가요. 휴가 사유나 결재 문서 내용은 보내지 않아요. 외부 메신저 알림을 끄거나 연결을 끊으면 더는 가지 않아요."
+                    }
+                }
             }
         }
     }

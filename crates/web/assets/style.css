@@ -1561,3 +1561,11 @@ body:has(.action-bar) .toasts { bottom: calc(24px + var(--action-bar-h) + env(sa
   .only-mobile { display: block; }
   ul.only-mobile { display: flex; }
 }
+
+/* 외부 알림 연동: 긴 키 표시와 설정 순서 */
+.mono-wrap { font-family: var(--font-mono); font-size: 13px; overflow-wrap: anywhere; }
+.checklist { margin: 6px 0 0; padding-left: 20px; display: grid; gap: 4px; }
+.guide { margin-top: 16px; }
+.guide summary { cursor: pointer; font-weight: 600; color: var(--grey-800); }
+.guide-body { margin-top: 10px; display: grid; gap: 10px; color: var(--grey-700); font-size: 14px; }
+.guide-body h3 { font-size: 14px; font-weight: 600; color: var(--grey-800); }

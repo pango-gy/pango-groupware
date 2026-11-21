@@ -1475,6 +1475,7 @@ fn MemberDetailModal(
                         }
                     }
                 }
+                MemberBuzzSection { member_id: detail.summary.id, name: detail.summary.name.clone() }
             }
         }
         {match pending() {
@@ -1509,5 +1510,76 @@ fn MemberDetailModal(
             },
             None => rsx! {},
         }}
+    }
+}
+
+/// 구성원의 Buzz 연결. 관리자는 끊기만 할 수 있다(대신 연결하지 않는다: 소유 확인은 본인만).
+#[component]
+fn MemberBuzzSection(member_id: pango_core::id::MemberId, name: String) -> Element {
+    let path = format!("/admin/members/{member_id}/buzz");
+    let mut link = use_resource({
+        let path = path.clone();
+        move || {
+            let path = path.clone();
+            async move { api::get::<pango_api::integration::MemberBuzzDto>(&path).await }
+        }
+    });
+    let mut confirm = use_signal(|| false);
+    let mut busy = use_signal(|| false);
+    let current = match &*link.read() {
+        Some(Ok(current)) if current.status != pango_api::integration::BuzzLinkStatus::None => {
+            current.clone()
+        }
+        _ => return rsx! {},
+    };
+    let unlink = move |_| {
+        let path = path.clone();
+        async move {
+            if busy() {
+                return;
+            }
+            busy.set(true);
+            match api::delete::<pango_api::integration::MemberBuzzDto>(&path).await {
+                Ok(_) => {
+                    report_success("Buzz 연결을 끊었어요.");
+                    link.restart();
+                }
+                Err(error) => report_error(&error),
+            }
+            confirm.set(false);
+            busy.set(false);
+        }
+    };
+    let state = if current.status == pango_api::integration::BuzzLinkStatus::Verified {
+        "연결됨"
+    } else {
+        "확인 기다림"
+    };
+    rsx! {
+        section { class: "member-section",
+            h3 { class: "sub-title", "Buzz 연결" }
+            p { class: "field-hint",
+                "{state} · "
+                span { class: "mono-wrap", {current.npub_short.clone().unwrap_or_default()} }
+            }
+            p { class: "field-hint", "끊으면 Buzz로 알림이 가지 않아요. 다시 연결은 구성원 본인이 내 정보에서 해요." }
+            div { class: "modal-actions",
+                Button { kind: ButtonKind::Grey, busy: busy(), onclick: move |_| confirm.set(true), "Buzz 연결 해제" }
+            }
+        }
+        if confirm() {
+            ConfirmModal {
+                title: "Buzz 연결을 끊을까요?",
+                confirm_label: "연결 해제",
+                danger: true,
+                busy: busy(),
+                onconfirm: unlink,
+                oncancel: move |_| confirm.set(false),
+                p {
+                    strong { "{name}" }
+                    " 님에게 Buzz로 가던 알림이 멈춰요. 앱 알림은 그대로 가요."
+                }
+            }
+        }
     }
 }

@@ -1,8 +1,10 @@
-//! 외부 알림 연동(범용 웹훅): 켜기·주소, 서명 키, 테스트 발송, 발송 현황.
+//! 외부 알림 연동: 범용 웹훅(켜기·주소, 서명 키, 테스트 발송, 발송 현황)과 사내 메신저 Buzz
+//! (켜기·끄기, 서버 설정 상태, 연결한 구성원 수, 발송 현황).
 
 use dioxus::prelude::*;
 use pango_api::integration::{
-    WebhookSecretDto, WebhookSettingsDto, WebhookSettingsInput, WebhookTestResult,
+    BuzzSettingsDto, BuzzSettingsInput, DeliveryStatsDto, WebhookSecretDto, WebhookSettingsDto,
+    WebhookSettingsInput, WebhookTestResult,
 };
 use pango_api::{Empty, Versioned};
 use pango_core::outbound::MAX_WEBHOOK_URL_LEN;
@@ -17,25 +19,143 @@ use crate::ui::{
 };
 
 const PATH: &str = "/admin/integrations/webhook";
+const BUZZ_PATH: &str = "/admin/integrations/buzz";
+/// 운영자 가이드(봇 키 만들기, 릴레이 구성원 등록, 실행 설정).
+const BUZZ_GUIDE: &str = "https://github.com/pango-gy/pango-groupware/blob/main/docs/BUZZ.md";
 
 #[component]
 pub fn AdminIntegrations() -> Element {
     let mut settings = use_resource(|| async { api::get::<WebhookSettingsDto>(PATH).await });
+    let mut buzz = use_resource(|| async { api::get::<BuzzSettingsDto>(BUZZ_PATH).await });
     rsx! {
         PageHeader {
             title: "외부 알림 연동",
             description: "앱 알림을 사내 메신저 같은 외부 서비스로도 보내요.",
         }
+        {resource_view(buzz, move |dto: BuzzSettingsDto| rsx! {
+            BuzzPanel { key: "{dto.version}", dto, onreload: move |_| buzz.restart() }
+        })}
         {resource_view(settings, move |dto: WebhookSettingsDto| rsx! {
             WebhookEditor { key: "{dto.version}", dto, onreload: move |_| settings.restart() }
         })}
     }
 }
 
+/// 최근 24시간 발송 현황 타일.
 #[component]
-fn WebhookEditor(dto: WebhookSettingsDto, onreload: EventHandler<()>) -> Element {
+fn DeliveryStats(stats: DeliveryStatsDto) -> Element {
     let session = use_session();
     let tz = session.zone();
+    rsx! {
+        div { class: "stats",
+            Stat { label: "보내는 중", value: format!("{}건", stats.pending) }
+            Stat { label: "최근 24시간 보냄", value: format!("{}건", stats.sent_24h) }
+            Stat {
+                label: "최근 24시간 실패",
+                value: format!("{}건", stats.failed_24h),
+                tone: if stats.failed_24h > 0 { Tone::Danger } else { Tone::Neutral },
+            }
+        }
+        if let (Some(reason), Some(at)) = (stats.last_error.clone(), stats.last_error_at) {
+            p { class: "field-hint",
+                "마지막 실패: {text::delivery_error_label(&reason)} ({format::datetime(at, tz)})"
+            }
+        }
+    }
+}
+
+#[component]
+fn BuzzPanel(dto: BuzzSettingsDto, onreload: EventHandler<()>) -> Element {
+    let mut saving = use_signal(|| false);
+    let version = dto.version;
+    let enabled = dto.enabled;
+    let toggle = move |_| async move {
+        if saving() {
+            return;
+        }
+        saving.set(true);
+        let request = Versioned {
+            version,
+            data: BuzzSettingsInput { enabled: !enabled },
+        };
+        match api::put::<_, BuzzSettingsDto>(BUZZ_PATH, &request).await {
+            Ok(_) => {
+                report_success(if enabled {
+                    "Buzz로 보내기를 껐어요."
+                } else {
+                    "Buzz로 보내기를 켰어요."
+                });
+                onreload.call(());
+            }
+            Err(failure) => {
+                saving.set(false);
+                report_error(&failure);
+                if failure.code == "version_conflict" {
+                    onreload.call(());
+                }
+            }
+        }
+    };
+    rsx! {
+        Card {
+            title: "Buzz(사내 메신저)",
+            action: rsx! {
+                if dto.enabled {
+                    Badge { tone: Tone::Success, "보내는 중" }
+                } else if dto.configured {
+                    Badge { tone: Tone::Neutral, "꺼짐" }
+                } else {
+                    Badge { tone: Tone::Warning, "서버 설정 필요" }
+                }
+            },
+            p { class: "field-hint",
+                "알림을 구성원의 Buzz DM으로도 보내요. 구성원은 내 정보에서 Buzz ID를 직접 연결해요. Buzz에는 알림 제목·짧은 본문·링크만 가요."
+            }
+            dl { class: "detail-list",
+                dt { "서버 설정" }
+                dd {
+                    if dto.configured { "설정됨" } else { "설정 안 됨" }
+                }
+                dt { "릴레이 주소" }
+                dd { {dto.relay_url.clone().unwrap_or_else(|| "-".into())} }
+                dt { "알림 봇 ID" }
+                dd { class: "mono-wrap", {dto.bot_npub.clone().unwrap_or_else(|| "-".into())} }
+                dt { "연결한 구성원" }
+                dd { "{dto.linked_members}명" }
+            }
+            if !dto.configured {
+                div { class: "callout callout-info", role: "note",
+                    Icon { name: IconName::Alert }
+                    div {
+                        p { "Buzz를 켜려면 서버 운영자가 먼저 설정해야 해요." }
+                        ol { class: "checklist",
+                            li { "Buzz 관리 도구로 알림 봇 키를 만들어 비밀 저장소에 넣기" }
+                            li { "그룹웨어 서버에 PANGO_BUZZ_RELAY_URL과 PANGO_BUZZ_BOT_KEY_FILE(또는 PANGO_BUZZ_BOT_KEY) 지정" }
+                            li { "봇 ID를 Buzz 릴레이 구성원으로 등록(buzz-admin add-member)" }
+                            li { "릴레이가 같은 사설망이면 --outbound-allow-private로 서버 실행" }
+                        }
+                    }
+                }
+            }
+            p { class: "field-hint",
+                a { href: BUZZ_GUIDE, target: "_blank", rel: "noopener noreferrer", "운영자 설정 가이드 보기" }
+            }
+            div { class: "panel-actions",
+                Button {
+                    kind: if dto.enabled { ButtonKind::Grey } else { ButtonKind::Primary },
+                    busy: saving(),
+                    disabled: !dto.configured && !dto.enabled,
+                    onclick: toggle,
+                    if dto.enabled { "Buzz로 보내기 끄기" } else { "Buzz로 보내기 켜기" }
+                }
+            }
+            DeliveryStats { stats: dto.stats.clone() }
+        }
+    }
+}
+
+#[component]
+fn WebhookEditor(dto: WebhookSettingsDto, onreload: EventHandler<()>) -> Element {
     let mut enabled = use_signal(|| dto.enabled);
     let mut url = use_signal(|| dto.url.clone().unwrap_or_default());
     let mut form_error = use_signal(String::new);
@@ -123,7 +243,6 @@ fn WebhookEditor(dto: WebhookSettingsDto, onreload: EventHandler<()>) -> Element
         testing.set(false);
     };
 
-    let stats = dto.stats.clone();
     let can_test = saved_url.is_some() && has_secret;
 
     rsx! {
@@ -206,21 +325,8 @@ fn WebhookEditor(dto: WebhookSettingsDto, onreload: EventHandler<()>) -> Element
                 p { class: "field-hint", "주소를 저장하고 서명 키를 만들면 보낼 수 있어요." }
             }
         }
-        Card { title: "발송 현황",
-            div { class: "stats",
-                Stat { label: "보내는 중", value: format!("{}건", stats.pending) }
-                Stat { label: "최근 24시간 보냄", value: format!("{}건", stats.sent_24h) }
-                Stat {
-                    label: "최근 24시간 실패",
-                    value: format!("{}건", stats.failed_24h),
-                    tone: if stats.failed_24h > 0 { Tone::Danger } else { Tone::Neutral },
-                }
-            }
-            if let (Some(reason), Some(at)) = (stats.last_error.clone(), stats.last_error_at) {
-                p { class: "field-hint",
-                    "마지막 실패: {text::delivery_error_label(&reason)} ({format::datetime(at, tz)})"
-                }
-            }
+        Card { title: "웹훅 발송 현황",
+            DeliveryStats { stats: dto.stats.clone() }
         }
         if confirm_rotate() {
             ConfirmModal {

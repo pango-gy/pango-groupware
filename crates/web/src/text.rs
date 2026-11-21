@@ -168,6 +168,11 @@ fn validation_message(field: Option<&str>, reason: Option<&str>) -> String {
                 .into()
         }
         (Some("webhook_secret"), _) => "서명 키를 먼저 만들어 주세요.".into(),
+        (Some("pubkey"), _) => {
+            "Buzz ID는 npub1로 시작하는 값(또는 64자리 16진수)이에요. Buzz에서 복사한 값을 그대로 붙여 넣어 주세요."
+                .into()
+        }
+        (Some("buzz_code"), _) => "확인 코드는 숫자 6자리예요.".into(),
         (_, Some("empty")) => format!("{label}을(를) 입력해 주세요."),
         (_, Some("too_short")) => format!("{label}이(가) 너무 짧습니다."),
         (_, Some("too_long")) => format!("{label}이(가) 너무 깁니다."),
@@ -217,6 +222,19 @@ pub fn error_message(code: &str, field: Option<&str>, reason: Option<&str>) -> S
         "withdraw_too_late" => "결재가 진행되어 회수할 수 없습니다.",
         "form_inactive" => "사용할 수 없는 양식입니다.",
         "notice_archived" => "삭제된 공지입니다.",
+        "buzz_unavailable" => "회사에서 Buzz 연동을 켜지 않았어요. 관리자에게 문의해 주세요.",
+        "buzz_account_taken" => "이미 다른 구성원이 연결한 Buzz ID예요. 내 Buzz ID가 맞는지 확인해 주세요.",
+        "buzz_code_wrong" => "확인 코드가 맞지 않아요. Buzz DM으로 받은 6자리를 다시 확인해 주세요.",
+        "buzz_code_expired" => "확인 코드의 유효 시간(10분)이 지났어요. 코드를 다시 받아 주세요.",
+        "buzz_code_exhausted" => "확인 코드를 여러 번 틀려 더는 쓸 수 없어요. 코드를 다시 받아 주세요.",
+        "buzz_code_missing" => "받은 확인 코드가 없어요. 먼저 Buzz ID를 입력하고 코드를 받아 주세요.",
+        "buzz_bot_rejected" => {
+            "Buzz가 알림 봇을 받아 주지 않았어요. 관리자에게 Buzz 연동 설정을 확인해 달라고 요청해 주세요."
+        }
+        "buzz_recipient_rejected" => {
+            "Buzz가 이 ID로 보내는 메시지를 거절했어요. 회사 Buzz에 가입한 내 ID가 맞는지 확인해 주세요."
+        }
+        "buzz_unreachable" => "Buzz에 연결하지 못했어요. 잠시 뒤 다시 시도하고, 계속되면 관리자에게 문의해 주세요.",
         "payload_too_large" => "내용이 너무 큽니다.",
         "cross_origin_rejected" => "허용되지 않은 요청입니다. 페이지를 새로 고쳐 주세요.",
         "idempotency_key_reused" => "요청이 중복되었습니다. 페이지를 새로 고쳐 주세요.",
@@ -338,6 +356,11 @@ pub const AUDIT_ACTIONS: &[(&str, &str)] = &[
         "외부 알림 서명 키 교체",
     ),
     ("integration.webhook_test", "외부 알림 테스트 발송"),
+    ("integration.buzz_update", "Buzz 연동 변경"),
+    ("buzz.link_start", "Buzz 연결 확인 코드 발송"),
+    ("buzz.link", "Buzz 계정 연결"),
+    ("buzz.unlink", "Buzz 연결 해제"),
+    ("buzz.admin_unlink", "Buzz 연결 해제(관리자)"),
     ("holiday.upsert", "공휴일 등록·변경"),
     ("holiday.delete", "공휴일 삭제"),
     ("holiday.import", "공휴일 일괄 등록"),
@@ -415,6 +438,7 @@ pub fn audit_target_label(target_type: &str) -> String {
         "notice" => "공지",
         "company_settings" => "회사 설정",
         "outbound_settings" => "외부 알림 연동",
+        "buzz_settings" => "Buzz 연동",
         "holiday" => "공휴일",
         other => return other.to_owned(),
     };
@@ -879,6 +903,10 @@ pub fn delivery_error_label(reason: &str) -> String {
         "recipient_inactive" => "받는 사람이 재직 중이 아니라 보내지 않았어요",
         "recipient_opted_out" => "받는 사람이 외부 알림을 꺼서 보내지 않았어요",
         "interrupted" => "보내는 도중 서버가 멈춰 끝내지 못했어요",
+        "recipient_unlinked" => "받는 사람이 Buzz 연결을 끊어 보내지 않았어요",
+        "buzz_rejected" => "Buzz가 메시지를 받지 않았어요",
+        "buzz_bad_response" => "Buzz의 응답을 이해하지 못했어요",
+        "sign_failed" => "메시지에 서명하지 못했어요",
         other => return other.to_owned(),
     };
     fixed.to_owned()
@@ -956,6 +984,11 @@ mod tests {
         "holiday.delete",
         "holiday.import",
         "holiday.upsert",
+        "buzz.admin_unlink",
+        "buzz.link",
+        "buzz.link_start",
+        "buzz.unlink",
+        "integration.buzz_update",
         "integration.webhook_secret_rotate",
         "integration.webhook_test",
         "integration.webhook_update",

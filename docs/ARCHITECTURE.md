@@ -13,7 +13,7 @@
 | 전자결재 | 분류별 양식(필드 정의), 기안, 결재라인(결재·합의·참조), 승인·반려·회수, 결재함 | 대결·전결, 첨부파일 |
 | 공지 | 작성·고정·필독, 읽음 확인, 대상 지정 | 첨부파일, 댓글 |
 | 캘린더 | 내·전사·부서 일정, 참석자 초대·응답, 참석자 일정 확인, 공휴일·휴가 표시 | 반복 일정, 미리 알림, 생일, 다른 사람의 캘린더 공유 |
-| 알림 | 앱 내 알림, 외부 메신저 연동(범용 웹훅) | 푸시 중계 서버, 메신저 전용 발송기 |
+| 알림 | 앱 내 알림, 외부 연동(범용 웹훅, 사내 메신저 Buzz DM) | 푸시 중계 서버 |
 | 관리 | 설정, 근무 정책, 공휴일, 감사 로그 | 백업 UI |
 
 ## 2. 크레이트 구성과 의존 방향
@@ -159,7 +159,7 @@ UUID v7을 타입별 newtype(`MemberId`, `DocumentId` …)으로 감쌉니다. D
 - 공지를 **보관**하거나 수정으로 **대상을 좁히면**, 그 공지를 더는 볼 수 없게 된 구성원의 **읽지 않은** `notice.new` 알림을 같은 트랜잭션에서 지웁니다(볼 수 없는 공지의 제목이 알림함에 남지 않도록). 볼 수 있는지는 열람과 같은 규칙(`authz::audience_scope`)으로 정하고, 이미 읽은 알림은 받은 기록이므로 그대로 둡니다.
 
 ### 외부 알림(웹훅)
-앱 내 알림을 외부 메신저로도 보냅니다. 사내 메신저(Buzz)의 API가 정해지기 전이라 지금은 **서명한 JSON을 POST하는 범용 웹훅**만 있고, 메신저 전용 발송기는 같은 트레이트(`service::outbound::OutboundSender`)로 붙입니다.
+앱 내 알림을 외부로도 보냅니다. 채널은 **서명한 JSON을 POST하는 범용 웹훅**과 **사내 메신저 Buzz DM**(아래) 둘이고, 같은 아웃박스·발송 작업·재시도 규칙을 씁니다.
 
 - **아웃박스**: `support::notify`가 알림을 **새로 만들었을 때만**(`dedupe_key`로 건너뛰면 아니다) 같은 트랜잭션에서 `outbound_messages`에 한 줄을 남깁니다. 조건은 연동이 켜져 있고, 받는 사람이 재직 중이고, 외부 알림을 끄지 않았을 것(`member_notification_prefs`, 행이 없으면 받음). 알림·채널마다 한 줄(유일 제약)이라 같은 알림이 두 번 나가지 않습니다. 알림이 지워지면(보관된 공지의 읽지 않은 알림) 보낼 일도 함께 지워집니다(`ON DELETE CASCADE`).
 - **발송 작업**(`outbound::run_forever`, 5초마다): 쓰기 트랜잭션에서 `pending`이고 `next_attempt_at`이 지난 줄을 최대 20개 집으며 `attempts`를 올리고 `next_attempt_at`을 다음 재시도 시각으로 미룹니다. 커밋한 뒤 **트랜잭션 밖에서** 동시에 보내고, 결과를 짧은 트랜잭션으로 남깁니다. 집기가 직렬화된 쓰기 안에서 일어나므로 작업이 겹쳐도 같은 줄을 두 번 집지 않고, 보내는 중 서버가 멈추면 그 시각에 **한 번 더** 보낼 뿐입니다(그래서 받는 쪽은 `X-Pango-Delivery`로 중복을 거릅니다). 집은 뒤 연동이 꺼졌거나 받는 사람이 퇴사·수신 거부했으면 보내지 않고 `failed`로 끝냅니다.
@@ -213,7 +213,29 @@ def verify(secret: str, headers, body: bytes) -> bool:
 | `PUT /admin/integrations/webhook` | `{version, enabled, url}` → 위와 같음. 켜려면 주소(`webhook_url` `empty`)와 서명 키(`webhook_secret` `empty`)가 있어야 함. 버전이 낡으면 409 |
 | `POST /admin/integrations/webhook/secret` | `{version}` → `{secret, settings}`. 키는 이 응답에서만 보임 |
 | `POST /admin/integrations/webhook/test` | → `{delivered, status, error}`. 저장한 주소로(꺼져 있어도) 요청한 관리자에게 바로 보냄. 10초에 한 번(429), 감사 로그 `integration.webhook_test` |
-| `GET·PUT /me/notification-preferences` | `{external_enabled}` → `{external_available, external_enabled}`(본인 것만) |
+| `GET·PUT /me/notification-preferences` `GET·POST·DELETE /me/buzz` `POST /me/buzz/verify` | `{external_enabled}` → `{external_available, external_enabled}`(본인 것만). 웹훅·Buzz 둘 다에 적용 |
+
+#### Buzz DM 채널
+사내 메신저 Buzz(Nostr 릴레이)의 DM으로도 보냅니다. 운영 설정은 [BUZZ.md](BUZZ.md)에 있습니다.
+
+- **설정**: 릴레이 주소와 봇 비밀키는 서버 실행 설정(`PANGO_BUZZ_RELAY_URL`, `PANGO_BUZZ_BOT_KEY_FILE` 또는 `PANGO_BUZZ_BOT_KEY`)에만 둡니다. DB에는 켜기·끄기(`buzz_settings`, 버전·감사 로그)와 구성원 연결(`buzz_accounts`)만 있고, 관리자 화면은 상태(설정 여부, 릴레이 주소, 봇 npub, 연결한 구성원 수, 발송 현황)만 보여 줍니다. 비밀키(`nostr::BotKey`)는 `Debug`·오류·로그에 드러나지 않습니다. 릴레이 주소에도 웹훅과 같은 주소 확인(SSRF 방어)을 씁니다.
+- **아웃박스**: 같은 `outbound_messages`에 `channel = 'buzz'` 줄을 남깁니다. 조건은 Buzz 채널이 켜져 있고, 받는 사람이 Buzz 계정 확인을 마쳤고(`verified`), 재직 중이고, 외부 알림을 끄지 않았을 것. 웹훅과 따로 판단하므로 둘 다 갈 수 있습니다. 보낼 때 연결을 다시 확인해, 그사이 끊었으면 `recipient_unlinked`로 끝냅니다. 발송기(`OutboundSender`)는 보낼 곳(`Target::Webhook | Target::Buzz`)에 따라 `ChannelSender`가 채널별 발송기로 나눕니다.
+- **요청**: `POST {릴레이}/events`에 봇 키로 서명한 이벤트(NIP-01 ID, BIP340 Schnorr 서명)를 보냅니다. 인증은 NIP-98 `Authorization: Nostr <base64(kind 27235)>`이고 태그는 `u` = `{릴레이}/events`, `method` = `POST`, `payload` = 본문 SHA-256(늘 넣음)입니다.
+  1. DM 열기 — kind 41010, 내용 없음, `["p", 받는 사람 hex]`. 이미 있으면 같은 DM. 응답 `message`의 `response:{"channel_id": …}`를 `buzz_accounts.dm_channel_id`에 저장해 다음부터 다시 씁니다.
+  2. 메시지 — kind 9, 내용 `제목\n짧은 본문\n링크`(빈 부분은 뺌, 8KiB 이하), 태그 `["h", 채널]`, `["ms", 초 아래 밀리초 0~999]`(Buzz SDK `build_message`와 같음).
+  저장해 둔 DM에 보내다 거절되면(401 제외) 한 번 다시 열어 봅니다. 401·403·그 밖의 4xx·`accepted: false`는 바로 실패, 408·429·5xx·연결 실패는 웹훅과 같은 간격으로 다시 보냅니다. 응답 본문은 64KiB까지만 읽고 저장하지 않습니다.
+- **구성원 연결**(Buzz는 이메일로 사용자를 찾을 수 없음): 구성원이 `npub1…`(또는 16진수)를 넣으면 봇이 DM으로 6자리 코드를 **바로**(아웃박스를 거치지 않고) 보냅니다. 코드는 해시만 저장하고 10분 유효(만료 시각 포함 거부), 5번 틀리면 끝, 다시 보내기는 60초 간격·시간당 5번(`pango_core::buzz`). 제한은 발송 전에 쓰기 트랜잭션에서 걸므로 동시에 눌러도 한 번만 보냅니다. 한 Buzz 계정은 한 구성원만 확인할 수 있습니다(부분 유일 색인). 관리자는 연결을 끊을 수만 있고 대신 연결할 수는 없습니다. 감사 로그의 공개키는 `npub1abcd…wxyz`로 줄여 남깁니다.
+- **실패 안내**(연결 중): 401·403 → 502 `buzz_bot_rejected`(관리자 문의), 그 밖의 4xx·거절 → 502 `buzz_recipient_rejected`, 연결 실패·5xx·429·막힌 주소 → 502 `buzz_unreachable`.
+
+| 경로 | 본문 → 응답 |
+| --- | --- |
+| `GET /admin/integrations/buzz` | → `{configured, enabled, relay_url, bot_npub, linked_members, version, updated_at, stats}` |
+| `PUT /admin/integrations/buzz` | `{version, enabled}` → 위와 같음. 실행 설정이 없으면 켤 수 없음(409 `buzz_unavailable`) |
+| `GET·DELETE /admin/members/{id}/buzz` | → `{status, npub_short}`. 해제만(감사 로그 `buzz.admin_unlink`) |
+| `GET /me/buzz` | → `{available, status: none·pending·verified, npub, code_expires_at, attempts_left, resend_available_at, bot_npub}` |
+| `POST /me/buzz` | `{pubkey}` → 위와 같음. 코드 발송(429 제한, 409 `buzz_account_taken`·`buzz_unavailable`, 502 발송 실패) |
+| `POST /me/buzz/verify` | `{code}` → 위와 같음. 409 `buzz_code_wrong`·`buzz_code_expired`·`buzz_code_exhausted`·`buzz_code_missing`·`buzz_account_taken` |
+| `DELETE /me/buzz` | → 위와 같음(`status: none`) |
 
 ### 캘린더
 - 캘린더는 세 종류입니다. 권한은 `pango_core::calendar_access`(`can_read`·`can_write`·`event_role`)에서만 판정합니다.
@@ -290,7 +312,7 @@ def verify(secret: str, headers, body: bytes) -> bool:
 | 공지 | `GET /notices` `GET /notices/{id}` `POST /notices/{id}/read` |
 | 캘린더 | `GET /calendar/calendars` `GET /calendar/view` `GET /calendar/conflicts` `POST /calendar/events` `GET·PATCH·DELETE /calendar/events/{id}` `POST /calendar/events/{id}/respond` |
 | 알림 | `GET /notifications` `POST /notifications/{id}/read` `POST /notifications/read-all` `GET·PUT /me/notification-preferences` |
-| 관리 | `/admin/members…` `/admin/departments…` `/admin/positions…` `/admin/attendance…` `/admin/leave…` `/admin/approval/forms…` `/admin/notices…` `/admin/holidays…` `/admin/settings` `/admin/integrations/webhook…` `/admin/audit-log` `/admin/dashboard` |
+| 관리 | `/admin/members…` `/admin/departments…` `/admin/positions…` `/admin/attendance…` `/admin/leave…` `/admin/approval/forms…` `/admin/notices…` `/admin/holidays…` `/admin/settings` `/admin/integrations/webhook…` `/admin/integrations/buzz` `/admin/members/{id}/buzz` `/admin/audit-log` `/admin/dashboard` |
 
 ## 8. 화면 구성 (UI/UX)
 
