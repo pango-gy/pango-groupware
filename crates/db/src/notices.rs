@@ -1,7 +1,7 @@
 //! 공지사항과 읽음 확인.
 
 use pango_core::authz::{Audience, AudienceKind};
-use pango_core::id::{DepartmentId, MemberId, NoticeId};
+use pango_core::id::{DepartmentId, MemberId, NoticeAttachmentId, NoticeId};
 use pango_core::time::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -366,4 +366,119 @@ pub async fn list_reads(conn: &mut Conn, notice_id: NoticeId) -> DbResult<Vec<No
             })
         })
         .collect()
+}
+
+/// 공지 첨부파일 정보(내용 제외).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Attachment {
+    pub id: NoticeAttachmentId,
+    pub notice_id: NoticeId,
+    pub filename: String,
+    pub size: i64,
+    pub sha256: String,
+    pub uploaded_by: MemberId,
+    pub created_at: Timestamp,
+}
+
+type AttachmentRow = (String, String, String, i64, String, String, i64);
+
+fn attachment(row: AttachmentRow) -> DbResult<Attachment> {
+    let (id, notice_id, filename, size, sha256, uploaded_by, created_at) = row;
+    Ok(Attachment {
+        id: codec::parse("id", &id)?,
+        notice_id: codec::parse("notice_id", &notice_id)?,
+        filename,
+        size,
+        sha256,
+        uploaded_by: codec::parse("uploaded_by", &uploaded_by)?,
+        created_at: codec::timestamp("created_at", created_at)?,
+    })
+}
+
+const ATTACHMENT_COLUMNS: &str =
+    "id, notice_id, filename, size, sha256, uploaded_by, created_at FROM notice_attachments";
+
+/// 첨부파일과 내용을 함께 넣는다.
+pub async fn insert_attachment(conn: &mut Conn, item: &Attachment, data: &[u8]) -> DbResult<()> {
+    sqlx::query(
+        "INSERT INTO notice_attachments
+            (id, notice_id, filename, size, sha256, uploaded_by, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(item.id.to_string())
+    .bind(item.notice_id.to_string())
+    .bind(&item.filename)
+    .bind(item.size)
+    .bind(&item.sha256)
+    .bind(item.uploaded_by.to_string())
+    .bind(item.created_at.as_millis())
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query("INSERT INTO notice_attachment_contents (attachment_id, data) VALUES (?, ?)")
+        .bind(item.id.to_string())
+        .bind(data)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+/// 공지의 첨부파일(올린 순).
+pub async fn list_attachments(conn: &mut Conn, notice_id: NoticeId) -> DbResult<Vec<Attachment>> {
+    sqlx::query_as::<_, AttachmentRow>(&format!(
+        "SELECT {ATTACHMENT_COLUMNS} WHERE notice_id = ? ORDER BY created_at, id"
+    ))
+    .bind(notice_id.to_string())
+    .fetch_all(conn)
+    .await?
+    .into_iter()
+    .map(attachment)
+    .collect()
+}
+
+pub async fn count_attachments(conn: &mut Conn, notice_id: NoticeId) -> DbResult<i64> {
+    let (count,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM notice_attachments WHERE notice_id = ?")
+            .bind(notice_id.to_string())
+            .fetch_one(conn)
+            .await?;
+    Ok(count)
+}
+
+/// 공지에 속한 첨부파일 하나. 다른 공지의 첨부 ID면 `None`.
+pub async fn find_attachment(
+    conn: &mut Conn,
+    notice_id: NoticeId,
+    id: NoticeAttachmentId,
+) -> DbResult<Option<Attachment>> {
+    sqlx::query_as::<_, AttachmentRow>(&format!(
+        "SELECT {ATTACHMENT_COLUMNS} WHERE id = ? AND notice_id = ?"
+    ))
+    .bind(id.to_string())
+    .bind(notice_id.to_string())
+    .fetch_optional(conn)
+    .await?
+    .map(attachment)
+    .transpose()
+}
+
+/// 첨부파일의 내용.
+pub async fn attachment_content(
+    conn: &mut Conn,
+    id: NoticeAttachmentId,
+) -> DbResult<Option<Vec<u8>>> {
+    let row: Option<(Vec<u8>,)> =
+        sqlx::query_as("SELECT data FROM notice_attachment_contents WHERE attachment_id = ?")
+            .bind(id.to_string())
+            .fetch_optional(conn)
+            .await?;
+    Ok(row.map(|(data,)| data))
+}
+
+/// 첨부파일을 내용과 함께 지운다. 지웠으면 `true`.
+pub async fn delete_attachment(conn: &mut Conn, id: NoticeAttachmentId) -> DbResult<bool> {
+    let result = sqlx::query("DELETE FROM notice_attachments WHERE id = ?")
+        .bind(id.to_string())
+        .execute(conn)
+        .await?;
+    Ok(result.rows_affected() == 1)
 }

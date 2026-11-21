@@ -240,22 +240,24 @@ pub struct IdempotentJson<T> {
     pub idempotency: Option<Idempotency>,
 }
 
+/// `Idempotency-Key` 헤더. 없으면 `None`, 형식이 틀리면 400.
+fn idempotency_key(headers: &HeaderMap) -> Result<Option<String>, ServiceError> {
+    let Some(value) = headers.get("idempotency-key") else {
+        return Ok(None);
+    };
+    let key = value
+        .to_str()
+        .ok()
+        .filter(|key| (1..=128).contains(&key.len()) && key.bytes().all(|b| b.is_ascii_graphic()));
+    key.map(|key| Some(key.to_owned()))
+        .ok_or(ServiceError::Malformed("invalid idempotency key"))
+}
+
 impl<T: DeserializeOwned> FromRequest<AppState> for IdempotentJson<T> {
     type Rejection = ServiceError;
 
     async fn from_request(request: Request, state: &AppState) -> Result<Self, Self::Rejection> {
-        let key = match request.headers().get("idempotency-key") {
-            None => None,
-            Some(value) => {
-                let key = value.to_str().ok().filter(|key| {
-                    (1..=128).contains(&key.len()) && key.bytes().all(|b| b.is_ascii_graphic())
-                });
-                Some(
-                    key.ok_or(ServiceError::Malformed("invalid idempotency key"))?
-                        .to_owned(),
-                )
-            }
-        };
+        let key = idempotency_key(request.headers())?;
         let method = request.method().clone();
         let path = request.uri().path().to_owned();
         let (body, bytes) = read_json(request, state).await?;
@@ -265,6 +267,78 @@ impl<T: DeserializeOwned> FromRequest<AppState> for IdempotentJson<T> {
         });
         Ok(Self { body, idempotency })
     }
+}
+
+/// 파일 올리기: 본문은 파일 내용 그대로(`Content-Type: application/octet-stream`), 파일 이름은
+/// `X-File-Name` 헤더(퍼센트 인코딩한 UTF-8), 그리고 선택적 멱등성 키.
+///
+/// 파일 이름을 쿼리 문자열이 아닌 헤더로 받는 것은 요청 경로가 접근 로그에 남기 때문이다.
+/// 본문 크기 상한은 경로에 붙인 `DefaultBodyLimit`이 정한다.
+pub struct FileUpload {
+    pub filename: String,
+    pub data: Bytes,
+    pub idempotency: Option<Idempotency>,
+}
+
+impl FromRequest<AppState> for FileUpload {
+    type Rejection = ServiceError;
+
+    async fn from_request(request: Request, state: &AppState) -> Result<Self, Self::Rejection> {
+        let headers = request.headers();
+        let octet_stream = header_str(headers, header::CONTENT_TYPE)
+            .and_then(|value| value.split(';').next())
+            .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/octet-stream"));
+        if !octet_stream {
+            return Err(ServiceError::UnsupportedMediaType);
+        }
+        let filename = header_str(headers, "x-file-name")
+            .and_then(percent_decode)
+            .ok_or(ServiceError::Malformed("invalid file name header"))?;
+        let key = idempotency_key(headers)?;
+        let method = request.method().clone();
+        let path = request.uri().path().to_owned();
+        let data = Bytes::from_request(request, state)
+            .await
+            .map_err(|rejection| {
+                if rejection.status() == http::StatusCode::PAYLOAD_TOO_LARGE {
+                    ServiceError::PayloadTooLarge
+                } else {
+                    ServiceError::Malformed("unreadable body")
+                }
+            })?;
+        let idempotency = key.map(|key| Idempotency {
+            key,
+            fingerprint: fingerprint(&[
+                method.as_str().as_bytes(),
+                path.as_bytes(),
+                filename.as_bytes(),
+                &data,
+            ]),
+        });
+        Ok(Self {
+            filename,
+            data,
+            idempotency,
+        })
+    }
+}
+
+/// `%XX`로 인코딩한 UTF-8을 되돌린다. 인코딩되지 않은 바이트는 출력 가능한 ASCII만 받는다.
+fn percent_decode(raw: &str) -> Option<String> {
+    let mut bytes = Vec::with_capacity(raw.len());
+    let mut input = raw.bytes();
+    while let Some(byte) = input.next() {
+        match byte {
+            b'%' => {
+                let high = char::from(input.next()?).to_digit(16)?;
+                let low = char::from(input.next()?).to_digit(16)?;
+                bytes.push(u8::try_from(high * 16 + low).ok()?);
+            }
+            b' '..=b'~' => bytes.push(byte),
+            _ => return None,
+        }
+    }
+    String::from_utf8(bytes).ok()
 }
 
 /// 경로 변수. 형식이 틀린 ID는 존재할 수 없는 자원이므로 404.
@@ -485,6 +559,22 @@ mod tests {
         );
         for bad in ["", "unknown", "example.com", "1.2.3.4.5", "' OR 1=1"] {
             assert_eq!(parse_forwarded_ip(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn percent_decode_reads_utf8_and_rejects_broken_input() {
+        assert_eq!(
+            percent_decode("%EA%B3%B5%EC%A7%80%20v2.pdf").as_deref(),
+            Some("공지 v2.pdf")
+        );
+        assert_eq!(
+            percent_decode("plain+name.txt").as_deref(),
+            Some("plain+name.txt")
+        );
+        assert_eq!(percent_decode("").as_deref(), Some(""));
+        for bad in ["%", "%E", "%ZZ", "%FF", "%EA%B3", "tab\tname", "공지.pdf"] {
+            assert_eq!(percent_decode(bad), None, "{bad:?}");
         }
     }
 

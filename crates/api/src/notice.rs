@@ -1,7 +1,7 @@
 //! 공지사항.
 
 use pango_core::authz::AudienceKind;
-use pango_core::id::{DepartmentId, MemberId, NoticeId};
+use pango_core::id::{DepartmentId, MemberId, NoticeAttachmentId, NoticeId};
 use pango_core::time::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -47,6 +47,22 @@ pub struct NoticeDetail {
     pub body: String,
     /// 요청한 구성원의 첫 읽음 확인 시각.
     pub read_at: Option<Timestamp>,
+    /// 첨부파일(올린 순). 내용은 `GET /notices/{id}/attachments/{attachment_id}`로 받는다.
+    pub attachments: Vec<NoticeAttachment>,
+}
+
+/// 공지 첨부파일 정보.
+///
+/// 올리기는 `POST /admin/notices/{id}/attachments`에 파일 내용을 본문 그대로
+/// (`Content-Type: application/octet-stream`) 보내고, 파일 이름은 `X-File-Name` 헤더에
+/// 퍼센트 인코딩한 UTF-8로 보낸다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoticeAttachment {
+    pub id: NoticeAttachmentId,
+    pub filename: String,
+    /// 바이트 수.
+    pub size: u64,
+    pub created_at: Timestamp,
 }
 
 /// 배지 표시용 읽지 않은 공지 수.

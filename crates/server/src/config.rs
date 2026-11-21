@@ -35,6 +35,8 @@ pub struct Config {
     pub public_origin: Option<String>,
     /// 요청 본문 최대 크기(바이트).
     pub max_body_bytes: usize,
+    /// 첨부파일 하나의 최대 크기(바이트). 첨부 올리기 경로에만 [`Self::max_body_bytes`] 대신 쓴다.
+    pub max_attachment_bytes: usize,
     /// 외부 알림 웹훅을 루프백·사설망·CGNAT 주소로도 보낼지. 받는 서버를 같은 사설망에 둘 때만
     /// 켠다(서버 실행 옵션으로만, 관리자 화면에서는 바꿀 수 없다). 메타데이터·link-local 등은
     /// 켜도 막는다([`pango_core::outbound::ip_allowed`]).
@@ -113,6 +115,7 @@ impl Default for Config {
             trust_proxy: false,
             public_origin: None,
             max_body_bytes: 256 * 1024,
+            max_attachment_bytes: 10 * 1024 * 1024,
             outbound_allow_private: false,
             buzz: None,
         }

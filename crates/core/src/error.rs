@@ -145,6 +145,7 @@ conflict_reasons! {
     FormInactive => "form_inactive",
     // 공지
     NoticeArchived => "notice_archived",
+    AttachmentLimit => "attachment_limit",
     // 외부 알림(Buzz)
     BuzzUnavailable => "buzz_unavailable",
     BuzzAccountTaken => "buzz_account_taken",

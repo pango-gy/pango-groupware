@@ -3,6 +3,7 @@
 //! 이 크레이트는 IO를 하지 않는다. 현재 시각은 [`time::Clock`]으로 주입받는다.
 
 pub mod approval;
+pub mod attachment;
 pub mod attendance;
 pub mod authz;
 pub mod buzz;

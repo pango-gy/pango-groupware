@@ -1,17 +1,20 @@
 //! 공지사항: 대상 범위에 맞는 열람·읽음 확인과 관리자의 작성·수정·보관.
 
 use pango_api::notice::{
-    NoticeDetail, NoticeInput, NoticeReadReceipt, NoticeReadReport, NoticeReader, NoticeSummary,
-    NoticeUnreadCount,
+    NoticeAttachment, NoticeDetail, NoticeInput, NoticeReadReceipt, NoticeReadReport, NoticeReader,
+    NoticeSummary, NoticeUnreadCount,
 };
 use pango_api::{Page, PageQuery, Versioned};
+use pango_core::attachment::{self, FileName};
 use pango_core::authz::{self, Actor, Audience, AudienceScope};
-use pango_core::error::ConflictReason;
-use pango_core::id::{DepartmentId, MemberId, NoticeId};
+use pango_core::error::{ConflictReason, ValidationReason};
+use pango_core::id::{DepartmentId, MemberId, NoticeAttachmentId, NoticeId};
 use pango_core::text::{Body, Title};
 use pango_core::DomainError;
 use pango_db::members::{self, Member, MemberFilter};
-use pango_db::notices::{self, Notice, NoticeCursor, NoticeFilter, NoticeListItem, NoticeView};
+use pango_db::notices::{
+    self, Attachment, Notice, NoticeCursor, NoticeFilter, NoticeListItem, NoticeView,
+};
 use pango_db::{notifications, Conn};
 
 use super::support::{
@@ -19,7 +22,9 @@ use super::support::{
     require_current_admin, require_updated, Audit, AuthContext, Idempotency, Notify,
 };
 use crate::error::{ServiceError, ServiceResult};
+use crate::security::hex;
 use crate::state::AppState;
+use sha2::Digest;
 
 /// 검증을 마친 공지 내용.
 struct Content {
@@ -157,12 +162,28 @@ fn summary(item: NoticeListItem) -> NoticeSummary {
     }
 }
 
-fn detail(view: NoticeView) -> NoticeDetail {
-    NoticeDetail {
+fn attachment_dto(item: Attachment) -> ServiceResult<NoticeAttachment> {
+    Ok(NoticeAttachment {
+        id: item.id,
+        filename: item.filename,
+        size: u64::try_from(item.size).map_err(ServiceError::internal)?,
+        created_at: item.created_at,
+    })
+}
+
+/// 상세 응답. 첨부파일 목록을 함께 읽는다.
+async fn detail(conn: &mut Conn, view: NoticeView) -> ServiceResult<NoticeDetail> {
+    let attachments = notices::list_attachments(conn, view.item.id)
+        .await?
+        .into_iter()
+        .map(attachment_dto)
+        .collect::<ServiceResult<_>>()?;
+    Ok(NoticeDetail {
         read_at: view.item.read_at,
         summary: summary(view.item),
         body: view.body,
-    }
+        attachments,
+    })
 }
 
 async fn load_detail(
@@ -170,9 +191,8 @@ async fn load_detail(
     ctx: &AuthContext,
     id: NoticeId,
 ) -> ServiceResult<NoticeDetail> {
-    Ok(detail(found(
-        notices::find_view(conn, id, ctx.member_id()).await?,
-    )?))
+    let view = found(notices::find_view(conn, id, ctx.member_id()).await?)?;
+    detail(conn, view).await
 }
 
 async fn page(
@@ -218,7 +238,8 @@ pub async fn list_tx(
 /// 공지 상세. 열람만으로는 읽음 처리하지 않는다(필독 확인은 명시적인 동작이어야 한다).
 pub async fn get(state: &AppState, ctx: &AuthContext, id: NoticeId) -> ServiceResult<NoticeDetail> {
     let mut conn = state.read().await?;
-    find_visible(&mut conn, &ctx.actor, id).await.map(detail)
+    let view = find_visible(&mut conn, &ctx.actor, id).await?;
+    detail(&mut conn, view).await
 }
 
 /// 읽음 확인. 여러 번(동시에) 보내도 한 줄만 남고 첫 확인 시각이 유지된다.
@@ -484,4 +505,130 @@ pub async fn read_report(
         })
         .collect();
     Ok(NoticeReadReport { read, unread })
+}
+
+/// 공지에 파일을 붙인다. 보관된 공지에는 붙일 수 없고, 공지마다
+/// [`attachment::MAX_PER_NOTICE`]개까지다. 크기 상한은 HTTP 계층이 본문을 읽을 때 지킨다.
+///
+/// 같은 멱등성 키로 다시 보내면 처음 결과를 돌려준다(첨부가 두 번 생기지 않는다).
+pub async fn add_attachment(
+    state: &AppState,
+    ctx: &AuthContext,
+    id: NoticeId,
+    filename: &str,
+    data: &[u8],
+    idempotency: Option<&Idempotency>,
+) -> ServiceResult<NoticeAttachment> {
+    authz::require_admin(&ctx.actor)?;
+    let filename = FileName::parse(filename)?.into_string();
+    if data.is_empty() {
+        return Err(DomainError::validation("file", ValidationReason::Empty).into());
+    }
+    let size = i64::try_from(data.len()).map_err(ServiceError::internal)?;
+    let sha256 = hex(&sha2::Sha256::digest(data));
+    let now = state.now();
+    state
+        .write_idempotent(ctx.member_id(), idempotency, async |conn: &mut Conn| {
+            require_current_admin(conn, ctx).await?;
+            let notice = found(notices::find(conn, id).await?)?;
+            if notice.archived_at.is_some() {
+                return Err(DomainError::Conflict(ConflictReason::NoticeArchived).into());
+            }
+            let count = notices::count_attachments(conn, id).await?;
+            if usize::try_from(count).map_err(ServiceError::internal)? >= attachment::MAX_PER_NOTICE
+            {
+                return Err(DomainError::Conflict(ConflictReason::AttachmentLimit).into());
+            }
+            let item = Attachment {
+                id: NoticeAttachmentId::new(),
+                notice_id: id,
+                filename: filename.clone(),
+                size,
+                sha256: sha256.clone(),
+                uploaded_by: ctx.member_id(),
+                created_at: now,
+            };
+            notices::insert_attachment(conn, &item, data).await?;
+            audit(
+                conn,
+                now,
+                Audit {
+                    action: "notice.attachment.add",
+                    target_type: "notice",
+                    target_id: Some(id.to_string()),
+                    detail: Some(attachment_detail(&item)),
+                    ctx: Some(ctx),
+                },
+            )
+            .await?;
+            attachment_dto(item)
+        })
+        .await
+}
+
+fn attachment_detail(item: &Attachment) -> serde_json::Value {
+    serde_json::json!({
+        "attachment_id": item.id,
+        "filename": item.filename,
+        "size": item.size,
+        "sha256": item.sha256,
+    })
+}
+
+/// 첨부파일을 내용과 함께 지운다.
+///
+/// 보관된 공지에서도 지울 수 있다. 잘못 올린 파일(개인정보가 든 파일 등)은 보관 여부와 무관하게
+/// 없앨 수 있어야 하기 때문이다. 무엇을 지웠는지는 감사 로그에 이름·크기·해시로 남는다.
+pub async fn remove_attachment(
+    state: &AppState,
+    ctx: &AuthContext,
+    id: NoticeId,
+    attachment_id: NoticeAttachmentId,
+) -> ServiceResult<()> {
+    authz::require_admin(&ctx.actor)?;
+    let now = state.now();
+    state
+        .write(async |conn: &mut Conn| {
+            require_current_admin(conn, ctx).await?;
+            found(notices::find(conn, id).await?)?;
+            let item = found(notices::find_attachment(conn, id, attachment_id).await?)?;
+            notices::delete_attachment(conn, attachment_id).await?;
+            audit(
+                conn,
+                now,
+                Audit {
+                    action: "notice.attachment.remove",
+                    target_type: "notice",
+                    target_id: Some(id.to_string()),
+                    detail: Some(attachment_detail(&item)),
+                    ctx: Some(ctx),
+                },
+            )
+            .await?;
+            Ok(())
+        })
+        .await
+}
+
+/// 내려받을 첨부파일.
+pub struct AttachmentFile {
+    pub filename: String,
+    pub data: Vec<u8>,
+}
+
+/// 첨부파일 내려받기. 공지 상세를 볼 수 있는 사람만 받을 수 있다(보관됐거나 범위 밖이면 404).
+pub async fn download_attachment(
+    state: &AppState,
+    ctx: &AuthContext,
+    id: NoticeId,
+    attachment_id: NoticeAttachmentId,
+) -> ServiceResult<AttachmentFile> {
+    let mut conn = state.read().await?;
+    find_visible(&mut conn, &ctx.actor, id).await?;
+    let item = found(notices::find_attachment(&mut conn, id, attachment_id).await?)?;
+    let data = found(notices::attachment_content(&mut conn, attachment_id).await?)?;
+    Ok(AttachmentFile {
+        filename: item.filename,
+        data,
+    })
 }

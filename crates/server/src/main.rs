@@ -59,6 +59,10 @@ enum Command {
         /// 클라우드 메타데이터·link-local 주소는 이 옵션을 켜도 막는다.
         #[arg(long, env = "PANGO_OUTBOUND_ALLOW_PRIVATE")]
         outbound_allow_private: bool,
+        /// 공지 첨부파일 하나의 최대 크기(MiB). 파일은 DB에 저장되므로 DB 크기도 함께 늘어난다.
+        #[arg(long, env = "PANGO_MAX_ATTACHMENT_MB", default_value_t = 10,
+              value_parser = clap::value_parser!(u32).range(1..=100))]
+        max_attachment_mb: u32,
         /// 사내 메신저 Buzz 릴레이 주소(예: https://buzz.example.com). 봇 키와 함께 지정한다.
         #[arg(long, env = "PANGO_BUZZ_RELAY_URL")]
         buzz_relay_url: Option<String>,
@@ -114,6 +118,7 @@ async fn run(cli: Cli) -> Result<(), AnyError> {
             public_origin,
             insecure_cookies,
             outbound_allow_private,
+            max_attachment_mb,
             buzz_relay_url,
             buzz_bot_key_file,
             buzz_bot_key,
@@ -132,6 +137,7 @@ async fn run(cli: Cli) -> Result<(), AnyError> {
                 public_origin,
                 cookie_secure: !insecure_cookies,
                 outbound_allow_private,
+                max_attachment_bytes: max_attachment_mb as usize * 1024 * 1024,
                 ..Config::default()
             };
             let state = open_state(&cli.data_dir, config).await?;

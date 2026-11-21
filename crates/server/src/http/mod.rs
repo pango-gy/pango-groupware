@@ -30,14 +30,14 @@ use crate::error::ServiceError;
 use crate::state::AppState;
 
 /// 기능별 API 경로. 새 기능은 여기에 `merge` 한 줄을 추가한다.
-fn api_routes() -> Router<AppState> {
+fn api_routes(state: &AppState) -> Router<AppState> {
     Router::new()
         .route("/health", get(health))
         .merge(auth::routes())
         .merge(attendance::routes())
         .merge(org::routes())
         .merge(members::routes())
-        .merge(notices::routes())
+        .merge(notices::routes(state.config.max_attachment_bytes))
         .merge(notifications::routes())
         .merge(admin::routes())
         .merge(approval::routes())
@@ -68,7 +68,7 @@ fn static_header(name: &'static str, value: &'static str) -> SetResponseHeaderLa
 }
 
 pub fn router(state: AppState) -> Router {
-    let api = api_routes()
+    let api = api_routes(&state)
         // API 응답은 개인 정보를 담으므로 어디에도 캐시하지 않는다.
         .layer(static_header("cache-control", "no-store"));
     Router::new()

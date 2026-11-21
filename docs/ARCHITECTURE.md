@@ -11,7 +11,7 @@
 | 출퇴근·근태 | 출근/퇴근, 근무 형태, 월별 조회·요약, 정정 요청, 관리자 수정·CSV | 위치/Wi-Fi 확인, 교대 근무 |
 | 휴가 | 휴가 종류, 연차 자동 부여, 신청·승인·취소, 잔여 조회, 관리자 조정 | 회계연도 기준 부여 |
 | 전자결재 | 분류별 양식(필드 정의), 기안, 결재라인(결재·합의·참조), 승인·반려·회수, 결재함 | 대결·전결, 첨부파일 |
-| 공지 | 작성·고정·필독, 읽음 확인, 대상 지정 | 첨부파일, 댓글 |
+| 공지 | 작성·고정·필독, 읽음 확인, 대상 지정, 첨부파일 | 댓글 |
 | 캘린더 | 내·전사·부서 일정, 참석자 초대·응답, 참석자 일정 확인, 공휴일·휴가 표시 | 반복 일정, 미리 알림, 생일, 다른 사람의 캘린더 공유 |
 | 알림 | 앱 내 알림, 외부 연동(범용 웹훅, 사내 메신저 Buzz DM) | 푸시 중계 서버 |
 | 관리 | 설정, 근무 정책, 공휴일, 감사 로그 | 백업 UI |
@@ -157,6 +157,11 @@ UUID v7을 타입별 newtype(`MemberId`, `DocumentId` …)으로 감쌉니다. D
 ### 공지·알림
 - 공지를 게시하면 대상 범위의 재직 구성원에게 `notice.new` 알림이 가고, 알림에는 공지 제목이 들어 있습니다. 수정은 다시 알리지 않습니다.
 - 공지를 **보관**하거나 수정으로 **대상을 좁히면**, 그 공지를 더는 볼 수 없게 된 구성원의 **읽지 않은** `notice.new` 알림을 같은 트랜잭션에서 지웁니다(볼 수 없는 공지의 제목이 알림함에 남지 않도록). 볼 수 있는지는 열람과 같은 규칙(`authz::audience_scope`)으로 정하고, 이미 읽은 알림은 받은 기록이므로 그대로 둡니다.
+- **첨부파일**은 내용까지 SQLite에 둡니다(`notice_attachments` + 내용만 담는 `notice_attachment_contents`. 목록·상세는 내용을 읽지 않음). 실행 파일 하나 + DB 파일 하나로 백업하는 원칙을 지키는 대신, 첨부만큼 DB가 커집니다.
+  - 올리기는 관리자만, 보관되지 않은 공지에, 공지마다 10개(`attachment::MAX_PER_NOTICE`)까지입니다. 본문은 파일 내용 그대로(`application/octet-stream`), 이름은 `X-File-Name` 헤더(퍼센트 인코딩 UTF-8)로 받습니다. 이름을 쿼리 문자열로 받지 않는 것은 경로가 접근 로그에 남기 때문입니다. 크기 상한은 이 경로에만 따로 두며(`--max-attachment-mb`, `PANGO_MAX_ATTACHMENT_MB`, 기본 10 MiB) 다른 경로의 본문 상한은 그대로입니다. 이름은 `attachment::FileName`으로 검증합니다(경로 구분자·`.`만 있는 이름·제어 문자 거부). `Idempotency-Key`를 주면 한 번만 올라갑니다.
+  - 내려받기는 공지 상세를 볼 수 있는 사람만 됩니다(보관됐거나 범위 밖이면 404, 다른 공지의 첨부 ID도 404). 올린 사람이 정한 형식을 믿지 않고 항상 `application/octet-stream` + `Content-Disposition: attachment` + CSP `sandbox`로 보내, HTML·SVG가 이 출처에서 열려 스크립트가 실행되지 않게 합니다.
+  - 지우기는 내용까지 실제로 지웁니다. 잘못 올린 파일(개인정보 등)을 없앨 수 있어야 하므로 보관된 공지에서도 됩니다. 올리기·지우기는 감사 로그(`notice.attachment.add`·`.remove`)에 이름·크기·SHA-256으로 남습니다.
+  - 웹은 쿠키로 인증되므로 내려받기를 일반 링크로 엽니다. iOS·Android 앱(Bearer 토큰)에서는 이 링크로 받을 수 없습니다(근태 CSV 내보내기와 같은 한계).
 
 ### 외부 알림(웹훅)
 앱 내 알림을 외부로도 보냅니다. 채널은 **서명한 JSON을 POST하는 범용 웹훅**과 **사내 메신저 Buzz DM**(아래) 둘이고, 같은 아웃박스·발송 작업·재시도 규칙을 씁니다.
@@ -309,7 +314,7 @@ def verify(secret: str, headers, body: bytes) -> bool:
 | 휴가 | `GET /leave/types` `GET /leave/balance` `GET /leave/ledger` `GET /leave/requests` `POST /leave/requests` `POST /leave/requests/{id}/cancel` `GET /leave/calendar` |
 | 조직장 | `GET /team/attendance` `GET /team/leave` `GET /team/members` |
 | 결재 | `GET /approval/forms` `GET /approval/counts` `GET /approval/line-suggestion` `GET /approval/documents` `POST /approval/documents` `GET·PATCH·DELETE /approval/documents/{id}` `POST /approval/documents/{id}/{submit,approve,reject,withdraw}` `POST /admin/approval/documents/{id}/reject` `POST /admin/approval/forms/{id}/duplicate` |
-| 공지 | `GET /notices` `GET /notices/{id}` `POST /notices/{id}/read` |
+| 공지 | `GET /notices` `GET /notices/{id}` `POST /notices/{id}/read` `GET /notices/{id}/attachments/{attachment_id}` `POST /admin/notices/{id}/attachments` `DELETE /admin/notices/{id}/attachments/{attachment_id}` |
 | 캘린더 | `GET /calendar/calendars` `GET /calendar/view` `GET /calendar/conflicts` `POST /calendar/events` `GET·PATCH·DELETE /calendar/events/{id}` `POST /calendar/events/{id}/respond` |
 | 알림 | `GET /notifications` `POST /notifications/{id}/read` `POST /notifications/read-all` `GET·PUT /me/notification-preferences` |
 | 관리 | `/admin/members…` `/admin/departments…` `/admin/positions…` `/admin/attendance…` `/admin/leave…` `/admin/approval/forms…` `/admin/notices…` `/admin/holidays…` `/admin/settings` `/admin/integrations/webhook…` `/admin/integrations/buzz` `/admin/members/{id}/buzz` `/admin/audit-log` `/admin/dashboard` |
