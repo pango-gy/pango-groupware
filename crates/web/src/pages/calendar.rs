@@ -134,6 +134,12 @@ fn CalendarScreen(open: Option<CalendarEventId>) -> Element {
         }
     };
 
+    let marks = match &*view.read() {
+        Some(Ok(data)) => logic::mini_marks(&logic::prepare(data, &filter, range, week), range, tz),
+        _ => logic::MiniMarks::default(),
+    };
+    let viewed_week = (current_mode == Mode::Week).then_some(range);
+
     let side_list = rsx! {
         CalendarList {
             calendars: list.clone(),
@@ -159,6 +165,8 @@ fn CalendarScreen(open: Option<CalendarEventId>) -> Element {
                     month: mini(),
                     selected: anchor(),
                     today,
+                    week: viewed_week,
+                    marks,
                     onmonth: move |month| mini.set(month),
                     onpick: go_to,
                 }
@@ -232,6 +240,14 @@ fn CalendarScreen(open: Option<CalendarEventId>) -> Element {
                                         week,
                                         onopen: move |id| detail.set(Some(id)),
                                         onday: move |date| day_sheet.set(Some(date)),
+                                        oncreate: move |date| {
+                                            // 넓은 화면은 그날로 바로 등록, 좁은 화면은 칸이 작아 그날 목록을 먼저 보여 준다.
+                                            if compact() {
+                                                day_sheet.set(Some(date));
+                                            } else {
+                                                form.set(Some(FormMode::New { date }));
+                                            }
+                                        },
                                     }
                                 },
                                 Mode::Week => rsx! {
@@ -294,6 +310,14 @@ fn CalendarScreen(open: Option<CalendarEventId>) -> Element {
                     form.set(Some(FormMode::Edit(Box::new(event))));
                 },
                 onchanged: move |_| view.restart(),
+                onloaded: move |event: EventDetail| {
+                    // 알림에서 열었으면 그 일정이 있는 날로 옮겨 둔다.
+                    if open == Some(event.summary.id) {
+                        if let Some((start, _)) = logic::event_days(&event.summary, tz) {
+                            go_to(start);
+                        }
+                    }
+                },
             }
         }
         if let Some(mode) = form() {
@@ -326,6 +350,9 @@ fn MiniMonth(
     month: YearMonth,
     selected: NaiveDate,
     today: NaiveDate,
+    /// 주 보기에서 보고 있는 기간. 작은 달력에 띠로 보인다.
+    week: Option<logic::Range>,
+    marks: logic::MiniMarks,
     onmonth: EventHandler<YearMonth>,
     onpick: EventHandler<NaiveDate>,
 ) -> Element {
@@ -338,13 +365,7 @@ fn MiniMonth(
                 label: "{month.label()} 날짜 고르기",
                 class: "calendar-mini",
                 day: move |date: NaiveDate| {
-                    let mut class = "cal-mini-day".to_owned();
-                    if date == today {
-                        class.push_str(" cal-mini-today");
-                    }
-                    if date == selected {
-                        class.push_str(" cal-mini-selected");
-                    }
+                    let class = logic::mini_day_class(date, today, selected, week, &marks);
                     rsx! {
                         button {
                             class,
@@ -436,6 +457,8 @@ fn MonthView(
     week: WorkWeek,
     onopen: EventHandler<CalendarEventId>,
     onday: EventHandler<NaiveDate>,
+    /// 칸의 빈 곳을 눌렀을 때.
+    oncreate: EventHandler<NaiveDate>,
 ) -> Element {
     let tz = use_session().zone();
     let cells = logic::month_cells(&data, month, tz);
@@ -457,6 +480,7 @@ fn MonthView(
                         week,
                         onopen,
                         onday,
+                        oncreate,
                     }
                 }
             },
@@ -474,20 +498,27 @@ fn MonthDay(
     week: WorkWeek,
     onopen: EventHandler<CalendarEventId>,
     onday: EventHandler<NaiveDate>,
+    oncreate: EventHandler<NaiveDate>,
 ) -> Element {
     let tz = use_session().zone();
     let holidays = data.holidays.get(&date).cloned().unwrap_or_default();
     let leaves = data.leaves.get(&date).cloned().unwrap_or_default();
     let count = logic::day_count(&data, date, tz);
     rsx! {
-        div { class: logic::day_class(date, today, week, !holidays.is_empty()),
+        // 빈 곳 누르기는 마우스 지름길이다. 키보드는 "일정 등록" 단추와 날짜 단추로 같은 일을 한다.
+        div {
+            class: logic::day_class(date, today, week, !holidays.is_empty()),
+            onclick: move |_| oncreate.call(date),
             div { class: "cal-day-head",
                 button {
                     class: "cal-date",
                     r#type: "button",
                     "aria-label": logic::day_aria(date, &holidays, count),
                     "aria-current": if date == today { "date" },
-                    onclick: move |_| onday.call(date),
+                    onclick: move |event: MouseEvent| {
+                        event.stop_propagation();
+                        onday.call(date);
+                    },
                     "{date.day()}"
                 }
                 if !holidays.is_empty() {
@@ -532,7 +563,10 @@ fn MonthDay(
                     class: "cal-more",
                     r#type: "button",
                     "aria-label": "{format::date_md(date)} 일정 {cell.hidden}개 더 보기",
-                    onclick: move |_| onday.call(date),
+                    onclick: move |event: MouseEvent| {
+                        event.stop_propagation();
+                        onday.call(date);
+                    },
                     "+{cell.hidden}"
                 }
             }
@@ -557,7 +591,10 @@ fn EventBar(
             r#type: "button",
             style: "--span: {bar.span}",
             "aria-label": logic::event_aria(&event, &calendar, tz),
-            onclick: move |_| onopen.call(id),
+            onclick: move |click: MouseEvent| {
+                click.stop_propagation();
+                onopen.call(id);
+            },
             if !event.all_day && !bar.cont_before {
                 span { class: "cal-bar-time", "{logic::short_time(&event, tz)}" }
             }
@@ -580,7 +617,10 @@ fn EventLine(
             class: if logic::is_tentative(&event) { "cal-line cal-line-tentative" } else { "cal-line" },
             r#type: "button",
             "aria-label": logic::event_aria(&event, &calendar, tz),
-            onclick: move |_| onopen.call(id),
+            onclick: move |click: MouseEvent| {
+                click.stop_propagation();
+                onopen.call(id);
+            },
             span { class: "cal-dot {logic::kind_class(event.calendar_kind)}", "aria-hidden": "true" }
             span { class: "cal-line-time", "{logic::short_time(&event, tz)}" }
             span { class: "cal-line-title", "{event.title}" }
@@ -769,7 +809,10 @@ fn TimedBlock(
             r#type: "button",
             style: block.style(),
             "aria-label": logic::event_aria(&event, &calendar, tz),
-            onclick: move |_| onopen.call(id),
+            onclick: move |click: MouseEvent| {
+                click.stop_propagation();
+                onopen.call(id);
+            },
             span { class: "cal-block-title", "{event.title}" }
             span { class: "cal-block-time", "{logic::block_time(&block)}" }
         }
@@ -958,10 +1001,17 @@ fn EventDetailModal(
     onclose: EventHandler<()>,
     onedit: EventHandler<EventDetail>,
     onchanged: EventHandler<()>,
+    /// 상세를 읽을 때마다 부른다.
+    onloaded: EventHandler<EventDetail>,
 ) -> Element {
     let mut detail = use_resource(use_reactive!(|id| async move {
         api::get::<EventDetail>(&format!("/calendar/events/{id}")).await
     }));
+    use_effect(move || {
+        if let Some(Ok(event)) = &*detail.read() {
+            onloaded.call(event.clone());
+        }
+    });
     let mut busy = use_signal(|| false);
     let mut confirming = use_signal(|| false);
 
@@ -2124,6 +2174,58 @@ pub(crate) mod logic {
         class
     }
 
+    /// 작은 달력의 날짜 표시: 일정·휴가가 있는 날과 공휴일. 읽어 온 기간 안의 날만 안다.
+    #[derive(Debug, Clone, PartialEq, Eq, Default)]
+    pub struct MiniMarks {
+        pub busy: BTreeSet<NaiveDate>,
+        pub holidays: BTreeSet<NaiveDate>,
+    }
+
+    pub fn mini_marks(data: &Prepared, range: Range, tz: Tz) -> MiniMarks {
+        let busy = range
+            .days()
+            .into_iter()
+            .filter(|date| day_count(data, *date, tz) > 0)
+            .collect();
+        let holidays = data
+            .holidays
+            .iter()
+            .filter(|(date, names)| !names.is_empty() && range.from <= **date && **date <= range.to)
+            .map(|(date, _)| *date)
+            .collect();
+        MiniMarks { busy, holidays }
+    }
+
+    /// 작은 달력 날짜 단추의 클래스. `week`는 주 보기에서 보고 있는 기간(그 주를 띠로 칠한다).
+    pub fn mini_day_class(
+        date: NaiveDate,
+        today: NaiveDate,
+        selected: NaiveDate,
+        week: Option<Range>,
+        marks: &MiniMarks,
+    ) -> String {
+        use chrono::{Datelike, Weekday};
+        let mut class = "cal-mini-day".to_owned();
+        if marks.holidays.contains(&date) || date.weekday() == Weekday::Sun {
+            class.push_str(" cal-mini-sun");
+        } else if date.weekday() == Weekday::Sat {
+            class.push_str(" cal-mini-sat");
+        }
+        if week.is_some_and(|range| range.from <= date && date <= range.to) {
+            class.push_str(" cal-mini-in-week");
+        }
+        if marks.busy.contains(&date) {
+            class.push_str(" cal-mini-busy");
+        }
+        if date == today {
+            class.push_str(" cal-mini-today");
+        }
+        if date == selected {
+            class.push_str(" cal-mini-selected");
+        }
+        class
+    }
+
     /// 주 보기 날짜 머리의 클래스.
     pub fn week_head_class(
         date: NaiveDate,
@@ -2963,6 +3065,80 @@ pub(crate) mod logic {
             let mut department = meeting;
             department.calendar_kind = CalendarKind::Department;
             assert_eq!(calendar_name(&[], &department), "부서 일정");
+        }
+
+        #[test]
+        fn mini_marks_cover_busy_days_and_holidays_in_range_only() {
+            let tz = seoul();
+            let mut prepared = data(vec![
+                all_day("출장", "2026-11-17", "2026-11-19"),
+                timed("회의", "2026-11-20T09:30", "2026-11-20T10:00"),
+            ]);
+            prepared.leaves.insert(
+                d("2026-11-24"),
+                vec![leave("홍길동", LeaveUnit::FullDay, true)],
+            );
+            prepared
+                .holidays
+                .insert(d("2026-11-25"), vec!["창립기념일".into()]);
+            prepared
+                .holidays
+                .insert(d("2026-12-25"), vec!["성탄절".into()]);
+            let marks = mini_marks(&prepared, range("2026-11-01", "2026-12-05"), tz);
+            let busy: Vec<_> = marks.busy.iter().map(|day| day.to_string()).collect();
+            assert_eq!(
+                busy,
+                [
+                    "2026-11-17",
+                    "2026-11-18",
+                    "2026-11-19",
+                    "2026-11-20",
+                    "2026-11-24"
+                ]
+            );
+            // 기간 밖 공휴일은 모른다(그 달을 읽을 때 표시된다).
+            assert_eq!(
+                marks.holidays.into_iter().collect::<Vec<_>>(),
+                [d("2026-11-25")]
+            );
+            assert_eq!(
+                mini_marks(&Prepared::default(), range("2026-11-01", "2026-11-30"), tz),
+                MiniMarks::default()
+            );
+        }
+
+        #[test]
+        fn mini_day_classes_color_weekends_and_holidays_and_band_the_viewed_week() {
+            let today = d("2026-11-20");
+            let mut marks = MiniMarks::default();
+            marks.busy.insert(d("2026-11-17"));
+            marks.holidays.insert(d("2026-11-25"));
+            let week = Some(range("2026-11-15", "2026-11-21"));
+            assert_eq!(
+                mini_day_class(d("2026-11-15"), today, today, week, &marks),
+                "cal-mini-day cal-mini-sun cal-mini-in-week"
+            );
+            assert_eq!(
+                mini_day_class(d("2026-11-21"), today, today, week, &marks),
+                "cal-mini-day cal-mini-sat cal-mini-in-week"
+            );
+            assert_eq!(
+                mini_day_class(d("2026-11-17"), today, today, week, &marks),
+                "cal-mini-day cal-mini-in-week cal-mini-busy"
+            );
+            assert_eq!(
+                mini_day_class(today, today, today, week, &marks),
+                "cal-mini-day cal-mini-in-week cal-mini-today cal-mini-selected"
+            );
+            // 평일 공휴일은 일요일처럼 빨갛다. 주 보기가 아니면 띠가 없다.
+            assert_eq!(
+                mini_day_class(d("2026-11-25"), today, today, None, &marks),
+                "cal-mini-day cal-mini-sun"
+            );
+            assert_eq!(
+                mini_day_class(d("2026-11-22"), today, d("2026-11-23"), week, &marks),
+                "cal-mini-day cal-mini-sun"
+            );
         }
 
         #[test]
