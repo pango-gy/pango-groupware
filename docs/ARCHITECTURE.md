@@ -13,7 +13,7 @@
 | 전자결재 | 분류별 양식(필드 정의), 기안, 결재라인(결재·합의·참조), 승인·반려·회수, 결재함 | 대결·전결, 첨부파일 |
 | 공지 | 작성·고정·필독, 읽음 확인, 대상 지정 | 첨부파일, 댓글 |
 | 캘린더 | 내·전사·부서 일정, 참석자 초대·응답, 참석자 일정 확인, 공휴일·휴가 표시 | 반복 일정, 미리 알림, 생일, 다른 사람의 캘린더 공유 |
-| 알림 | 앱 내 알림 | 푸시 중계 서버 |
+| 알림 | 앱 내 알림, 외부 메신저 연동(범용 웹훅) | 푸시 중계 서버, 메신저 전용 발송기 |
 | 관리 | 설정, 근무 정책, 공휴일, 감사 로그 | 백업 UI |
 
 ## 2. 크레이트 구성과 의존 방향
@@ -158,6 +158,63 @@ UUID v7을 타입별 newtype(`MemberId`, `DocumentId` …)으로 감쌉니다. D
 - 공지를 게시하면 대상 범위의 재직 구성원에게 `notice.new` 알림이 가고, 알림에는 공지 제목이 들어 있습니다. 수정은 다시 알리지 않습니다.
 - 공지를 **보관**하거나 수정으로 **대상을 좁히면**, 그 공지를 더는 볼 수 없게 된 구성원의 **읽지 않은** `notice.new` 알림을 같은 트랜잭션에서 지웁니다(볼 수 없는 공지의 제목이 알림함에 남지 않도록). 볼 수 있는지는 열람과 같은 규칙(`authz::audience_scope`)으로 정하고, 이미 읽은 알림은 받은 기록이므로 그대로 둡니다.
 
+### 외부 알림(웹훅)
+앱 내 알림을 외부 메신저로도 보냅니다. 사내 메신저(Buzz)의 API가 정해지기 전이라 지금은 **서명한 JSON을 POST하는 범용 웹훅**만 있고, 메신저 전용 발송기는 같은 트레이트(`service::outbound::OutboundSender`)로 붙입니다.
+
+- **아웃박스**: `support::notify`가 알림을 **새로 만들었을 때만**(`dedupe_key`로 건너뛰면 아니다) 같은 트랜잭션에서 `outbound_messages`에 한 줄을 남깁니다. 조건은 연동이 켜져 있고, 받는 사람이 재직 중이고, 외부 알림을 끄지 않았을 것(`member_notification_prefs`, 행이 없으면 받음). 알림·채널마다 한 줄(유일 제약)이라 같은 알림이 두 번 나가지 않습니다. 알림이 지워지면(보관된 공지의 읽지 않은 알림) 보낼 일도 함께 지워집니다(`ON DELETE CASCADE`).
+- **발송 작업**(`outbound::run_forever`, 5초마다): 쓰기 트랜잭션에서 `pending`이고 `next_attempt_at`이 지난 줄을 최대 20개 집으며 `attempts`를 올리고 `next_attempt_at`을 다음 재시도 시각으로 미룹니다. 커밋한 뒤 **트랜잭션 밖에서** 동시에 보내고, 결과를 짧은 트랜잭션으로 남깁니다. 집기가 직렬화된 쓰기 안에서 일어나므로 작업이 겹쳐도 같은 줄을 두 번 집지 않고, 보내는 중 서버가 멈추면 그 시각에 **한 번 더** 보낼 뿐입니다(그래서 받는 쪽은 `X-Pango-Delivery`로 중복을 거릅니다). 집은 뒤 연동이 꺼졌거나 받는 사람이 퇴사·수신 거부했으면 보내지 않고 `failed`로 끝냅니다.
+- **재시도**(`pango_core::outbound`): 2xx는 `sent`. 408·429·5xx·연결 실패·시간 초과는 30초, 1분, 2분 … 두 배씩(최대 1시간) 미뤄 다시 보내고, 8번 시도하면 `failed`. 그 밖의 응답(3xx·4xx)은 바로 `failed`. `last_error`에는 `http_404`, `timeout` 같은 짧은 코드만 남깁니다(응답 본문·주소·비밀 값 없음). 외부 발송의 실패는 앱 알림과 업무 트랜잭션에 영향을 주지 않습니다.
+- **정리**: 30일 지난 `sent`·`failed` 줄은 주기 정리 작업이 지웁니다.
+- **연결할 주소(SSRF 방어)**: 관리자가 넣는 주소는 `https`만 받고(개발용 `localhost`·`127.0.0.1`·`[::1]`만 `http`), 사용자 정보·조각은 거부합니다(`WebhookUrl::parse`). 보낼 때는 발송기의 DNS 해석기가 이름을 풀어 `outbound::ip_allowed`를 통과한 IP만 돌려주므로 확인한 주소로만 연결합니다(DNS 재바인딩 방지). IP를 직접 쓴 주소도 같은 규칙으로 확인하고, 시스템 프록시와 리다이렉트는 쓰지 않습니다. 클라우드 메타데이터·link-local(`169.254.0.0/16`, `fe80::/10`, `fd00:ec2::254`)·미지정·멀티캐스트·브로드캐스트·예약(`240.0.0.0/4`) 대역은 **항상** 막고, 루프백·사설망(`10/8`, `172.16/12`, `192.168/16`, `fc00::/7`)·CGNAT(`100.64/10`)는 서버 실행 옵션 `--outbound-allow-private`(`PANGO_OUTBOUND_ALLOW_PRIVATE`)을 켰을 때만 엽니다(관리자 화면에서는 바꿀 수 없음). 그래서 개발용 `http://localhost` 주소도 이 옵션 없이는 실제로 보내지 않습니다. IPv4를 감싼 IPv6(`::ffff:…`, `64:ff9b::/96`)는 안의 IPv4로 판정합니다. 막히면 재시도 없이 `failed`, 사유는 `blocked_address`뿐입니다(해석한 IP를 드러내지 않음).
+- **서명 키**: 256비트 난수의 16진수 64자. DB에 원문으로 두고(HMAC 키이므로) API는 `has_secret`만 돌려줍니다. 새로 만들 때 응답으로 **한 번만** 보여 주고, 감사 로그에는 바꿨다는 사실만 남깁니다. 감사 로그의 주소는 출처(`https://host`)만 남깁니다(경로·쿼리에 받는 쪽 토큰이 있을 수 있음).
+
+요청(연결 5초, 전체 10초, 응답 본문은 읽지 않음):
+
+```http
+POST {웹훅 주소}
+Content-Type: application/json
+X-Pango-Event: notification            (테스트 발송은 test)
+X-Pango-Delivery: 0193f2c4-…           (아웃박스 ID. 재시도해도 같다)
+X-Pango-Timestamp: 1767225600          (유닉스 초)
+X-Pango-Signature: sha256=<hex>        (HMAC-SHA256(key = 서명 키 문자열, "{timestamp}.{본문}"))
+
+{
+  "event": "notification",
+  "delivery_id": "0193f2c4-…",
+  "kind": "approval.todo",
+  "title": "결재 요청: 출장비 정산",
+  "body": "김팡고 님이 결재를 요청했어요.",
+  "link": "https://gw.example.com/approval/documents/0193…",
+  "recipient": { "login_id": "kim", "name": "김팡고", "email": "kim@example.com" },
+  "created_at": 1767225600000
+}
+```
+
+본문은 앱 알림함에 이미 보이는 값(종류·제목·본문·링크)과 메신저에서 받는 사람을 찾는 데 필요한 값(아이디·이름·이메일)만 담습니다. 휴가 사유나 문서 내용처럼 알림에 없는 값은 넣지 않습니다. `link`는 `--public-origin`이 있으면 절대 주소, 없으면 앱 안의 경로입니다.
+
+받는 쪽의 서명 확인 예(Python):
+
+```python
+import hashlib, hmac, time
+
+def verify(secret: str, headers, body: bytes) -> bool:
+    ts = headers["X-Pango-Timestamp"]
+    if abs(time.time() - int(ts)) > 300:      # 5분보다 오래된 요청은 버린다(재전송 방지)
+        return False
+    expected = "sha256=" + hmac.new(secret.encode(), f"{ts}.".encode() + body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, headers["X-Pango-Signature"])
+```
+
+관리 API(관리자만, 다른 역할은 403, 쓰기는 트랜잭션 안에서 권한을 다시 읽고 감사 로그를 남김):
+
+| 경로 | 본문 → 응답 |
+| --- | --- |
+| `GET /admin/integrations/webhook` | → `{enabled, url, has_secret, version, updated_at, stats: {pending, sent_24h, failed_24h, last_error, last_error_at}}` |
+| `PUT /admin/integrations/webhook` | `{version, enabled, url}` → 위와 같음. 켜려면 주소(`webhook_url` `empty`)와 서명 키(`webhook_secret` `empty`)가 있어야 함. 버전이 낡으면 409 |
+| `POST /admin/integrations/webhook/secret` | `{version}` → `{secret, settings}`. 키는 이 응답에서만 보임 |
+| `POST /admin/integrations/webhook/test` | → `{delivered, status, error}`. 저장한 주소로(꺼져 있어도) 요청한 관리자에게 바로 보냄. 10초에 한 번(429), 감사 로그 `integration.webhook_test` |
+| `GET·PUT /me/notification-preferences` | `{external_enabled}` → `{external_available, external_enabled}`(본인 것만) |
+
 ### 캘린더
 - 캘린더는 세 종류입니다. 권한은 `pango_core::calendar_access`(`can_read`·`can_write`·`event_role`)에서만 판정합니다.
 
@@ -232,8 +289,8 @@ UUID v7을 타입별 newtype(`MemberId`, `DocumentId` …)으로 감쌉니다. D
 | 결재 | `GET /approval/forms` `GET /approval/counts` `GET /approval/line-suggestion` `GET /approval/documents` `POST /approval/documents` `GET·PATCH·DELETE /approval/documents/{id}` `POST /approval/documents/{id}/{submit,approve,reject,withdraw}` `POST /admin/approval/documents/{id}/reject` `POST /admin/approval/forms/{id}/duplicate` |
 | 공지 | `GET /notices` `GET /notices/{id}` `POST /notices/{id}/read` |
 | 캘린더 | `GET /calendar/calendars` `GET /calendar/view` `GET /calendar/conflicts` `POST /calendar/events` `GET·PATCH·DELETE /calendar/events/{id}` `POST /calendar/events/{id}/respond` |
-| 알림 | `GET /notifications` `POST /notifications/{id}/read` `POST /notifications/read-all` |
-| 관리 | `/admin/members…` `/admin/departments…` `/admin/positions…` `/admin/attendance…` `/admin/leave…` `/admin/approval/forms…` `/admin/notices…` `/admin/holidays…` `/admin/settings` `/admin/audit-log` `/admin/dashboard` |
+| 알림 | `GET /notifications` `POST /notifications/{id}/read` `POST /notifications/read-all` `GET·PUT /me/notification-preferences` |
+| 관리 | `/admin/members…` `/admin/departments…` `/admin/positions…` `/admin/attendance…` `/admin/leave…` `/admin/approval/forms…` `/admin/notices…` `/admin/holidays…` `/admin/settings` `/admin/integrations/webhook…` `/admin/audit-log` `/admin/dashboard` |
 
 ## 8. 화면 구성 (UI/UX)
 
@@ -246,7 +303,7 @@ UUID v7을 타입별 newtype(`MemberId`, `DocumentId` …)으로 감쌉니다. D
 | --- | --- |
 | 모든 구성원 | 홈, 근태, 휴가, 결재, 공지, 알림, 구성원(조직도), 내 정보 |
 | 조직장 | + 팀(오늘 출근 현황, 팀 근태, 팀 휴가 달력) |
-| admin / owner | + 관리(대시보드, 구성원, 조직, 근태, 휴가, 결재 양식, 공지, 근무 정책·공휴일, 감사 로그, 설정) |
+| admin / owner | + 관리(대시보드, 구성원, 조직, 근태, 휴가, 결재 양식, 공지, 근무 정책·공휴일, 외부 알림 연동, 감사 로그, 설정) |
 
 ## 9. 테스트 원칙
 

@@ -1007,6 +1007,16 @@ pub fn SecretReveal(
     #[props(into)] title: String,
     #[props(into)] label: String,
     #[props(into)] secret: String,
+    /// 닫기 전 경고 문구.
+    #[props(
+        into,
+        default = "이 창을 닫으면 다시 볼 수 없어요. 지금 복사해 본인에게 안전하게 전달해 주세요."
+            .to_owned()
+    )]
+    warning: String,
+    /// 긴 값(서명 키 등)은 작은 글자로 줄을 바꿔 보여 준다.
+    #[props(default)]
+    long: bool,
     onclose: EventHandler<()>,
     children: Element,
 ) -> Element {
@@ -1024,19 +1034,31 @@ pub fn SecretReveal(
                     {children}
                     label { class: "field secret-field",
                         span { class: "field-label", "{label}" }
-                        input {
-                            class: "input secret-value",
-                            r#type: "text",
-                            readonly: true,
-                            value: "{secret}",
-                            autocomplete: "off",
-                            spellcheck: false,
-                            "autocapitalize": "off",
+                        if long {
+                            textarea {
+                                class: "input textarea secret-value secret-value-long",
+                                readonly: true,
+                                rows: 3,
+                                value: "{secret}",
+                                autocomplete: "off",
+                                spellcheck: false,
+                                "autocapitalize": "off",
+                            }
+                        } else {
+                            input {
+                                class: "input secret-value",
+                                r#type: "text",
+                                readonly: true,
+                                value: "{secret}",
+                                autocomplete: "off",
+                                spellcheck: false,
+                                "autocapitalize": "off",
+                            }
                         }
                     }
                     p { class: "callout callout-warning", role: "note",
                         Icon { name: IconName::Alert }
-                        span { "이 창을 닫으면 다시 볼 수 없어요. 지금 복사해 본인에게 안전하게 전달해 주세요." }
+                        span { "{warning}" }
                     }
                     div { class: "modal-actions",
                         Button { onclick: move |_| onclose.call(()), "확인했어요" }

@@ -4,8 +4,8 @@ use dioxus::prelude::*;
 
 use crate::layout::Shell;
 use crate::pages::admin::{
-    AdminApprovalForms, AdminAttendance, AdminAudit, AdminHome, AdminLeave, AdminMembers,
-    AdminNotices, AdminOrg, AdminPolicy,
+    AdminApprovalForms, AdminAttendance, AdminAudit, AdminHome, AdminIntegrations, AdminLeave,
+    AdminMembers, AdminNotices, AdminOrg, AdminPolicy,
 };
 use crate::pages::{
     ApprovalDetail, ApprovalList, ApprovalNew, Attendance, Calendar, CalendarEvent, ChangePassword,
@@ -71,6 +71,8 @@ pub enum Route {
         AdminNotices {},
         #[route("/admin/policy")]
         AdminPolicy {},
+        #[route("/admin/integrations")]
+        AdminIntegrations {},
         #[route("/admin/audit")]
         AdminAudit {},
     #[end_layout]

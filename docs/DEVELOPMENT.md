@@ -40,7 +40,7 @@ cargo fmt --all                                          # 포맷
 - 수정 요청은 `version`을 받고, 저장소의 `update`가 `false`를 돌려주면 `support::require_updated`로 409를 냅니다.
 - 관리자 쓰기는 트랜잭션 **안의 첫 줄**에서 `support::require_current_admin(conn, ctx)`로 권한을 다시 확인하고, 대상에 대한 판정(`authz::edit_personal_records` 등)에는 거기서 받은 `Actor`를 씁니다. `ctx.actor`는 인증 시점의 값이라 그사이 해제된 관리자를 걸러 내지 못합니다. 요청자 본인의 소속·입사일이 필요한 쓰기는 `support::current_member`로 다시 읽습니다.
 - 계정·권한·기록을 바꾸면 같은 트랜잭션에서 `support::audit`을 호출합니다. 비밀번호·토큰은 `detail`에 넣지 않습니다.
-- 알림은 `support::notify`로 만들고, 같은 사건이 두 번 알림을 만들지 않도록 `dedupe_key`를 줍니다.
+- 알림은 `support::notify`로 만들고, 같은 사건이 두 번 알림을 만들지 않도록 `dedupe_key`를 줍니다. 외부 알림 연동이 켜져 있으면 `notify`가 같은 트랜잭션에서 아웃박스에도 남기므로(ARCHITECTURE의 "외부 알림(웹훅)") 기능 코드에서 따로 보낼 필요가 없습니다. 알림 제목·본문은 외부 메신저로도 나가므로 앱 알림함에 보여도 되는 값만 넣습니다.
 - 현재 시각은 `state.now()`만 씁니다.
 
 ### 공용 도우미
@@ -70,6 +70,7 @@ cargo fmt --all                                          # 포맷
 
 - 준비·변경: `alter_member`, `set_status`, `set_department_head`, `auth_context`, `org_world()`(최고 관리자·관리자·조직장·구성원)
 - 요청: `try_login`(상태 코드만), `document`(결재 문서 상세), `approval_forms`·`approval_form`(기안 화면의 양식 목록·양식 하나), `attendance_day`, `attendance_events`
+- 외부 알림: `TestApp::with_outbound_sender(FakeSender::new())`(보낸 것을 기록하고 정해 둔 응답을 돌려주는 가짜 발송기), `enable_webhook(url)`, `outbox()`, 한 번 보내기는 `service::outbound::dispatch_once`. 기본 `TestApp`은 실제 발송기(사설망 차단)를 씁니다
 - DB 확인: `audit_entries(action)`, `audit_actions(prefix)`, `notifications_of`, `notification_count`, `grant_keys`, `count(sql)`, `execute(sql)`(장애 주입용 트리거 등)
 - 값: `ts`, `kst`, `millis`(KST 현지 시각 → 밀리초), `id_of`(응답의 `id`)
 

@@ -2,6 +2,7 @@
 
 use dioxus::prelude::*;
 use pango_api::auth::SessionInfo;
+use pango_api::integration::{NotificationPrefsDto, NotificationPrefsInput};
 use pango_api::Empty;
 
 use crate::api;
@@ -10,8 +11,8 @@ use crate::route::Route;
 use crate::session::{self, use_session};
 use crate::text;
 use crate::ui::{
-    report_error, report_success, resource_view, Avatar, Badge, Button, ButtonKind, Card, Meta,
-    PageHeader, Tone,
+    report_error, report_success, resource_view, Avatar, Badge, Button, ButtonKind, Card, Checkbox,
+    Meta, PageHeader, Tone,
 };
 
 #[component]
@@ -74,6 +75,7 @@ pub fn Profile() -> Element {
                 Button { kind: ButtonKind::Grey, onclick: logout, "로그아웃" }
             }
         }
+        ExternalNotifyCard {}
         Card { title: "로그인된 기기",
             {resource_view(sessions, |list: Vec<SessionInfo>| rsx! {
                 ul { class: "list",
@@ -111,6 +113,52 @@ pub fn Profile() -> Element {
                     }
                 }
             })}
+        }
+    }
+}
+
+/// 외부 메신저로도 알림 받기. 회사가 연동을 켰을 때만 보인다.
+#[component]
+fn ExternalNotifyCard() -> Element {
+    let mut prefs = use_resource(|| async {
+        api::get::<NotificationPrefsDto>("/me/notification-preferences").await
+    });
+    let mut saving = use_signal(|| false);
+    let current = match &*prefs.read() {
+        Some(Ok(current)) if current.external_available => *current,
+        // 불러오는 중이거나 실패했거나 연동이 꺼져 있으면 그리지 않는다(부가 설정이다).
+        _ => return rsx! {},
+    };
+    let toggle = move |value: bool| async move {
+        if saving() {
+            return;
+        }
+        saving.set(true);
+        let input = NotificationPrefsInput {
+            external_enabled: value,
+        };
+        match api::put::<_, NotificationPrefsDto>("/me/notification-preferences", &input).await {
+            Ok(_) => {
+                report_success(if value {
+                    "외부 메신저로도 알림을 보내 드릴게요."
+                } else {
+                    "외부 메신저로는 알림을 보내지 않을게요."
+                });
+                prefs.restart();
+            }
+            Err(error) => report_error(&error),
+        }
+        saving.set(false);
+    };
+    rsx! {
+        Card { title: "알림",
+            Checkbox {
+                label: "외부 메신저로도 알림 받기",
+                hint: "앱 알림을 회사 메신저로도 보내요. 꺼도 앱 알림은 그대로 와요.",
+                checked: current.external_enabled,
+                disabled: saving(),
+                onchange: toggle,
+            }
         }
     }
 }

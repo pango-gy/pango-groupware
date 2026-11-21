@@ -1046,6 +1046,7 @@ body:has(.action-bar) .toasts { bottom: calc(24px + var(--action-bar-h) + env(sa
 .secret-intro { margin-bottom: 16px; color: var(--grey-700); overflow-wrap: anywhere; }
 .secret-field { margin-bottom: 12px; }
 .secret-value { font-family: var(--font-mono); font-size: 18px; letter-spacing: 0.04em; user-select: all; -webkit-user-select: all; }
+.secret-value-long { min-height: 0; font-size: 15px; letter-spacing: 0; word-break: break-all; resize: none; }
 .org-row { padding-left: calc(var(--depth, 0) * 20px); }
 .org-branch { color: var(--grey-400); margin-right: 6px; font-weight: 400; }
 @media (max-width: 959px) { .org-row { padding-left: calc(var(--depth, 0) * 10px); } }

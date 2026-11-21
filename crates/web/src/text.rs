@@ -79,6 +79,8 @@ fn field_label(field: &str) -> &str {
         "calendar_id" | "calendars" => "캘린더",
         "attendee_ids" | "member_ids" => "참석자",
         "start_at" | "end_at" => "일정 시간",
+        "webhook_url" => "웹훅 주소",
+        "webhook_secret" => "서명 키",
         other => other,
     }
 }
@@ -156,6 +158,16 @@ fn validation_message(field: Option<&str>, reason: Option<&str>) -> String {
         (Some("attendee_ids"), Some("inconsistent")) => {
             "참석자는 내 일정에만 초대할 수 있고, 본인은 초대할 수 없습니다.".into()
         }
+        // 외부 알림 연동(서버 `outbound::WebhookUrl`).
+        (Some("webhook_url"), Some("empty")) => {
+            "외부 알림을 켜려면 웹훅 주소를 입력해 주세요.".into()
+        }
+        (Some("webhook_url"), Some("too_long")) => "웹훅 주소가 너무 길어요.".into(),
+        (Some("webhook_url"), _) => {
+            "https:// 로 시작하는 주소를 입력해 주세요. 아이디·비밀번호가 들어간 주소는 쓸 수 없어요."
+                .into()
+        }
+        (Some("webhook_secret"), _) => "서명 키를 먼저 만들어 주세요.".into(),
         (_, Some("empty")) => format!("{label}을(를) 입력해 주세요."),
         (_, Some("too_short")) => format!("{label}이(가) 너무 짧습니다."),
         (_, Some("too_long")) => format!("{label}이(가) 너무 깁니다."),
@@ -320,6 +332,12 @@ pub const AUDIT_ACTIONS: &[(&str, &str)] = &[
     ("notice.update", "공지 수정"),
     ("notice.archive", "공지 보관"),
     ("settings.update", "회사 설정 변경"),
+    ("integration.webhook_update", "외부 알림 연동 변경"),
+    (
+        "integration.webhook_secret_rotate",
+        "외부 알림 서명 키 교체",
+    ),
+    ("integration.webhook_test", "외부 알림 테스트 발송"),
     ("holiday.upsert", "공휴일 등록·변경"),
     ("holiday.delete", "공휴일 삭제"),
     ("holiday.import", "공휴일 일괄 등록"),
@@ -396,6 +414,7 @@ pub fn audit_target_label(target_type: &str) -> String {
         "approval_form" => "결재 양식",
         "notice" => "공지",
         "company_settings" => "회사 설정",
+        "outbound_settings" => "외부 알림 연동",
         "holiday" => "공휴일",
         other => return other.to_owned(),
     };
@@ -844,10 +863,53 @@ pub fn schema_error_message(part: &str, reason: &str) -> String {
     fixed.to_owned()
 }
 
+/// 외부 알림 발송 실패 사유(서버의 짧은 코드)를 문구로. 모르는 코드는 그대로 보여 준다.
+pub fn delivery_error_label(reason: &str) -> String {
+    if let Some(status) = reason.strip_prefix("http_") {
+        return format!("받는 쪽이 {status} 상태로 응답했어요");
+    }
+    let fixed = match reason {
+        "timeout" => "응답을 기다리다 시간이 지났어요",
+        "connect_failed" => "받는 쪽에 연결하지 못했어요",
+        "request_failed" => "요청을 보내지 못했어요",
+        "invalid_url" => "주소를 해석하지 못했어요",
+        "blocked_address" => "허용되지 않은 주소예요",
+        "encode_failed" => "보낼 내용을 만들지 못했어요",
+        "integration_disabled" => "연동이 꺼져 있어 보내지 않았어요",
+        "recipient_inactive" => "받는 사람이 재직 중이 아니라 보내지 않았어요",
+        "recipient_opted_out" => "받는 사람이 외부 알림을 꺼서 보내지 않았어요",
+        "interrupted" => "보내는 도중 서버가 멈춰 끝내지 못했어요",
+        other => return other.to_owned(),
+    };
+    fixed.to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use pango_core::error::ConflictReason;
+
+    #[test]
+    fn delivery_errors_read_as_sentences() {
+        assert_eq!(
+            delivery_error_label("http_404"),
+            "받는 쪽이 404 상태로 응답했어요"
+        );
+        assert_eq!(
+            delivery_error_label("timeout"),
+            "응답을 기다리다 시간이 지났어요"
+        );
+        assert_eq!(delivery_error_label("future_reason"), "future_reason");
+        assert_eq!(
+            delivery_error_label("blocked_address"),
+            "허용되지 않은 주소예요"
+        );
+        assert!(
+            validation_message(Some("webhook_url"), Some("invalid_format")).contains("https://")
+        );
+        assert!(validation_message(Some("webhook_url"), Some("empty")).contains("켜려면"));
+        assert!(validation_message(Some("webhook_secret"), Some("empty")).contains("서명 키"));
+    }
 
     #[test]
     fn audit_codes_have_labels_and_unknown_codes_fall_back() {
@@ -894,6 +956,9 @@ mod tests {
         "holiday.delete",
         "holiday.import",
         "holiday.upsert",
+        "integration.webhook_secret_rotate",
+        "integration.webhook_test",
+        "integration.webhook_update",
         "leave.accrual_run",
         "leave.adjust",
         "leave.admin_cancel",
