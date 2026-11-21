@@ -8,7 +8,7 @@ use pango_api::{ErrorBody, FieldErrorDto, API_PREFIX};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use crate::platform::{self, Method, RawResponse, Request};
+use crate::platform::{self, Body, Method, RawResponse, Request};
 use crate::text;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,8 +63,13 @@ fn url(path: &str) -> String {
 fn decode<T: DeserializeOwned>(response: &RawResponse) -> ApiResult<T> {
     let status = response.status;
     if (200..300).contains(&status) {
-        return serde_json::from_slice::<T>(&response.body)
-            .map_err(|_| ApiError::unexpected(status));
+        // 본문 없는 성공(204)은 JSON `null`로 읽는다(`T = ()`).
+        let body: &[u8] = if response.body.is_empty() {
+            b"null"
+        } else {
+            &response.body
+        };
+        return serde_json::from_slice::<T>(body).map_err(|_| ApiError::unexpected(status));
     }
     match serde_json::from_slice::<ErrorBody>(&response.body) {
         Ok(body) => Err(ApiError {
@@ -81,15 +86,26 @@ fn decode<T: DeserializeOwned>(response: &RawResponse) -> ApiResult<T> {
 async fn send<T: DeserializeOwned>(
     method: Method,
     path: &str,
-    json: Option<String>,
+    body: Option<Body>,
     idempotency_key: Option<&str>,
+) -> ApiResult<T> {
+    send_request(method, path, body, idempotency_key, None).await
+}
+
+async fn send_request<T: DeserializeOwned>(
+    method: Method,
+    path: &str,
+    body: Option<Body>,
+    idempotency_key: Option<&str>,
+    file_name: Option<&str>,
 ) -> ApiResult<T> {
     let path = url(path);
     let request = Request {
         method,
         path: &path,
-        json,
+        body,
         idempotency_key,
+        file_name,
     };
     let result = match platform::send(request).await {
         Ok(response) => decode(&response),
@@ -104,9 +120,14 @@ async fn send<T: DeserializeOwned>(
     result
 }
 
-fn to_json<B: Serialize>(body: &B) -> ApiResult<Option<String>> {
-    serde_json::to_string(body)
-        .map(Some)
+fn to_json<B: Serialize>(body: &B) -> ApiResult<Option<Body>> {
+    serde_json::to_vec(body)
+        .map(|bytes| {
+            Some(Body {
+                content_type: "application/json",
+                bytes,
+            })
+        })
         .map_err(|_| ApiError::unexpected(0))
 }
 
@@ -138,6 +159,28 @@ pub async fn put<B: Serialize, T: DeserializeOwned>(path: &str, body: &B) -> Api
 
 pub async fn delete<T: DeserializeOwned>(path: &str) -> ApiResult<T> {
     send(Method::Delete, path, None, None).await
+}
+
+/// 파일 올리기. 내용은 본문 그대로, 이름은 `X-File-Name` 헤더로 보낸다(서버 규약은
+/// `pango_api::notice::NoticeAttachment`). `key`로 다시 보내도 한 번만 올라간다.
+pub async fn upload<T: DeserializeOwned>(
+    path: &str,
+    file_name: &str,
+    bytes: Vec<u8>,
+    key: &str,
+) -> ApiResult<T> {
+    let body = Body {
+        content_type: "application/octet-stream",
+        bytes,
+    };
+    send_request(
+        Method::Post,
+        path,
+        Some(body),
+        Some(key),
+        Some(&encode(file_name)),
+    )
+    .await
 }
 
 /// 쿼리 문자열 값을 인코딩한다(RFC 3986 비예약 문자만 그대로 둔다).

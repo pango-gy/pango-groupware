@@ -156,6 +156,21 @@ pub fn parse_local_input(raw: &str, tz: Tz) -> Result<Timestamp, LocalInputError
     }
 }
 
+/// 파일 크기(`512 B`, `1.5 KB`, `12.3 MB`). 1 KB = 1024 B.
+pub fn file_size(bytes: u64) -> String {
+    const UNITS: [&str; 3] = ["KB", "MB", "GB"];
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    let mut value = bytes as f64 / 1024.0;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    format!("{value:.1} {}", UNITS[unit])
+}
+
 /// 이름의 첫 글자(아바타용).
 pub fn initial(name: &str) -> String {
     name.trim()
@@ -168,6 +183,15 @@ pub fn initial(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_size_picks_a_readable_unit() {
+        assert_eq!(file_size(0), "0 B");
+        assert_eq!(file_size(1023), "1023 B");
+        assert_eq!(file_size(1536), "1.5 KB");
+        assert_eq!(file_size(10 * 1024 * 1024), "10.0 MB");
+        assert_eq!(file_size(3 * 1024 * 1024 * 1024), "3.0 GB");
+    }
 
     fn ts(rfc3339: &str) -> Timestamp {
         Timestamp::from_utc(

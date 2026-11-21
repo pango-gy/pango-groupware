@@ -193,10 +193,13 @@ pub async fn send(request: Request<'_>) -> Result<RawResponse, NetworkError> {
     if let Some(key) = request.idempotency_key {
         builder = builder.header("Idempotency-Key", key);
     }
-    let built = match request.json {
-        Some(json) => builder
-            .header("Content-Type", "application/json")
-            .body(json),
+    if let Some(name) = request.file_name {
+        builder = builder.header("X-File-Name", name);
+    }
+    let built = match request.body {
+        Some(body) => builder
+            .header("Content-Type", body.content_type)
+            .body(js_sys::Uint8Array::from(body.bytes.as_slice())),
         None => builder.build(),
     }
     .map_err(|_| NetworkError)?;

@@ -47,13 +47,21 @@ pub struct RawResponse {
     pub body: Vec<u8>,
 }
 
+/// 요청 본문과 그 형식.
+pub struct Body {
+    pub content_type: &'static str,
+    pub bytes: Vec<u8>,
+}
+
 /// 보낼 요청.
 pub struct Request<'a> {
     pub method: Method,
     /// `/api/v1/...`처럼 `/`로 시작하는 경로.
     pub path: &'a str,
-    pub json: Option<String>,
+    pub body: Option<Body>,
     pub idempotency_key: Option<&'a str>,
+    /// 파일 올리기의 `X-File-Name`(이미 퍼센트 인코딩한 값).
+    pub file_name: Option<&'a str>,
 }
 
 /// 서버에 닿지 못했다(오프라인, 주소 미설정, TLS 실패 등).

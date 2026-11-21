@@ -319,10 +319,13 @@ pub async fn send(request: Request<'_>) -> Result<RawResponse, NetworkError> {
     if let Some(key) = request.idempotency_key {
         builder = builder.header("Idempotency-Key", key);
     }
-    if let Some(json) = request.json {
+    if let Some(name) = request.file_name {
+        builder = builder.header("X-File-Name", name);
+    }
+    if let Some(body) = request.body {
         builder = builder
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .body(json);
+            .header(reqwest::header::CONTENT_TYPE, body.content_type)
+            .body(body.bytes);
     }
     let response = builder.send().await.map_err(|_| NetworkError)?;
     let status = response.status().as_u16();
