@@ -33,6 +33,10 @@ pub struct Config {
     pub public_origin: Option<String>,
     /// 요청 본문 최대 크기(바이트).
     pub max_body_bytes: usize,
+    /// 외부 알림 웹훅을 루프백·사설망·CGNAT 주소로도 보낼지. 받는 서버를 같은 사설망에 둘 때만
+    /// 켠다(서버 실행 옵션으로만, 관리자 화면에서는 바꿀 수 없다). 메타데이터·link-local 등은
+    /// 켜도 막는다([`pango_core::outbound::ip_allowed`]).
+    pub outbound_allow_private: bool,
 }
 
 impl Default for Config {
@@ -55,6 +59,7 @@ impl Default for Config {
             trust_proxy: false,
             public_origin: None,
             max_body_bytes: 256 * 1024,
+            outbound_allow_private: false,
         }
     }
 }

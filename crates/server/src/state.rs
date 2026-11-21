@@ -24,12 +24,13 @@ pub struct AppState {
 impl AppState {
     pub fn new(db: Db, clock: Arc<dyn Clock>, config: Config) -> crate::ServiceResult<Self> {
         let passwords = PasswordHasher::new(&config.password)?;
+        let outbound = Arc::new(WebhookSender::new(config.outbound_allow_private)?);
         Ok(Self {
             db,
             clock,
             config: Arc::new(config),
             passwords,
-            outbound: Arc::new(WebhookSender::new()?),
+            outbound,
             webhook_test_at: Arc::new(Mutex::new(None)),
         })
     }

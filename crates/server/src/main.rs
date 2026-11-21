@@ -55,6 +55,10 @@ enum Command {
         /// HTTPS 없이 쓰는 로컬 개발용. 세션 쿠키의 Secure 속성을 끈다.
         #[arg(long)]
         insecure_cookies: bool,
+        /// 외부 알림 웹훅을 사설망·루프백 주소(같은 VPC의 수신 서버 등)로도 보낸다.
+        /// 클라우드 메타데이터·link-local 주소는 이 옵션을 켜도 막는다.
+        #[arg(long, env = "PANGO_OUTBOUND_ALLOW_PRIVATE")]
+        outbound_allow_private: bool,
     },
 }
 
@@ -100,11 +104,13 @@ async fn run(cli: Cli) -> Result<(), AnyError> {
             trust_proxy,
             public_origin,
             insecure_cookies,
+            outbound_allow_private,
         } => {
             let config = Config {
                 trust_proxy,
                 public_origin,
                 cookie_secure: !insecure_cookies,
+                outbound_allow_private,
                 ..Config::default()
             };
             let state = open_state(&cli.data_dir, config).await?;

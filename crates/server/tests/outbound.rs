@@ -1054,7 +1054,7 @@ fn delivery_to(url: String) -> Delivery {
 #[tokio::test]
 async fn the_webhook_sender_posts_signed_json() {
     let (base, received) = receiver().await;
-    let sender = WebhookSender::new().expect("sender");
+    let sender = WebhookSender::new(true).expect("sender");
 
     let status = sender
         .send(&delivery_to(format!("{base}/ok")))
@@ -1083,7 +1083,7 @@ async fn the_webhook_sender_posts_signed_json() {
 #[tokio::test]
 async fn the_webhook_sender_classifies_failures() {
     let (base, received) = receiver().await;
-    let sender = WebhookSender::new().expect("sender");
+    let sender = WebhookSender::new(true).expect("sender");
     let send = async |path: &str| sender.send(&delivery_to(format!("{base}{path}"))).await;
 
     assert_eq!(send("/gone").await, Err(SendError::http(404, false)));
@@ -1109,4 +1109,100 @@ async fn the_webhook_sender_classifies_failures() {
     assert!(error.retry);
     assert_eq!(error.status, None);
     assert!(!error.reason.contains("T0KEN") && !error.reason.contains("127.0.0.1"));
+}
+
+// ── 연결할 주소 확인(SSRF) ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn private_and_loopback_targets_are_blocked_unless_the_server_allows_them() {
+    let (base, received) = receiver().await;
+    let port = base.rsplit(':').next().expect("port").to_owned();
+    let strict = WebhookSender::new(false).expect("sender");
+    let open = WebhookSender::new(true).expect("sender");
+
+    // IP를 직접 쓴 주소와, 이름을 풀면 루프백이 되는 주소(해석기 경로).
+    for url in [
+        format!("http://127.0.0.1:{port}/ok"),
+        format!("http://[::ffff:127.0.0.1]:{port}/ok"),
+        format!("http://localhost:{port}/ok"),
+    ] {
+        let error = strict
+            .send(&delivery_to(url.clone()))
+            .await
+            .expect_err("blocked");
+        assert_eq!(error, SendError::reject("blocked_address"), "{url}");
+    }
+    assert!(
+        received.requests.lock().expect("lock").is_empty(),
+        "연결하지 않았다"
+    );
+
+    // 서버 옵션을 켜면 같은 사설망의 수신 서버로 보낼 수 있다(이름 경로 포함).
+    assert_eq!(
+        open.send(&delivery_to(format!("http://localhost:{port}/ok")))
+            .await,
+        Ok(204)
+    );
+    assert_eq!(received.requests.lock().expect("lock").len(), 1);
+}
+
+#[tokio::test]
+async fn metadata_and_link_local_targets_are_blocked_even_when_private_is_allowed() {
+    let open = WebhookSender::new(true).expect("sender");
+    for url in [
+        "https://169.254.169.254/latest/meta-data/",
+        "http://169.254.169.254/latest/meta-data/",
+        "https://[fd00:ec2::254]/latest/meta-data/",
+        "https://[::ffff:169.254.169.254]/",
+        "https://[fe80::1]/",
+        "https://0.0.0.0/",
+        "https://224.0.0.1/",
+    ] {
+        let error = open
+            .send(&delivery_to(url.to_owned()))
+            .await
+            .expect_err("blocked");
+        assert_eq!(error, SendError::reject("blocked_address"), "{url}");
+    }
+}
+
+/// 기본 설정의 서버(실제 발송기, 사설망 차단)로 끝까지: 막힌 주소는 재시도 없이 실패하고,
+/// 화면에는 짧은 사유만 보인다(해석한 IP는 드러나지 않는다).
+#[tokio::test]
+async fn a_blocked_target_fails_without_retry_and_reveals_no_address() {
+    let (base, received) = receiver().await;
+    let app = TestApp::new().await;
+    let (admin, member) = admin_and_member(&app).await;
+    app.enable_webhook(&format!("{base}/ok")).await;
+
+    send_notification(&app, member.id, None).await;
+    assert_eq!(dispatch(&app).await.failed, 1);
+    assert_eq!(
+        app.outbox().await,
+        [("failed".to_owned(), 1, Some("blocked_address".to_owned()))]
+    );
+
+    let result = app
+        .post("/admin/integrations/webhook/test")
+        .bearer(&admin.token)
+        .send()
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(
+        result,
+        json!({ "delivered": false, "status": null, "error": "blocked_address" })
+    );
+    let shown = webhook_settings(&app, &admin.token).await.to_string()
+        + &app
+            .audit_entries("integration.webhook_test")
+            .await
+            .iter()
+            .map(|e| format!("{:?}", e.detail))
+            .collect::<String>();
+    assert!(shown.contains("blocked_address"));
+    assert!(
+        !shown.contains("127.0.0.1\"") && !shown.contains("::1"),
+        "{shown}"
+    );
+    assert!(received.requests.lock().expect("lock").is_empty());
 }

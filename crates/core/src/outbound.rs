@@ -97,6 +97,61 @@ fn is_loopback(host: &Host<&str>) -> bool {
     }
 }
 
+/// 웹훅을 보낼 수 있는 IP인지(SSRF 방어). 발송할 때 **실제로 연결할 주소**에 적용한다.
+///
+/// - 항상 막는다: 미지정(`0.0.0.0/8`, `::`), link-local(`169.254.0.0/16`, `fe80::/10`, 클라우드
+///   메타데이터 `169.254.169.254`·`fd00:ec2::254` 포함), 멀티캐스트, 브로드캐스트, 예약
+///   (`240.0.0.0/4`). IPv4를 감싼 IPv6(`::ffff:a.b.c.d`, NAT64 `64:ff9b::/96`)는 안의 IPv4로 판정한다.
+/// - `allow_private`일 때만 연다: 루프백(`127.0.0.0/8`, `::1`), 사설망(`10/8`, `172.16/12`,
+///   `192.168/16`, `fc00::/7`), CGNAT(`100.64.0.0/10`). 서버 실행 옵션으로만 켠다.
+pub fn ip_allowed(ip: std::net::IpAddr, allow_private: bool) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => ipv4_allowed(v4, allow_private),
+        IpAddr::V6(v6) => {
+            if let Some(v4) = embedded_ipv4(v6) {
+                return ipv4_allowed(v4, allow_private);
+            }
+            let s = v6.segments();
+            let always_blocked = v6.is_unspecified()
+                || v6.is_multicast()
+                || (s[0] & 0xffc0) == 0xfe80
+                // AWS 메타데이터(IPv6). 사설 대역(fc00::/7) 안이지만 옵션과 관계없이 막는다.
+                || v6 == std::net::Ipv6Addr::new(0xfd00, 0xec2, 0, 0, 0, 0, 0, 0x254);
+            if always_blocked {
+                return false;
+            }
+            let private = v6.is_loopback() || (s[0] & 0xfe00) == 0xfc00;
+            !private || allow_private
+        }
+    }
+}
+
+/// IPv4를 감싼 IPv6 주소의 IPv4: `::ffff:a.b.c.d`와 NAT64 `64:ff9b::a.b.c.d`.
+fn embedded_ipv4(v6: std::net::Ipv6Addr) -> Option<std::net::Ipv4Addr> {
+    if let Some(v4) = v6.to_ipv4_mapped() {
+        return Some(v4);
+    }
+    let s = v6.segments();
+    if s[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+        let [a, b] = s[6].to_be_bytes();
+        let [c, d] = s[7].to_be_bytes();
+        return Some(std::net::Ipv4Addr::new(a, b, c, d));
+    }
+    None
+}
+
+fn ipv4_allowed(v4: std::net::Ipv4Addr, allow_private: bool) -> bool {
+    let [a, b, _, _] = v4.octets();
+    let always_blocked =
+        a == 0 || v4.is_link_local() || v4.is_multicast() || v4.is_broadcast() || a >= 240;
+    if always_blocked {
+        return false;
+    }
+    let private = v4.is_loopback() || v4.is_private() || (a == 100 && (64..128).contains(&b));
+    !private || allow_private
+}
+
 /// `attempts`번째 시도가 실패한 뒤 다음 시도까지의 간격: 30초, 1분, 2분, 4분 … 최대 1시간.
 pub fn backoff(attempts: u32) -> Duration {
     let exponent = attempts.saturating_sub(1);
@@ -225,6 +280,89 @@ mod tests {
                 max: MAX_WEBHOOK_URL_LEN
             })
         );
+    }
+
+    fn allowed(ip: &str, allow_private: bool) -> bool {
+        ip_allowed(ip.parse().expect("ip"), allow_private)
+    }
+
+    #[test]
+    fn public_addresses_are_allowed() {
+        for ip in [
+            "8.8.8.8",
+            "1.1.1.1",
+            "9.255.255.255",
+            "11.0.0.0",
+            "172.15.255.255",
+            "172.32.0.0",
+            "192.167.255.255",
+            "192.169.0.0",
+            "100.63.255.255",
+            "100.128.0.0",
+            "169.253.255.255",
+            "169.255.0.0",
+            "223.255.255.255",
+            "2606:4700::1111",
+            "::ffff:8.8.8.8",
+            "64:ff9b::808:808",
+            "fbff:ffff::1",
+            "fe00::1",
+        ] {
+            assert!(allowed(ip, false), "{ip}");
+            assert!(allowed(ip, true), "{ip}");
+        }
+    }
+
+    #[test]
+    fn metadata_link_local_and_special_addresses_are_always_blocked() {
+        for ip in [
+            "169.254.169.254",
+            "169.254.0.0",
+            "169.254.255.255",
+            "0.0.0.0",
+            "0.255.255.255",
+            "224.0.0.1",
+            "239.255.255.255",
+            "255.255.255.255",
+            "240.0.0.1",
+            "::",
+            "fe80::1",
+            "febf:ffff::1",
+            "ff02::1",
+            "fd00:ec2::254",
+            "::ffff:169.254.169.254",
+            "::ffff:0.0.0.0",
+            "64:ff9b::a9fe:a9fe",
+        ] {
+            assert!(!allowed(ip, false), "{ip}");
+            assert!(!allowed(ip, true), "{ip} 옵션을 켜도 막는다");
+        }
+    }
+
+    #[test]
+    fn private_loopback_and_cgnat_need_the_server_option() {
+        for ip in [
+            "10.0.0.0",
+            "10.255.255.255",
+            "172.16.0.0",
+            "172.31.255.255",
+            "192.168.0.0",
+            "192.168.255.255",
+            "100.64.0.0",
+            "100.127.255.255",
+            "127.0.0.1",
+            "127.255.255.255",
+            "::1",
+            "fc00::1",
+            "fdff:ffff::1",
+            "fd00:ec2::253",
+            "::ffff:10.0.0.1",
+            "::ffff:127.0.0.1",
+            "64:ff9b::a00:1",
+        ] {
+            assert!(!allowed(ip, false), "{ip}");
+            assert!(allowed(ip, true), "{ip}");
+        }
     }
 
     #[test]
