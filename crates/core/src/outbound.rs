@@ -101,7 +101,9 @@ fn is_loopback(host: &Host<&str>) -> bool {
 ///
 /// - 항상 막는다: 미지정(`0.0.0.0/8`, `::`), link-local(`169.254.0.0/16`, `fe80::/10`, 클라우드
 ///   메타데이터 `169.254.169.254`·`fd00:ec2::254` 포함), 멀티캐스트, 브로드캐스트, 예약
-///   (`240.0.0.0/4`). IPv4를 감싼 IPv6(`::ffff:a.b.c.d`, NAT64 `64:ff9b::/96`)는 안의 IPv4로 판정한다.
+///   (`240.0.0.0/4`), Teredo(`2001::/32`, 안의 IPv4가 가려져 있어 판정할 수 없다).
+///   IPv4를 감싼 IPv6(`::ffff:a.b.c.d`, IPv4 호환 `::a.b.c.d`, NAT64 `64:ff9b::/96`, 6to4
+///   `2002::/16`)는 안의 IPv4로 판정한다.
 /// - `allow_private`일 때만 연다: 루프백(`127.0.0.0/8`, `::1`), 사설망(`10/8`, `172.16/12`,
 ///   `192.168/16`, `fc00::/7`), CGNAT(`100.64.0.0/10`). 서버 실행 옵션으로만 켠다.
 pub fn ip_allowed(ip: std::net::IpAddr, allow_private: bool) -> bool {
@@ -114,6 +116,7 @@ pub fn ip_allowed(ip: std::net::IpAddr, allow_private: bool) -> bool {
             }
             let s = v6.segments();
             let always_blocked = v6.is_unspecified()
+                || (s[0] == 0x2001 && s[1] == 0)
                 || v6.is_multicast()
                 || (s[0] & 0xffc0) == 0xfe80
                 // AWS 메타데이터(IPv6). 사설 대역(fc00::/7) 안이지만 옵션과 관계없이 막는다.
@@ -127,16 +130,26 @@ pub fn ip_allowed(ip: std::net::IpAddr, allow_private: bool) -> bool {
     }
 }
 
-/// IPv4를 감싼 IPv6 주소의 IPv4: `::ffff:a.b.c.d`와 NAT64 `64:ff9b::a.b.c.d`.
+/// IPv4를 감싼 IPv6 주소의 IPv4: `::ffff:a.b.c.d`, IPv4 호환 `::a.b.c.d`(`::`·`::1` 제외),
+/// NAT64 `64:ff9b::a.b.c.d`, 6to4 `2002:aabb:ccdd::/48`.
 fn embedded_ipv4(v6: std::net::Ipv6Addr) -> Option<std::net::Ipv4Addr> {
     if let Some(v4) = v6.to_ipv4_mapped() {
         return Some(v4);
     }
     let s = v6.segments();
+    let from = |hi: u16, lo: u16| {
+        let [a, b] = hi.to_be_bytes();
+        let [c, d] = lo.to_be_bytes();
+        std::net::Ipv4Addr::new(a, b, c, d)
+    };
     if s[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
-        let [a, b] = s[6].to_be_bytes();
-        let [c, d] = s[7].to_be_bytes();
-        return Some(std::net::Ipv4Addr::new(a, b, c, d));
+        return Some(from(s[6], s[7]));
+    }
+    if s[..6] == [0; 6] && !v6.is_unspecified() && !v6.is_loopback() {
+        return Some(from(s[6], s[7]));
+    }
+    if s[0] == 0x2002 {
+        return Some(from(s[1], s[2]));
     }
     None
 }
@@ -333,6 +346,12 @@ mod tests {
             "::ffff:169.254.169.254",
             "::ffff:0.0.0.0",
             "64:ff9b::a9fe:a9fe",
+            // IPv4 호환(::a.b.c.d), 6to4(2002:a9fe:a9fe::)로 감싼 메타데이터, Teredo 전체.
+            "::169.254.169.254",
+            "::a9fe:a9fe",
+            "2002:a9fe:a9fe::1",
+            "2001::1",
+            "2001:0:ffff:ffff::1",
         ] {
             assert!(!allowed(ip, false), "{ip}");
             assert!(!allowed(ip, true), "{ip} 옵션을 켜도 막는다");
@@ -359,6 +378,8 @@ mod tests {
             "::ffff:10.0.0.1",
             "::ffff:127.0.0.1",
             "64:ff9b::a00:1",
+            "::10.0.0.1",
+            "2002:c0a8:0101::1",
         ] {
             assert!(!allowed(ip, false), "{ip}");
             assert!(allowed(ip, true), "{ip}");
