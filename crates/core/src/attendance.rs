@@ -737,11 +737,71 @@ pub fn decide_correction_close(
     }
 }
 
+/// 퇴근 누락 알림을 보내는 시각: 업무 종료 시각에서 이만큼 지난 뒤.
+pub const CLOCK_OUT_REMINDER_DELAY: Duration = Duration::hours(1);
+
+/// 열린 기록에 퇴근 누락 알림을 보낼 시각.
+///
+/// 근무일의 업무 종료 시각(근무일 전환 시각보다 이르면 다음 날 그 시각, 즉 자정을 넘긴 종료)에
+/// [`CLOCK_OUT_REMINDER_DELAY`]를 더한다. 업무 종료 뒤에 출근했으면 출근 시각을 기준으로 한다
+/// (늦게 출근한 사람에게 출근하자마자 알림이 가지 않도록).
+pub fn clock_out_reminder_at(
+    zone: &WorkCalendarZone,
+    work_date: NaiveDate,
+    work_end: MinuteOfDay,
+    clock_in_at: Timestamp,
+) -> Timestamp {
+    let end_date = if work_end < zone.day_cutoff() {
+        work_date
+            .checked_add_days(Days::new(1))
+            .unwrap_or(work_date)
+    } else {
+        work_date
+    };
+    let end = zone.instant_at(end_date, work_end).max(clock_in_at);
+    end.checked_add(CLOCK_OUT_REMINDER_DELAY).unwrap_or(end)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::{DateTime, Utc};
     use proptest::prelude::*;
+
+    #[test]
+    fn clock_out_reminder_is_an_hour_after_the_scheduled_end() {
+        let zone = seoul();
+        // 18:00 종료 → 19:00(KST) 알림.
+        assert_eq!(
+            clock_out_reminder_at(
+                &zone,
+                date("2026-03-02"),
+                hm("18:00"),
+                ts("2026-03-02T09:00:00+09:00")
+            ),
+            ts("2026-03-02T19:00:00+09:00")
+        );
+        // 늦게 출근했으면 출근 시각 기준.
+        assert_eq!(
+            clock_out_reminder_at(
+                &zone,
+                date("2026-03-02"),
+                hm("18:00"),
+                ts("2026-03-02T20:30:00+09:00")
+            ),
+            ts("2026-03-02T21:30:00+09:00")
+        );
+        // 종료가 전환 시각(05:00)보다 이르면 다음 날 새벽 종료다.
+        assert_eq!(
+            clock_out_reminder_at(
+                &zone,
+                date("2026-03-02"),
+                hm("02:00"),
+                ts("2026-03-02T18:00:00+09:00")
+            ),
+            ts("2026-03-03T03:00:00+09:00")
+        );
+    }
 
     fn ts(rfc3339: &str) -> Timestamp {
         Timestamp::from_utc(

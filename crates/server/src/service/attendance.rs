@@ -1016,7 +1016,8 @@ async fn notify_corrected_tx(
             dedupe_key: Some(&dedupe_key),
         },
     )
-    .await
+    .await?;
+    Ok(())
 }
 
 // ── 관리자 ──────────────────────────────────────────────────────────────

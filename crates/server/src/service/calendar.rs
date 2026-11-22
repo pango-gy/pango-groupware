@@ -370,7 +370,8 @@ async fn tell(
             dedupe_key: Some(dedupe_key),
         },
     )
-    .await
+    .await?;
+    Ok(())
 }
 
 async fn invite(

@@ -257,7 +257,8 @@ pub struct Notify<'a> {
     pub dedupe_key: Option<&'a str>,
 }
 
-pub async fn notify(conn: &mut Conn, now: Timestamp, message: Notify<'_>) -> ServiceResult<()> {
+/// 새로 만들었으면 `true`(같은 `dedupe_key`가 이미 있으면 `false`).
+pub async fn notify(conn: &mut Conn, now: Timestamp, message: Notify<'_>) -> ServiceResult<bool> {
     let notification = Notification {
         id: NotificationId::new(),
         member_id: message.to,
@@ -269,10 +270,11 @@ pub async fn notify(conn: &mut Conn, now: Timestamp, message: Notify<'_>) -> Ser
         read_at: None,
         created_at: now,
     };
-    if notifications::insert(conn, &notification).await? {
+    let created = notifications::insert(conn, &notification).await?;
+    if created {
         super::outbound::enqueue_tx(conn, now, notification.id, notification.member_id).await?;
     }
-    Ok(())
+    Ok(created)
 }
 
 /// 구성원의 권한 판정용 정보를 만든다(조직장 관할 부서 포함).
@@ -334,6 +336,16 @@ impl Company {
             .await?
             .ok_or_else(|| ServiceError::internal("company settings are not initialized"))?;
         Self::from_settings(settings).map_err(ServiceError::internal)
+    }
+
+    /// 초기화 전이면 `None`. 주기 작업(퇴근 누락 알림, 보존 기간 정리)이 쓴다.
+    pub async fn load_if_initialized(conn: &mut Conn) -> ServiceResult<Option<Self>> {
+        match settings::get(conn).await? {
+            Some(settings) => Self::from_settings(settings)
+                .map(Some)
+                .map_err(ServiceError::internal),
+            None => Ok(None),
+        }
     }
 
     /// 설정값이 도메인 규칙에 맞는지 확인하며 변환한다. 설정 저장 전 검증에도 쓴다.

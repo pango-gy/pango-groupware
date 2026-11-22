@@ -155,6 +155,11 @@ async fn run(cli: Cli) -> Result<(), AnyError> {
                 state.clone(),
                 std::time::Duration::from_secs(3600),
             ));
+            // 퇴근 누락 알림(업무 종료 1시간 뒤). 5분마다 확인한다.
+            tokio::spawn(pango_server::service::reminders::run_forever(
+                state.clone(),
+                std::time::Duration::from_secs(300),
+            ));
             // 외부 알림(웹훅) 발송. 연동이 꺼져 있으면 보낼 일이 생기지 않는다.
             tokio::spawn(pango_server::service::outbound::run_forever(
                 state.clone(),
