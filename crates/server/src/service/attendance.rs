@@ -31,7 +31,7 @@ use pango_core::error::{ConflictReason, ValidationReason};
 use pango_core::id::{
     AttendanceCorrectionId, AttendanceEventId, AttendanceRecordId, DocumentId, MemberId,
 };
-use pango_core::leave::LeaveUnit;
+use pango_core::leave::DayLeave;
 use pango_core::text::{self, Body, Comment, Reason, TextRule, Title};
 use pango_core::time::Timestamp;
 use pango_core::DomainError;
@@ -157,7 +157,7 @@ impl Evaluator {
         member: &Member,
         date: NaiveDate,
         record: Option<&AttendanceRecord>,
-        leave: Option<LeaveUnit>,
+        leave: Option<DayLeave>,
     ) -> DayEvaluation {
         let state = record.map(AttendanceRecord::state);
         let is_working_day = self
@@ -190,8 +190,8 @@ async fn leaves_for(
     conn: &mut Conn,
     member_ids: Vec<MemberId>,
     range: DateRange,
-) -> ServiceResult<HashMap<MemberId, BTreeMap<NaiveDate, LeaveUnit>>> {
-    let mut leaves: HashMap<MemberId, BTreeMap<NaiveDate, LeaveUnit>> = member_ids
+) -> ServiceResult<HashMap<MemberId, BTreeMap<NaiveDate, DayLeave>>> {
+    let mut leaves: HashMap<MemberId, BTreeMap<NaiveDate, DayLeave>> = member_ids
         .into_iter()
         .map(|member_id| (member_id, BTreeMap::new()))
         .collect();
@@ -218,10 +218,10 @@ fn owner_of(owners: &BTreeMap<MemberId, Member>, member_id: MemberId) -> Service
 }
 
 fn leave_on(
-    leaves: &HashMap<MemberId, BTreeMap<NaiveDate, LeaveUnit>>,
+    leaves: &HashMap<MemberId, BTreeMap<NaiveDate, DayLeave>>,
     member_id: MemberId,
     date: NaiveDate,
-) -> Option<LeaveUnit> {
+) -> Option<DayLeave> {
     leaves.get(&member_id)?.get(&date).copied()
 }
 
@@ -1228,7 +1228,7 @@ fn csv_line(
     evaluator: &Evaluator,
     owner: &Member,
     row: &RecordWithMember,
-    leave: Option<LeaveUnit>,
+    leave: Option<DayLeave>,
 ) {
     let record = &row.record;
     let evaluation = evaluator.evaluate(owner, record.work_date, Some(record), leave);

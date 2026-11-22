@@ -24,8 +24,8 @@ use pango_core::calendar::{check_date, parse_month, year_range, DateRange};
 use pango_core::error::{ConflictReason, ValidationReason};
 use pango_core::id::{DocumentId, LeaveLedgerEntryId, LeaveRequestId, LeaveTypeId, MemberId};
 use pango_core::leave::{
-    self as rules, Balance, CancelDecision, LeaveAmount, LeaveRequestStatus, LeaveSpan, LeaveUnit,
-    LedgerEntry, LedgerEntryKind, ResolutionDecision,
+    self as rules, Balance, CancelDecision, DayLeave, LeaveAmount, LeaveRequestStatus, LeaveSpan,
+    LeaveUnit, LedgerEntry, LedgerEntryKind, ResolutionDecision,
 };
 use pango_core::text::{Body, Code, LabelName, Reason, Title};
 use pango_core::time::Timestamp;
@@ -36,9 +36,9 @@ use pango_db::Conn;
 
 use super::approval::{self, LinkedOutcome, SystemDocument};
 use super::support::{
-    audit, current_member, department_names, found, member_names, members_by_id, next_page, notify,
-    personal_records_member, require_current_admin, require_updated, Audit, AuthContext, Company,
-    Idempotency, Notify,
+    audit, audit_as, current_member, department_names, found, member_names, members_by_id,
+    next_page, notify, personal_records_member, require_current_admin, require_updated, Audit,
+    AuthContext, Company, Idempotency, Notify,
 };
 use crate::error::{ServiceError, ServiceResult};
 use crate::state::AppState;
@@ -373,9 +373,22 @@ async fn request_dtos(
         .into_iter()
         .map(|leave_type| (leave_type.id, leave_type.name))
         .collect();
+    // 첫 근무일은 신청들을 모두 덮는 기간의 달력 한 번으로 계산한다(취소 가능 여부를 화면이 판단).
+    let span = requests
+        .iter()
+        .map(|r| r.range)
+        .reduce(|a, b| DateRange::new(a.start().min(b.start()), a.end().max(b.end())).unwrap_or(a));
+    let calendar = match span {
+        Some(span) => Some(Company::load(conn).await?.calendar(conn, span).await?),
+        None => None,
+    };
     Ok(requests
         .into_iter()
         .map(|request| LeaveRequestDto {
+            first_working_day: calendar.as_ref().map(|calendar| {
+                LeaveSpan::new(request.range, request.unit, calendar)
+                    .map_or(request.range.start(), |span| span.first_day())
+            }),
             id: request.id,
             member_id: request.member_id,
             member_name: names.get(&request.member_id).cloned().unwrap_or_default(),
@@ -524,7 +537,7 @@ async fn approved_units(
     conn: &mut Conn,
     member_id: Option<MemberId>,
     range: DateRange,
-) -> ServiceResult<BTreeMap<(MemberId, NaiveDate), LeaveUnit>> {
+) -> ServiceResult<BTreeMap<(MemberId, NaiveDate), DayLeave>> {
     let filter = RequestFilter {
         member_id,
         overlapping: Some(range),
@@ -533,20 +546,18 @@ async fn approved_units(
     };
     let (requests, _) = leave::list_requests(conn, &filter, None).await?;
     let calendar = Company::load(conn).await?.calendar(conn, range).await?;
-    let mut units: BTreeMap<(MemberId, NaiveDate), LeaveUnit> = BTreeMap::new();
+    let mut units: BTreeMap<(MemberId, NaiveDate), DayLeave> = BTreeMap::new();
     for request in &requests {
         let days = request
             .range
             .days()
             .filter(|day| range.contains(*day) && calendar.is_working_day(*day));
         for day in days {
-            let key = (request.member_id, day);
-            let larger = units
-                .get(&key)
-                .is_none_or(|current| request.unit.amount_per_day() > current.amount_per_day());
-            if larger {
-                units.insert(key, request.unit);
-            }
+            // 같은 날 시간대가 다른 신청 두 건(오전 반차 + 오후 반차 등)은 합쳐서 본다.
+            units
+                .entry((request.member_id, day))
+                .and_modify(|leave| *leave = leave.with(request.unit))
+                .or_insert_with(|| request.unit.into());
         }
     }
     Ok(units)
@@ -557,7 +568,7 @@ async fn approved_units(
 pub async fn units_in_range(
     conn: &mut Conn,
     range: DateRange,
-) -> ServiceResult<BTreeMap<(MemberId, NaiveDate), LeaveUnit>> {
+) -> ServiceResult<BTreeMap<(MemberId, NaiveDate), DayLeave>> {
     approved_units(conn, None, range).await
 }
 
@@ -569,7 +580,7 @@ pub async fn units_by_date(
     conn: &mut Conn,
     member_id: MemberId,
     range: DateRange,
-) -> ServiceResult<BTreeMap<NaiveDate, LeaveUnit>> {
+) -> ServiceResult<BTreeMap<NaiveDate, DayLeave>> {
     let units = approved_units(conn, Some(member_id), range).await?;
     Ok(units
         .into_iter()
@@ -581,7 +592,7 @@ pub async fn units_by_date(
 pub async fn units_on(
     conn: &mut Conn,
     date: NaiveDate,
-) -> ServiceResult<BTreeMap<MemberId, LeaveUnit>> {
+) -> ServiceResult<BTreeMap<MemberId, DayLeave>> {
     let units = approved_units(conn, None, DateRange::single(date)).await?;
     Ok(units
         .into_iter()
@@ -779,6 +790,15 @@ pub async fn create_request(
         .await
 }
 
+fn request_audit_detail(request: &LeaveRequest) -> serde_json::Value {
+    serde_json::json!({
+        "member_id": request.member_id,
+        "start_date": request.range.start(),
+        "end_date": request.range.end(),
+        "amount_q": request.amount,
+    })
+}
+
 async fn audit_request(
     conn: &mut Conn,
     now: Timestamp,
@@ -793,12 +813,7 @@ async fn audit_request(
             action,
             target_type: "leave_request",
             target_id: Some(request.id.to_string()),
-            detail: Some(serde_json::json!({
-                "member_id": request.member_id,
-                "start_date": request.range.start(),
-                "end_date": request.range.end(),
-                "amount_q": request.amount,
-            })),
+            detail: Some(request_audit_detail(request)),
             ctx: Some(ctx),
         },
     )
@@ -898,7 +913,25 @@ pub async fn on_document_closed_tx(
             }
         }
     };
-    close_request_tx(conn, &request, status, restore_balance, actor_id, now).await
+    close_request_tx(conn, &request, status, restore_balance, actor_id, now).await?;
+    // 본인의 회수는 휴가 화면(취소)에서 오든 결재 화면(회수)에서 오든 여기서 한 번 남긴다.
+    // 관리자의 취소는 [`cancel_tx`]가 `leave.admin_cancel`로 남긴다.
+    if outcome == LinkedOutcome::Withdrawn && actor_id == request.member_id {
+        audit_as(
+            conn,
+            now,
+            actor_id,
+            Audit {
+                action: "leave.cancel",
+                target_type: "leave_request",
+                target_id: Some(request.id.to_string()),
+                detail: Some(request_audit_detail(&request)),
+                ctx: None,
+            },
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 /// 휴가를 취소하는 자격. 본인 자격의 취소와 관리자 권한의 취소는 규칙이 다르다([`cancel_tx`]).
@@ -945,7 +978,8 @@ async fn cancel_tx(
         let reason = Reason::parse(ADMIN_CANCEL_REASON)?;
         approval::close_linked_by_admin_tx(conn, ctx, request.document_id, reason, now).await?;
     } else if request.status == LeaveRequestStatus::Pending {
-        approval::withdraw_linked_tx(conn, actor_id, request.document_id, now).await?;
+        // 감사 로그는 회수의 연결 효과([`on_document_closed_tx`])가 남긴다.
+        return approval::withdraw_linked_tx(conn, actor_id, request.document_id, now).await;
     } else {
         close_request_tx(
             conn,

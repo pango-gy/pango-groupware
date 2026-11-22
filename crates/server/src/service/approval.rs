@@ -1644,6 +1644,9 @@ pub async fn close_linked_by_admin_tx(
         Ok(Transition::NoOp) => Ok(()),
         // 전이가 거부되면 문서는 바뀌지 않았으므로 그대로 다음 전이를 시도할 수 있다.
         Err(DomainError::Conflict(ConflictReason::WithdrawTooLate)) => {
+            // 대리 반려는 본인이 기안한 문서에는 할 수 없다(최고 관리자도). [`admin_reject`]와 같은 규칙.
+            let actor = require_current_admin(conn, ctx).await?;
+            authz::override_document(&actor, drafter)?;
             force_reject_tx(conn, ctx, &mut loaded, reason, now).await
         }
         Err(error) => Err(error.into()),

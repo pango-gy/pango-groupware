@@ -358,6 +358,7 @@ mod logic {
                 leave_type_name: "연차".into(),
                 start_date: date(day),
                 end_date: date(day),
+                first_working_day: None,
                 unit: LeaveUnit::FullDay,
                 amount: LeaveAmount::from_quarters(4),
                 reason: "쉼".into(),

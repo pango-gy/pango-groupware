@@ -433,12 +433,14 @@ pub(crate) mod logic {
         year.clamp(min, max)
     }
 
-    /// 본인이 취소할 수 있어 보이는지. 결재 중이면 언제나, 승인이면 시작 전까지.
-    /// (서버는 첫 근무일 기준으로 다시 판정한다.)
+    /// 본인이 취소할 수 있는지. 결재 중이면 언제나, 승인이면 첫 근무일 전까지(서버와 같은 규칙).
+    /// 첫 근무일을 주지 않는 예전 서버라면 시작일로 판단한다.
     pub fn can_cancel(request: &LeaveRequestDto, today: NaiveDate) -> bool {
         match request.status {
             LeaveRequestStatus::Pending => true,
-            LeaveRequestStatus::Approved => today < request.start_date,
+            LeaveRequestStatus::Approved => {
+                today < request.first_working_day.unwrap_or(request.start_date)
+            }
             LeaveRequestStatus::Rejected | LeaveRequestStatus::Canceled => false,
         }
     }
@@ -635,6 +637,7 @@ pub(crate) mod logic {
                 leave_type_name: "연차".into(),
                 start_date: d(start),
                 end_date: d(end),
+                first_working_day: None,
                 unit: LeaveUnit::FullDay,
                 amount: LeaveAmount::from_quarters(4),
                 reason: "개인 사정".into(),
@@ -686,6 +689,13 @@ pub(crate) mod logic {
                     today
                 ));
             }
+            // 일요일에 시작해 월요일부터 쉬는 휴가는 일요일에도 취소할 수 있다.
+            let starts_on_sunday = LeaveRequestDto {
+                first_working_day: Some(d("2026-03-16")),
+                ..request(LeaveRequestStatus::Approved, "2026-03-15", "2026-03-16")
+            };
+            assert!(can_cancel(&starts_on_sunday, d("2026-03-15")));
+            assert!(!can_cancel(&starts_on_sunday, d("2026-03-16")));
             assert!(cancel_message(&pending_past).contains("회수"));
             assert!(cancel_message(&approved_future).contains("복원"));
         }

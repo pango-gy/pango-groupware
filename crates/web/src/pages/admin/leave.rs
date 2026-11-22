@@ -1030,6 +1030,7 @@ pub(crate) mod logic {
                 leave_type_name: "연차".into(),
                 start_date: NaiveDate::MIN,
                 end_date: NaiveDate::MIN,
+                first_working_day: None,
                 unit: LeaveUnit::FullDay,
                 amount: LeaveAmount::from_quarters(4),
                 reason: "r".into(),

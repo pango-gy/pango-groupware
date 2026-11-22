@@ -9,7 +9,7 @@ use pango_api::leave::BalanceDto;
 use pango_core::authz::Role;
 use pango_core::calendar::DateRange;
 use pango_core::id::{DepartmentId, LeaveRequestId, MemberId};
-use pango_core::leave::{Balance, LeaveUnit, LedgerEntry, LedgerEntryKind};
+use pango_core::leave::{Balance, DayLeave, LeaveUnit, LedgerEntry, LedgerEntryKind};
 use pango_core::member::MemberStatus;
 use pango_db::leave::{self as ledger, LedgerRecord};
 use pango_db::settings::{self, Holiday};
@@ -1942,7 +1942,7 @@ async fn malformed_requests_are_rejected_without_side_effects() {
 // ── 근태 연동 ────────────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn units_by_date_reports_approved_working_days_with_the_larger_unit() {
+async fn units_by_date_combines_approved_leave_on_each_working_day() {
     let w = world().await;
     let submit = |start: &'static str, end: &'static str, unit: &'static str, approve: bool| {
         let (app, kim, lead) = (w.app.clone(), w.kim.clone(), w.lead.token.clone());
@@ -1968,21 +1968,20 @@ async fn units_by_date_reports_approved_working_days_with_the_larger_unit() {
     let units = leave_service::units_by_date(&mut conn, w.kim.id, range)
         .await
         .expect("units");
+    let full = DayLeave::from(LeaveUnit::FullDay);
+    let quarter_and_half = DayLeave::from(LeaveUnit::AmQuarter).with(LeaveUnit::PmHalf);
     let expected = BTreeMap::from([
-        (date("2026-03-09"), LeaveUnit::FullDay),
-        (date("2026-03-10"), LeaveUnit::FullDay),
-        (date("2026-03-11"), LeaveUnit::PmHalf),
-        (date("2026-03-12"), LeaveUnit::PmHalf),
+        (date("2026-03-09"), full),
+        (date("2026-03-10"), full),
+        (date("2026-03-11"), quarter_and_half),
+        (date("2026-03-12"), quarter_and_half),
     ]);
     assert_eq!(units, expected);
     let whole = DateRange::new(date("2026-03-01"), date("2026-03-08")).expect("range");
     let units = leave_service::units_by_date(&mut conn, w.kim.id, whole)
         .await
         .expect("units");
-    assert_eq!(
-        units,
-        BTreeMap::from([(date("2026-03-06"), LeaveUnit::FullDay)])
-    );
+    assert_eq!(units, BTreeMap::from([(date("2026-03-06"), full)]));
     let other = leave_service::units_by_date(&mut conn, w.lead.id, range)
         .await
         .expect("units");
@@ -2675,4 +2674,32 @@ async fn admin_creates_honour_idempotency_key() {
         "재전송해도 한 번만 조정한다"
     );
     assert_eq!(w.app.audit_entries("leave.adjust").await.len(), 1);
+}
+
+#[tokio::test]
+async fn withdrawing_from_the_approval_screen_is_audited_as_a_leave_cancel() {
+    let w = world().await;
+    let (id, doc) = requested(&w, &w.kim, "2026-03-10", "2026-03-11").await;
+    decide(&w.app, &w.kim.token, &doc, "withdraw")
+        .await
+        .expect(StatusCode::OK);
+    let entries = w.app.audit_entries("leave.cancel").await;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].target_id.as_deref(), Some(id.as_str()));
+    assert_eq!(entries[0].actor_id, Some(w.kim.id));
+}
+
+#[tokio::test]
+async fn requests_report_their_first_working_day() {
+    let w = world().await;
+    // 2026-03-08은 일요일, 03-09가 월요일.
+    let created = request(
+        &w.app,
+        &w.kim,
+        &leave(&w.annual, "2026-03-08", "2026-03-09", "full_day"),
+    )
+    .await
+    .expect(StatusCode::CREATED);
+    assert_eq!(created["start_date"], "2026-03-08");
+    assert_eq!(created["first_working_day"], "2026-03-09");
 }

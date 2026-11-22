@@ -12,7 +12,7 @@ use chrono::{Days, Duration, NaiveDate};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{ConflictReason, DomainError, DomainResult, ValidationReason};
-use crate::leave::LeaveUnit;
+use crate::leave::DayLeave;
 use crate::time::{MinuteOfDay, Timestamp, WorkCalendarZone};
 
 /// 한 번의 근무로 인정하는 최대 길이. 이보다 오래 열린 기록은 퇴근으로 닫을 수 없고
@@ -178,17 +178,27 @@ impl WorkPolicy {
             .map_or(0, |tier| u32::from(tier.break_minutes))
     }
 
-    /// 휴가 단위에 맞춘 기대 시작·종료. 종일 휴가면 기대 시각이 없다.
-    fn expected_window(&self, leave: Option<LeaveUnit>) -> Option<(MinuteOfDay, MinuteOfDay)> {
-        let (start, end) = (self.work_start, self.work_end);
-        match leave {
-            None => Some((start, end)),
-            Some(LeaveUnit::FullDay) => None,
-            Some(LeaveUnit::AmHalf) => Some((self.half_day_split, end)),
-            Some(LeaveUnit::PmHalf) => Some((start, self.half_day_split)),
-            Some(LeaveUnit::AmQuarter) => Some((self.am_quarter_start, end)),
-            Some(LeaveUnit::PmQuarter) => Some((start, self.pm_quarter_end)),
+    /// 그날 휴가에 맞춘 기대 시작·종료. 하루를 다 쉬면 기대 시각이 없다.
+    ///
+    /// 앞쪽 칸을 쉬면 시작이, 뒤쪽 칸을 쉬면 종료가 밀린다(반반차 한 칸, 반차 두 칸).
+    fn expected_window(&self, leave: Option<DayLeave>) -> Option<(MinuteOfDay, MinuteOfDay)> {
+        let Some(leave) = leave else {
+            return Some((self.work_start, self.work_end));
+        };
+        if leave.is_full_day() {
+            return None;
         }
+        let start = match leave.leading_quarters() {
+            0 => self.work_start,
+            1 => self.am_quarter_start,
+            _ => self.half_day_split,
+        };
+        let end = match leave.trailing_quarters() {
+            0 => self.work_end,
+            1 => self.pm_quarter_end,
+            _ => self.half_day_split,
+        };
+        Some((start, end))
     }
 }
 
@@ -412,7 +422,7 @@ pub struct DayInput<'a> {
     pub work_date: NaiveDate,
     pub is_working_day: bool,
     pub record: Option<&'a RecordState>,
-    pub leave: Option<LeaveUnit>,
+    pub leave: Option<DayLeave>,
     pub now: Timestamp,
 }
 
@@ -543,7 +553,7 @@ pub fn evaluate_day(
     let Some(record) = input.record else {
         let status = if !input.is_working_day {
             DayStatus::DayOff
-        } else if input.leave == Some(LeaveUnit::FullDay) {
+        } else if input.leave.is_some_and(DayLeave::is_full_day) {
             DayStatus::OnLeave
         } else if work_date_ended(zone, work_date, now) {
             DayStatus::Absent
@@ -765,6 +775,7 @@ pub fn clock_out_reminder_at(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::leave::LeaveUnit;
     use chrono::{DateTime, Utc};
     use proptest::prelude::*;
 
@@ -877,7 +888,7 @@ mod tests {
             work_date: date("2026-03-02"),
             is_working_day,
             record,
-            leave,
+            leave: leave.map(DayLeave::from),
             now: ts(now),
         };
         evaluate_day(&input, policy, &seoul())
@@ -1738,6 +1749,63 @@ mod tests {
     }
 
     #[test]
+    fn two_partial_leaves_on_one_day_are_combined() {
+        let both = |a: LeaveUnit, b: LeaveUnit| Some(DayLeave::from(a).with(b));
+        let policy = policy_with_grace(0);
+        let eval = |clock_in: &str, clock_out: &str, leave: Option<DayLeave>| {
+            let record = closed("2026-03-02", clock_in, clock_out);
+            let input = DayInput {
+                work_date: date("2026-03-02"),
+                is_working_day: true,
+                record: Some(&record),
+                leave,
+                now: ts("2026-03-04T00:00:00+09:00"),
+            };
+            evaluate_day(&input, &policy, &seoul())
+        };
+        // 오전 반차 + 오후 반차 = 종일: 기록이 없어도 결근이 아니다.
+        let no_record = DayInput {
+            work_date: date("2026-03-02"),
+            is_working_day: true,
+            record: None,
+            leave: both(LeaveUnit::AmHalf, LeaveUnit::PmHalf),
+            now: ts("2026-03-04T00:00:00+09:00"),
+        };
+        assert_eq!(
+            evaluate_day(&no_record, &policy, &seoul()).status,
+            DayStatus::OnLeave
+        );
+        // 오전 반반차 + 오후 반차: 11:00~14:00이 기대 근무.
+        let quarter_half = eval(
+            "2026-03-02T11:00:00+09:00",
+            "2026-03-02T14:00:00+09:00",
+            both(LeaveUnit::AmQuarter, LeaveUnit::PmHalf),
+        );
+        assert_eq!(
+            (
+                quarter_half.status,
+                quarter_half.late_minutes,
+                quarter_half.early_leave_minutes
+            ),
+            (DayStatus::Normal, 0, 0)
+        );
+        // 오전 반반차 + 오후 반반차: 11:00~16:00.
+        let quarters = eval(
+            "2026-03-02T11:00:00+09:00",
+            "2026-03-02T16:00:00+09:00",
+            both(LeaveUnit::AmQuarter, LeaveUnit::PmQuarter),
+        );
+        assert_eq!(
+            (
+                quarters.status,
+                quarters.late_minutes,
+                quarters.early_leave_minutes
+            ),
+            (DayStatus::Normal, 0, 0)
+        );
+    }
+
+    #[test]
     fn break_tier_boundaries_in_evaluation() {
         let worked = |out: &str| {
             let eval = eval_closed("2026-03-02T09:00:00+09:00", out, None);
@@ -1883,7 +1951,7 @@ mod tests {
             DayStatus::DayOff
         );
         let leave = DayInput {
-            leave: Some(LeaveUnit::FullDay),
+            leave: Some(LeaveUnit::FullDay.into()),
             now: later,
             ..input
         };
@@ -1893,7 +1961,7 @@ mod tests {
         );
         // 반차만 있고 기록이 없으면 결근이다.
         let half = DayInput {
-            leave: Some(LeaveUnit::AmHalf),
+            leave: Some(LeaveUnit::AmHalf.into()),
             now: later,
             ..input
         };
@@ -2010,7 +2078,7 @@ mod tests {
                                 work_date,
                                 is_working_day: true,
                                 record: record.as_ref(),
-                                leave,
+                                leave: leave.map(DayLeave::from),
                                 now: at,
                             };
                             let _ = evaluate_day(&input, &WorkPolicy::default_korean(), zone);
@@ -2102,7 +2170,7 @@ mod tests {
                 clock_out_at: has_out.then_some(clock_out_at),
             };
             let leave = LeaveUnit::ALL.get(leave_index).copied();
-            let input = DayInput { work_date: record.work_date, is_working_day, record: Some(&record), leave, now };
+            let input = DayInput { work_date: record.work_date, is_working_day, record: Some(&record), leave: leave.map(DayLeave::from), now };
             let eval = evaluate_day(&input, &policy, &zone);
             if has_out {
                 let span = (clock_out_at.as_millis().div_euclid(60_000)

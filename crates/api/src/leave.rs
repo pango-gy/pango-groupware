@@ -77,6 +77,10 @@ pub struct LeaveRequestDto {
     pub leave_type_name: String,
     pub start_date: NaiveDate,
     pub end_date: NaiveDate,
+    /// 실제로 쉬는 첫 근무일(주말·공휴일을 건너뛴 날). 본인은 승인된 휴가를 이 날 전까지
+    /// 취소할 수 있다. 예전 서버의 응답에는 없다.
+    #[serde(default)]
+    pub first_working_day: Option<NaiveDate>,
     pub unit: LeaveUnit,
     pub amount: LeaveAmount,
     pub reason: String,

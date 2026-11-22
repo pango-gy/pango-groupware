@@ -114,6 +114,46 @@ impl LeaveUnit {
     }
 }
 
+/// 한 근무일에 승인된 휴가를 모두 합친 것. 같은 날 시간대가 다른 반차·반반차 두 건(예: 오전
+/// 반차 + 오후 반차)이 함께 승인될 수 있으므로, 근태 판정은 단위 하나가 아니라 이 합을 본다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DayLeave {
+    slots: u8,
+}
+
+impl DayLeave {
+    /// 이 휴가에 `unit`을 더한 것.
+    #[must_use]
+    pub const fn with(self, unit: LeaveUnit) -> Self {
+        Self {
+            slots: self.slots | unit.slots(),
+        }
+    }
+
+    /// 하루를 모두 쉰다(종일 휴가이거나 반차 둘처럼 네 칸이 다 찼다).
+    pub const fn is_full_day(self) -> bool {
+        self.slots == LeaveUnit::FullDay.slots()
+    }
+
+    /// 근무 시작부터 쉬는 칸 수(0~4).
+    pub const fn leading_quarters(self) -> u32 {
+        self.slots.trailing_ones()
+    }
+
+    /// 근무 종료 쪽에서 쉬는 칸 수(0~4).
+    pub const fn trailing_quarters(self) -> u32 {
+        (self.slots << 4).leading_ones()
+    }
+}
+
+impl From<LeaveUnit> for DayLeave {
+    fn from(unit: LeaveUnit) -> Self {
+        Self {
+            slots: unit.slots(),
+        }
+    }
+}
+
 /// 검증된 휴가 신청 크기: 실제로 쉬는 근무일과 차감 수량.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeaveSpan {
