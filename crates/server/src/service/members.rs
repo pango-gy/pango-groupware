@@ -498,9 +498,32 @@ pub async fn change_status(
                 (current.role, request.status),
                 active_owners,
             )?;
+            // 퇴사자만 남은 부서·직책은 보관할 수 있다. 그 사람을 다시 로그인할 수 있는 상태로
+            // 돌리면 보관된 소속에 남지 않도록 소속을 비운다(관리자가 새로 지정한다).
+            let (mut department_id, mut position_id) = (current.department_id, current.position_id);
+            if request.status.can_sign_in() && !current.status.can_sign_in() {
+                if let Some(id) = department_id {
+                    if org::find_department(conn, id)
+                        .await?
+                        .is_none_or(|d| d.archived_at.is_some())
+                    {
+                        department_id = None;
+                    }
+                }
+                if let Some(id) = position_id {
+                    if org::find_position(conn, id)
+                        .await?
+                        .is_none_or(|p| p.archived_at.is_some())
+                    {
+                        position_id = None;
+                    }
+                }
+            }
             let next = Member {
                 status: request.status,
                 retired_on,
+                department_id,
+                position_id,
                 ..current.clone()
             };
             require_updated(members::update(conn, &next, now).await?)?;
@@ -525,6 +548,8 @@ pub async fn change_status(
                         "retired_on": next.retired_on,
                         "revoked_sessions": revoked_sessions,
                         "cleared_heads": cleared_heads,
+                        "cleared_department": current.department_id != next.department_id,
+                        "cleared_position": current.position_id != next.position_id,
                     })),
                     ctx: Some(ctx),
                 },

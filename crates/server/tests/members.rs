@@ -1716,3 +1716,44 @@ async fn legacy_hire_date_outside_the_window_can_stay_while_other_fields_change(
         "hired_on",
     );
 }
+
+#[tokio::test]
+async fn reinstating_a_retiree_clears_an_archived_department() {
+    let w = org_world().await;
+    let team = w.app.add_department("해체팀", None, None).await;
+    let retiree = w.app.add_member("retiree", Role::Member, Some(team)).await;
+    change_status(
+        &w.app,
+        &w.owner,
+        retiree.id,
+        json!({ "version": 1, "status": "retired" }),
+    )
+    .await
+    .expect(StatusCode::OK);
+    w.app
+        .delete(&format!("/admin/departments/{team}?version=1"))
+        .bearer(&w.owner)
+        .send()
+        .await
+        .expect(StatusCode::OK);
+
+    let back = change_status(
+        &w.app,
+        &w.owner,
+        retiree.id,
+        json!({ "version": 2, "status": "active" }),
+    )
+    .await
+    .expect(StatusCode::OK);
+    assert_eq!(back["status"], "active");
+    assert_eq!(
+        back["department_id"],
+        Value::Null,
+        "보관된 부서에 남지 않는다"
+    );
+    let audits = w.app.audit_entries("member.status").await;
+    assert!(audits.iter().any(|a| a
+        .detail
+        .as_ref()
+        .is_some_and(|d| d["cleared_department"] == true)));
+}
