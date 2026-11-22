@@ -232,7 +232,7 @@ def verify(secret: str, headers, body: bytes) -> bool:
   1. DM 열기 — kind 41010, 내용 없음, `["p", 받는 사람 hex]`. 이미 있으면 같은 DM. 응답 `message`의 `response:{"channel_id": …}`를 `buzz_accounts.dm_channel_id`에 저장해 다음부터 다시 씁니다.
   2. 메시지 — kind 9, 내용 `제목\n짧은 본문\n링크`(빈 부분은 뺌, 8KiB 이하), 태그 `["h", 채널]`, `["ms", 초 아래 밀리초 0~999]`(Buzz SDK `build_message`와 같음).
   저장해 둔 DM에 보내다 거절되면(401 제외) 한 번 다시 열어 봅니다. 401·403·그 밖의 4xx·`accepted: false`는 바로 실패, 408·429·5xx·연결 실패는 웹훅과 같은 간격으로 다시 보냅니다. 응답 본문은 64KiB까지만 읽고 저장하지 않습니다.
-- **구성원 연결**(Buzz는 이메일로 사용자를 찾을 수 없음): 구성원이 `npub1…`(또는 16진수)를 넣으면 봇이 DM으로 6자리 코드를 **바로**(아웃박스를 거치지 않고) 보냅니다. 코드는 해시만 저장하고 10분 유효(만료 시각 포함 거부), 5번 틀리면 끝, 다시 보내기는 60초 간격·시간당 5번(`pango_core::buzz`). 제한은 발송 전에 쓰기 트랜잭션에서 걸므로 동시에 눌러도 한 번만 보냅니다. 한 Buzz 계정은 한 구성원만 확인할 수 있습니다(부분 유일 색인). 관리자는 연결을 끊을 수만 있고 대신 연결할 수는 없습니다. 감사 로그의 공개키는 `npub1abcd…wxyz`로 줄여 남깁니다.
+- **구성원 연결**(Buzz는 이메일로 사용자를 찾을 수 없음): 구성원이 `npub1…`(또는 16진수)를 넣으면 봇이 DM으로 6자리 코드를 **바로**(아웃박스를 거치지 않고) 보냅니다. 코드는 해시만 저장하고 10분 유효(만료 시각 포함 거부), 5번 틀리면 끝, 다시 보내기는 60초 간격·시간당 5번(`pango_core::buzz`). 제한은 발송 전에 쓰기 트랜잭션에서 걸므로 동시에 눌러도 한 번만 보냅니다. 한 Buzz 계정은 한 구성원만 확인할 수 있습니다(부분 유일 색인). 관리자는 구성원의 Buzz ID를 본인 확인 없이 바로 등록할 수 있습니다(`PUT /admin/members/{id}/buzz`, 일괄은 `POST /admin/integrations/buzz/accounts`로 줄마다 결과, 문제 있는 줄만 빼고 한 트랜잭션). 재직 중인 구성원만, 다른 구성원이 확인한 ID는 거부합니다. 잘못 넣은 ID를 받은 사람이 알 수 있게 등록하면 `buzz.linked` 알림(줄인 ID 포함)을 같은 트랜잭션에서 만들어 앱과 Buzz로 함께 보냅니다. 감사 로그의 공개키는 `npub1abcd…wxyz`로 줄여 남깁니다.
 - **실패 안내**(연결 중): 401·403 → 502 `buzz_bot_rejected`(관리자 문의), 그 밖의 4xx·거절 → 502 `buzz_recipient_rejected`, 연결 실패·5xx·429·막힌 주소 → 502 `buzz_unreachable`.
 
 | 경로 | 본문 → 응답 |
@@ -320,7 +320,7 @@ def verify(secret: str, headers, body: bytes) -> bool:
 | 공지 | `GET /notices` `GET /notices/{id}` `POST /notices/{id}/read` `GET /notices/{id}/attachments/{attachment_id}` `POST /admin/notices/{id}/attachments` `DELETE /admin/notices/{id}/attachments/{attachment_id}` |
 | 캘린더 | `GET /calendar/calendars` `GET /calendar/view` `GET /calendar/conflicts` `POST /calendar/events` `GET·PATCH·DELETE /calendar/events/{id}` `POST /calendar/events/{id}/respond` |
 | 알림 | `GET /notifications` `POST /notifications/{id}/read` `POST /notifications/read-all` `GET·PUT /me/notification-preferences` |
-| 관리 | `/admin/members…` `/admin/departments…` `/admin/positions…` `/admin/attendance…` `/admin/leave…` `/admin/approval/forms…` `/admin/notices…` `/admin/holidays…` `/admin/settings` `/admin/integrations/webhook…` `/admin/integrations/buzz` `/admin/members/{id}/buzz` `/admin/audit-log` `/admin/dashboard` |
+| 관리 | `/admin/members…`(기기: `GET·DELETE /admin/members/{id}/sessions`, `DELETE /admin/members/{id}/sessions/{session_id}`) `/admin/departments…` `/admin/positions…` `/admin/attendance…` `/admin/leave…` `/admin/approval/forms…` `/admin/notices…` `/admin/holidays…` `/admin/settings` `/admin/integrations/webhook…` `/admin/integrations/buzz` `/admin/members/{id}/buzz` `/admin/audit-log` `/admin/dashboard` |
 
 ## 8. 화면 구성 (UI/UX)
 

@@ -1,10 +1,10 @@
 //! 외부 알림 연동: 범용 웹훅(켜기·주소, 서명 키, 테스트 발송, 발송 현황)과 사내 메신저 Buzz
-//! (켜기·끄기, 서버 설정 상태, 연결한 구성원 수, 발송 현황).
+//! (켜기·끄기, 서버 설정 상태, 연결한 구성원 수, 발송 현황, 구성원 Buzz ID 일괄 등록).
 
 use dioxus::prelude::*;
 use pango_api::integration::{
-    BuzzSettingsDto, BuzzSettingsInput, DeliveryStatsDto, WebhookSecretDto, WebhookSettingsDto,
-    WebhookSettingsInput, WebhookTestResult,
+    BuzzBulkInput, BuzzBulkResult, BuzzSettingsDto, BuzzSettingsInput, DeliveryStatsDto,
+    WebhookSecretDto, WebhookSettingsDto, WebhookSettingsInput, WebhookTestResult,
 };
 use pango_api::{Empty, Versioned};
 use pango_core::outbound::MAX_WEBHOOK_URL_LEN;
@@ -15,7 +15,8 @@ use crate::session::use_session;
 use crate::text;
 use crate::ui::{
     report_error, report_success, resource_view, Badge, Button, ButtonKind, Card, Checkbox,
-    ConfirmModal, FormError, Icon, IconName, PageHeader, SecretReveal, Stat, TextField, Tone,
+    ConfirmModal, FormError, Icon, IconName, PageHeader, SecretReveal, Stat, TextArea, TextField,
+    Tone,
 };
 
 const PATH: &str = "/admin/integrations/webhook";
@@ -35,6 +36,7 @@ pub fn AdminIntegrations() -> Element {
         {resource_view(buzz, move |dto: BuzzSettingsDto| rsx! {
             BuzzPanel { key: "{dto.version}", dto, onreload: move |_| buzz.restart() }
         })}
+        BuzzBulkLink { onlinked: move |_| buzz.restart() }
         {resource_view(settings, move |dto: WebhookSettingsDto| rsx! {
             WebhookEditor { key: "{dto.version}", dto, onreload: move |_| settings.restart() }
         })}
@@ -109,7 +111,7 @@ fn BuzzPanel(dto: BuzzSettingsDto, onreload: EventHandler<()>) -> Element {
                 }
             },
             p { class: "field-hint",
-                "알림을 구성원의 Buzz DM으로도 보내요. 구성원은 내 정보에서 Buzz ID를 직접 연결해요. Buzz에는 알림 제목·짧은 본문·링크만 가요."
+                "알림을 구성원의 Buzz DM으로도 보내요. 구성원이 내 정보에서 Buzz ID를 직접 연결하거나, 관리자가 아래에서 한꺼번에 등록해요. Buzz에는 알림 제목·짧은 본문·링크만 가요."
             }
             dl { class: "detail-list",
                 dt { "서버 설정" }
@@ -150,6 +152,85 @@ fn BuzzPanel(dto: BuzzSettingsDto, onreload: EventHandler<()>) -> Element {
                 }
             }
             DeliveryStats { stats: dto.stats.clone() }
+        }
+    }
+}
+
+/// 구성원 Buzz ID 일괄 등록. 한 줄에 `아이디 Buzz ID`.
+#[component]
+fn BuzzBulkLink(onlinked: EventHandler<()>) -> Element {
+    let mut raw = use_signal(String::new);
+    let mut error = use_signal(String::new);
+    let mut busy = use_signal(|| false);
+    let mut result = use_signal(|| None::<BuzzBulkResult>);
+
+    let submit = move |event: FormEvent| async move {
+        event.prevent_default();
+        if busy() {
+            return;
+        }
+        // 보낸 내용을 따로 둔다. 응답을 기다리는 사이 입력을 고쳐도 결과를 보낸 줄에 맞춘다.
+        let sent = raw.read().clone();
+        let entries = match logic::parse_bulk(&sent) {
+            Ok(entries) => entries,
+            Err(message) => {
+                error.set(message);
+                return;
+            }
+        };
+        busy.set(true);
+        error.set(String::new());
+        let input = BuzzBulkInput { entries };
+        match api::post::<_, BuzzBulkResult>(&format!("{BUZZ_PATH}/accounts"), &input).await {
+            Ok(done) => {
+                if done.linked > 0 {
+                    onlinked.call(());
+                }
+                report_success(format!(
+                    "{}명을 새로 연결했어요. 이미 연결됨 {}명, 실패 {}명.",
+                    done.linked, done.unchanged, done.failed
+                ));
+                // 실패한 줄만 남겨 고쳐서 다시 보낼 수 있게 한다.
+                raw.set(logic::failed_lines(&sent, &done));
+                result.set(Some(done));
+            }
+            Err(failure) => error.set(failure.message()),
+        }
+        busy.set(false);
+    };
+
+    rsx! {
+        Card { title: "구성원 Buzz ID 일괄 등록",
+            p { class: "field-hint",
+                "한 줄에 구성원 아이디와 Buzz ID(npub1… 또는 64자 16진수)를 쉼표·탭·공백으로 나눠 적어요. "
+                "본인 확인 없이 바로 연결되고, 구성원에게 \u{201c}Buzz 알림이 연결됐어요\u{201d} 알림이 가요. "
+                "잘못 넣으면 다른 사람에게 알림이 가니 ID를 꼭 확인해 주세요."
+            }
+            form { class: "form", onsubmit: submit,
+                FormError { message: error() }
+                TextArea {
+                    label: "아이디와 Buzz ID",
+                    value: raw(),
+                    rows: 8,
+                    placeholder: "kim npub1…\nlee npub1…",
+                    oninput: move |value| raw.set(value),
+                }
+                div { class: "panel-actions",
+                    Button { submit: true, busy: busy(), disabled: raw.read().trim().is_empty(), "등록" }
+                }
+            }
+            if let Some(done) = result() {
+                if done.rows.iter().any(|row| !logic::is_success(&row.outcome)) {
+                    ul { class: "list", "aria-label": "등록하지 못한 줄",
+                        for (index, row) in done.rows.iter().enumerate().filter(|(_, row)| !logic::is_success(&row.outcome)) {
+                            li { key: "{index}", class: "list-row",
+                                span { class: "list-row-main", strong { "{row.login_id}" } }
+                                span { class: "list-row-side", {logic::outcome_label(&row.outcome)} }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -355,6 +436,128 @@ fn WebhookEditor(dto: WebhookSettingsDto, onreload: EventHandler<()>) -> Element
                     onreload.call(());
                 },
             }
+        }
+    }
+}
+
+pub mod logic {
+    use pango_api::integration::{BuzzBulkEntry, BuzzBulkInput, BuzzBulkResult};
+
+    /// 일괄 등록 입력을 줄로 나눈다. 빈 줄과 `#`로 시작하는 줄은 건너뛴다.
+    /// 한 줄은 쉼표·탭·공백으로 나눈 정확히 두 칸(아이디, Buzz ID)이어야 한다.
+    pub fn parse_bulk(raw: &str) -> Result<Vec<BuzzBulkEntry>, String> {
+        let mut entries = Vec::new();
+        for (index, line) in raw.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let parts: Vec<&str> = line
+                .split(|c: char| c == ',' || c.is_whitespace())
+                .filter(|part| !part.is_empty())
+                .collect();
+            let [login_id, pubkey] = parts.as_slice() else {
+                return Err(format!(
+                    "{}번째 줄은 \u{2018}아이디 Buzz ID\u{2019} 두 칸이어야 해요.",
+                    index + 1
+                ));
+            };
+            entries.push(BuzzBulkEntry {
+                login_id: (*login_id).to_owned(),
+                pubkey: (*pubkey).to_owned(),
+            });
+        }
+        if entries.is_empty() {
+            return Err("등록할 줄이 없어요.".to_owned());
+        }
+        if entries.len() > BuzzBulkInput::MAX {
+            return Err(format!(
+                "한 번에 {}줄까지 등록할 수 있어요.",
+                BuzzBulkInput::MAX
+            ));
+        }
+        Ok(entries)
+    }
+
+    pub fn is_success(outcome: &str) -> bool {
+        matches!(outcome, "linked" | "unchanged")
+    }
+
+    pub fn outcome_label(outcome: &str) -> &'static str {
+        match outcome {
+            "linked" => "연결함",
+            "unchanged" => "이미 연결됨",
+            "not_found" => "없는 아이디",
+            "forbidden" => "관리 권한 없음(관리자 계정은 최고 관리자만)",
+            "member_inactive" => "재직 중이 아님",
+            "invalid_pubkey" => "Buzz ID 형식이 아님",
+            "buzz_account_taken" => "다른 구성원이 쓰는 Buzz ID",
+            "duplicate" => "입력에 두 번 이상 나옴",
+            _ => "등록하지 못함",
+        }
+    }
+
+    /// 입력 중 실패한 줄만 남긴다(결과는 입력 순서와 같다).
+    pub fn failed_lines(raw: &str, result: &BuzzBulkResult) -> String {
+        let lines = raw
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'));
+        lines
+            .zip(&result.rows)
+            .filter(|(_, row)| !is_success(&row.outcome))
+            .map(|(line, _)| line)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use pango_api::integration::BuzzBulkRow;
+
+        #[test]
+        fn lines_accept_commas_tabs_and_spaces() {
+            let entries = parse_bulk("# 아이디,ID\nkim, npub1aaa\n\nlee\tnpub1bbb\n  park   abc  ")
+                .expect("valid");
+            let pairs: Vec<(&str, &str)> = entries
+                .iter()
+                .map(|e| (e.login_id.as_str(), e.pubkey.as_str()))
+                .collect();
+            assert_eq!(
+                pairs,
+                [("kim", "npub1aaa"), ("lee", "npub1bbb"), ("park", "abc")]
+            );
+        }
+
+        #[test]
+        fn malformed_lines_are_pointed_out() {
+            assert_eq!(
+                parse_bulk("kim npub1aaa\nlee"),
+                Err("2번째 줄은 \u{2018}아이디 Buzz ID\u{2019} 두 칸이어야 해요.".into())
+            );
+            assert!(parse_bulk("a b c").is_err());
+            assert!(parse_bulk("  \n# only comment").is_err());
+        }
+
+        #[test]
+        fn only_failed_lines_are_kept() {
+            let result = BuzzBulkResult {
+                linked: 1,
+                unchanged: 0,
+                failed: 1,
+                rows: vec![
+                    BuzzBulkRow {
+                        login_id: "kim".into(),
+                        outcome: "linked".into(),
+                    },
+                    BuzzBulkRow {
+                        login_id: "lee".into(),
+                        outcome: "not_found".into(),
+                    },
+                ],
+            };
+            assert_eq!(failed_lines("# head\nkim a\n\nlee b", &result), "lee b");
         }
     }
 }

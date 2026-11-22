@@ -438,6 +438,24 @@ pub async fn require_current_admin(conn: &mut Conn, ctx: &AuthContext) -> Servic
     Ok(actor)
 }
 
+/// 관리자가 다른 구성원의 계정을 다루는 동작의 대상: 요청자의 지금 권한을 다시 읽고, 대상
+/// 구성원을 찾고(없으면 404), `check`(`authz::manage_account` 또는 `manage_other_account`)로
+/// 그 대상을 다룰 수 있는지 확인한다. `(요청자, 대상)`을 돌려준다.
+///
+/// `manage_account`는 관리자 확인을 포함하므로 따로 `require_admin`을 부르지 않아도 된다.
+pub async fn managed_member(
+    conn: &mut Conn,
+    ctx: &AuthContext,
+    id: MemberId,
+    check: fn(&Actor, &pango_core::authz::Subject) -> pango_core::DomainResult<()>,
+) -> ServiceResult<(Actor, Member)> {
+    let actor = current_actor(conn, ctx).await?;
+    pango_core::authz::require_admin(&actor)?;
+    let member = found(pango_db::members::find(conn, id).await?)?;
+    check(&actor, &member.subject())?;
+    Ok((actor, member))
+}
+
 /// 쓰기 트랜잭션 안에서 요청자 본인의 구성원 정보를 다시 읽는다.
 ///
 /// 인증 뒤에 부서가 바뀌었거나 입사일이 정정됐을 수 있다. 본인의 소속·입사일로 판정하는

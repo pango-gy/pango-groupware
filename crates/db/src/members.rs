@@ -111,6 +111,18 @@ pub async fn find(conn: &mut Conn, id: MemberId) -> DbResult<Option<Member>> {
     .transpose()
 }
 
+/// 로그인 아이디로 찾는다(아이디는 소문자로 저장된다).
+pub async fn find_by_login_id(conn: &mut Conn, login_id: &str) -> DbResult<Option<Member>> {
+    sqlx::query_as::<_, MemberRow>(&format!(
+        "SELECT {MEMBER_COLUMNS} FROM members WHERE login_id = ?"
+    ))
+    .bind(login_id)
+    .fetch_optional(conn)
+    .await?
+    .map(Member::try_from)
+    .transpose()
+}
+
 pub async fn find_many(conn: &mut Conn, ids: &[MemberId]) -> DbResult<Vec<Member>> {
     if ids.is_empty() {
         return Ok(Vec::new());

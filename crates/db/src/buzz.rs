@@ -192,6 +192,34 @@ pub async fn put_code(conn: &mut Conn, code: &NewCode<'_>) -> DbResult<()> {
     Ok(())
 }
 
+/// 관리자가 정한 공개키로 바로 확인된 연결을 만든다. 같은 공개키면 열어 둔 DM 채널을 그대로
+/// 두고, 다른 공개키면 비운다. 확인 코드는 지운다(재발송 제한 기록은 남긴다).
+pub async fn put_verified(
+    conn: &mut Conn,
+    member_id: MemberId,
+    pubkey: &str,
+    now: Timestamp,
+) -> DbResult<()> {
+    sqlx::query(
+        "INSERT INTO buzz_accounts
+            (member_id, pubkey, status, code_attempts, sends_in_window, verified_at, created_at,
+             updated_at)
+         VALUES (?1, ?2, 'verified', 0, 0, ?3, ?3, ?3)
+         ON CONFLICT (member_id) DO UPDATE SET
+            dm_channel_id = CASE WHEN buzz_accounts.pubkey = excluded.pubkey
+                                 THEN buzz_accounts.dm_channel_id END,
+            pubkey = excluded.pubkey, status = 'verified', code_hash = NULL,
+            code_expires_at = NULL, code_attempts = 0, verified_at = excluded.verified_at,
+            updated_at = excluded.updated_at",
+    )
+    .bind(member_id.to_string())
+    .bind(pubkey)
+    .bind(now.as_millis())
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
 /// 틀린 코드 입력을 센다.
 pub async fn count_wrong_code(
     conn: &mut Conn,

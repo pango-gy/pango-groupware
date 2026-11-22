@@ -4,9 +4,9 @@ use axum::extract::State;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use pango_api::integration::{
-    BuzzLinkStart, BuzzLinkVerify, BuzzSettingsDto, BuzzSettingsInput, MemberBuzzDto, MyBuzzDto,
-    NotificationPrefsDto, NotificationPrefsInput, WebhookSecretDto, WebhookSettingsDto,
-    WebhookSettingsInput, WebhookTestResult,
+    BuzzAssignInput, BuzzBulkInput, BuzzBulkResult, BuzzLinkStart, BuzzLinkVerify, BuzzSettingsDto,
+    BuzzSettingsInput, MemberBuzzDto, MyBuzzDto, NotificationPrefsDto, NotificationPrefsInput,
+    WebhookSecretDto, WebhookSettingsDto, WebhookSettingsInput, WebhookTestResult,
 };
 use pango_api::{Empty, Versioned};
 
@@ -35,7 +35,13 @@ pub fn routes() -> Router<AppState> {
         )
         .route(
             "/admin/members/{id}/buzz",
-            get(member_buzz).delete(admin_unlink_buzz),
+            get(member_buzz)
+                .put(admin_assign_buzz)
+                .delete(admin_unlink_buzz),
+        )
+        .route(
+            "/admin/integrations/buzz/accounts",
+            post(admin_assign_buzz_bulk),
         )
         .route(
             "/me/buzz",
@@ -57,6 +63,25 @@ async fn update_buzz_settings(
     ApiJson(request): ApiJson<Versioned<BuzzSettingsInput>>,
 ) -> ServiceResult<Json<BuzzSettingsDto>> {
     buzz::update_settings(&state, &ctx, &request)
+        .await
+        .map(Json)
+}
+
+async fn admin_assign_buzz(
+    State(state): State<AppState>,
+    Auth(ctx): Auth,
+    ApiPath(id): ApiPath<MemberId>,
+    ApiJson(input): ApiJson<BuzzAssignInput>,
+) -> ServiceResult<Json<MemberBuzzDto>> {
+    buzz::admin_assign(&state, &ctx, id, &input).await.map(Json)
+}
+
+async fn admin_assign_buzz_bulk(
+    State(state): State<AppState>,
+    Auth(ctx): Auth,
+    ApiJson(input): ApiJson<BuzzBulkInput>,
+) -> ServiceResult<Json<BuzzBulkResult>> {
+    buzz::admin_assign_bulk(&state, &ctx, &input)
         .await
         .map(Json)
 }

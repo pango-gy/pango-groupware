@@ -903,7 +903,7 @@ async fn members_cannot_use_the_admin_buzz_endpoints() {
 }
 
 #[tokio::test]
-async fn admins_can_unlink_but_not_link_for_someone() {
+async fn admins_see_and_unlink_a_members_link() {
     let (app, relay) = world().await;
     let admin = app.add_member("admin1", Role::Admin, None).await;
     let member = app.add_member("kim", Role::Member, None).await;
@@ -934,7 +934,7 @@ async fn admins_can_unlink_but_not_link_for_someone() {
         entries[0].target_id.as_deref(),
         Some(member.id.to_string().as_str())
     );
-    // 관리자 경로에는 연결(POST)이 없다.
+    // 관리자 등록은 PUT이다. 확인 코드 흐름(POST)은 본인 경로에만 있다.
     app.post(&path)
         .bearer(&admin.token)
         .json(&json!({ "pubkey": ALICE }))
@@ -986,4 +986,202 @@ fn the_test_bot_key_is_the_bip340_vector() {
         BotKey::parse(BOT_SECRET).expect("key").public_key(),
         PublicKey::parse(BOT_HEX).expect("pubkey")
     );
+}
+
+// ── 관리자 등록 ─────────────────────────────────────────────────────────
+
+async fn assign(
+    app: &TestApp,
+    token: &str,
+    member: MemberId,
+    pubkey: &str,
+) -> pango_server::testing::TestResponse {
+    app.put(&format!("/admin/members/{member}/buzz"))
+        .bearer(token)
+        .json(&json!({ "pubkey": pubkey }))
+        .send()
+        .await
+}
+
+#[tokio::test]
+async fn an_admin_links_a_buzz_id_and_the_member_is_told_on_buzz() {
+    let (app, relay) = world().await;
+    let admin = app.add_member("admin1", Role::Admin, None).await;
+    let member = app.add_member("kim", Role::Member, None).await;
+
+    let linked = assign(&app, &admin.token, member.id, ALICE)
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(
+        linked,
+        json!({ "status": "verified", "npub_short": "npub10elfc…jptg" })
+    );
+    assert_eq!(my_buzz(&app, &member.token).await["status"], "verified");
+    assert!(relay.events(9).is_empty(), "확인 코드 DM은 보내지 않는다");
+
+    // 연결 알림이 앱 알림함과 Buzz 아웃박스에 함께 들어간다.
+    let notices = app.notifications_of(member.id).await;
+    assert_eq!(notices.len(), 1);
+    assert_eq!(notices[0].kind, "buzz.linked");
+    assert!(notices[0].body.contains("npub10elfc…jptg"));
+    outbound::dispatch_once(&app.state).await.expect("dispatch");
+    let delivered = relay.events(9);
+    assert_eq!(delivered.len(), 1);
+    assert!(delivered[0].content.starts_with("Buzz 알림이 연결됐어요"));
+    assert_eq!(app.audit_entries("buzz.admin_link").await.len(), 1);
+
+    // 같은 ID로 다시 넣으면 아무것도 바뀌지 않는다.
+    assign(&app, &admin.token, member.id, ALICE_HEX)
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(app.notifications_of(member.id).await.len(), 1);
+    assert_eq!(app.audit_entries("buzz.admin_link").await.len(), 1);
+
+    // 그 뒤의 알림은 Buzz로 간다.
+    send_notification(&app, member.id).await;
+    let report = outbound::dispatch_once(&app.state).await.expect("dispatch");
+    assert_eq!(report.sent, 1);
+}
+
+#[tokio::test]
+async fn admin_linking_rejects_members_taken_ids_and_bad_input() {
+    let (app, relay) = world().await;
+    let admin = app.add_member("admin1", Role::Admin, None).await;
+    let member = app.add_member("kim", Role::Member, None).await;
+    let other = app.add_member("lee", Role::Member, None).await;
+    link(&app, &relay, &other.token, ALICE).await;
+
+    assign(&app, &member.token, member.id, BOB_HEX)
+        .await
+        .expect_error(StatusCode::FORBIDDEN, "forbidden");
+    assign(&app, &admin.token, member.id, ALICE)
+        .await
+        .expect_error(StatusCode::CONFLICT, "buzz_account_taken");
+    assign(&app, &admin.token, member.id, "npub1nope")
+        .await
+        .expect_error(StatusCode::BAD_REQUEST, "validation_failed");
+    assign(&app, &admin.token, MemberId::new(), BOB_HEX)
+        .await
+        .expect_error(StatusCode::NOT_FOUND, "not_found");
+    app.set_status(member.id, pango_core::member::MemberStatus::Retired)
+        .await;
+    assign(&app, &admin.token, member.id, BOB_HEX)
+        .await
+        .expect_error(StatusCode::CONFLICT, "member_inactive");
+    assert!(app.audit_entries("buzz.admin_link").await.is_empty());
+}
+
+#[tokio::test]
+async fn bulk_linking_reports_each_line_and_links_the_good_ones() {
+    let (app, relay) = world().await;
+    let admin = app.add_member("admin1", Role::Admin, None).await;
+    let kim = app.add_member("kim", Role::Member, None).await;
+    let lee = app.add_member("lee", Role::Member, None).await;
+    let park = app.add_member("park", Role::Member, None).await;
+    link(&app, &relay, &lee.token, ALICE).await;
+    let carol = PublicKey::parse(BOT_HEX).expect("key").to_npub();
+
+    let result = app
+        .post("/admin/integrations/buzz/accounts")
+        .bearer(&admin.token)
+        .json(&json!({ "entries": [
+            { "login_id": " KIM ", "pubkey": BOB_HEX },
+            { "login_id": "lee", "pubkey": ALICE },
+            { "login_id": "ghost", "pubkey": carol },
+            { "login_id": "park", "pubkey": "not-a-key" },
+            { "login_id": "dup", "pubkey": carol },
+        ]}))
+        .send()
+        .await
+        .expect(StatusCode::OK);
+    let outcomes: Vec<(&str, &str)> = result["rows"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .map(|row| {
+            (
+                row["login_id"].as_str().expect("id"),
+                row["outcome"].as_str().expect("outcome"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        outcomes,
+        [
+            ("kim", "linked"),
+            ("lee", "unchanged"),
+            ("ghost", "duplicate"),
+            ("park", "invalid_pubkey"),
+            ("dup", "duplicate"),
+        ]
+    );
+    assert_eq!(
+        (&result["linked"], &result["unchanged"], &result["failed"]),
+        (&json!(1), &json!(1), &json!(3))
+    );
+    assert_eq!(my_buzz(&app, &kim.token).await["status"], "verified");
+    assert_eq!(my_buzz(&app, &park.token).await["status"], "none");
+
+    let missing = app
+        .post("/admin/integrations/buzz/accounts")
+        .bearer(&admin.token)
+        .json(&json!({ "entries": [{ "login_id": "ghost", "pubkey": carol }] }))
+        .send()
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(missing["rows"][0]["outcome"], "not_found");
+
+    app.post("/admin/integrations/buzz/accounts")
+        .bearer(&kim.token)
+        .json(&json!({ "entries": [{ "login_id": "kim", "pubkey": BOB_HEX }] }))
+        .send()
+        .await
+        .expect_error(StatusCode::FORBIDDEN, "forbidden");
+    app.post("/admin/integrations/buzz/accounts")
+        .bearer(&admin.token)
+        .json(&json!({ "entries": [] }))
+        .send()
+        .await
+        .expect_error(StatusCode::BAD_REQUEST, "validation_failed");
+}
+
+#[tokio::test]
+async fn admins_cannot_redirect_the_owners_or_other_admins_notifications() {
+    let (app, relay) = world().await;
+    let owner = app.login_owner().await;
+    let admin = app.add_member("admin1", Role::Admin, None).await;
+    let other_admin = app.add_member("admin2", Role::Admin, None).await;
+    link(&app, &relay, &other_admin.token, ALICE).await;
+
+    assign(&app, &admin.token, app.owner_id, BOB_HEX)
+        .await
+        .expect_error(StatusCode::FORBIDDEN, "forbidden");
+    let bulk = app
+        .post("/admin/integrations/buzz/accounts")
+        .bearer(&admin.token)
+        .json(&json!({ "entries": [
+            { "login_id": "owner", "pubkey": BOB_HEX },
+            { "login_id": "admin2", "pubkey": BOT_HEX },
+        ]}))
+        .send()
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(bulk["rows"][0]["outcome"], "forbidden");
+    assert_eq!(bulk["rows"][1]["outcome"], "forbidden");
+    // 다른 관리자의 연결을 끊을 수도 없다.
+    app.delete(&format!("/admin/members/{}/buzz", other_admin.id))
+        .bearer(&admin.token)
+        .send()
+        .await
+        .expect_error(StatusCode::FORBIDDEN, "forbidden");
+    assert_eq!(
+        my_buzz(&app, &other_admin.token).await["status"],
+        "verified"
+    );
+    assert!(app.audit_entries("buzz.admin_link").await.is_empty());
+
+    // 최고 관리자는 관리자에게도 등록할 수 있다.
+    assign(&app, &owner, admin.id, BOB_HEX)
+        .await
+        .expect(StatusCode::OK);
 }

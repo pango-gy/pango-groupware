@@ -375,6 +375,7 @@ pub const AUDIT_ACTIONS: &[(&str, &str)] = &[
     ("buzz.link", "Buzz 계정 연결"),
     ("buzz.unlink", "Buzz 연결 해제"),
     ("buzz.admin_unlink", "Buzz 연결 해제(관리자)"),
+    ("buzz.admin_link", "Buzz ID 등록(관리자)"),
     ("holiday.upsert", "공휴일 등록·변경"),
     ("holiday.delete", "공휴일 삭제"),
     ("holiday.import", "공휴일 일괄 등록"),
@@ -399,6 +400,7 @@ pub const NOTIFICATION_KINDS: &[(&str, &str)] = &[
     ("calendar.updated", "일정 변경"),
     ("calendar.canceled", "일정 취소"),
     ("calendar.responded", "참석 응답"),
+    ("buzz.linked", "Buzz 연결"),
 ];
 
 /// 알림 종류 문구. 모르는 종류는 `None`(제목만 보여 준다).
@@ -998,6 +1000,7 @@ mod tests {
         "holiday.delete",
         "holiday.import",
         "holiday.upsert",
+        "buzz.admin_link",
         "buzz.admin_unlink",
         "buzz.link",
         "buzz.link_start",
@@ -1044,6 +1047,7 @@ mod tests {
         "approval.todo",
         "approval.withdrawn",
         "attendance.corrected",
+        "buzz.linked",
         "calendar.canceled",
         "calendar.invited",
         "calendar.responded",

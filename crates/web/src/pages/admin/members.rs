@@ -1513,7 +1513,7 @@ fn MemberDetailModal(
     }
 }
 
-/// 구성원의 Buzz 연결. 관리자는 끊기만 할 수 있다(대신 연결하지 않는다: 소유 확인은 본인만).
+/// 구성원의 Buzz 연결. 관리자는 Buzz ID를 등록(본인 확인 없이 바로 연결)하거나 끊을 수 있다.
 #[component]
 fn MemberBuzzSection(member_id: pango_core::id::MemberId, name: String) -> Element {
     let path = format!("/admin/members/{member_id}/buzz");
@@ -1526,12 +1526,61 @@ fn MemberBuzzSection(member_id: pango_core::id::MemberId, name: String) -> Eleme
     });
     let mut confirm = use_signal(|| false);
     let mut busy = use_signal(|| false);
-    let current = match &*link.read() {
-        Some(Ok(current)) if current.status != pango_api::integration::BuzzLinkStatus::None => {
-            current.clone()
+    let mut pubkey = use_signal(String::new);
+    let mut error = use_signal(String::new);
+    let assign = {
+        let path = path.clone();
+        move |event: FormEvent| {
+            let path = path.clone();
+            async move {
+                event.prevent_default();
+                if busy() {
+                    return;
+                }
+                busy.set(true);
+                error.set(String::new());
+                let input = pango_api::integration::BuzzAssignInput {
+                    pubkey: pubkey.read().trim().to_owned(),
+                };
+                match api::put::<_, pango_api::integration::MemberBuzzDto>(&path, &input).await {
+                    Ok(_) => {
+                        report_success("Buzz ID를 연결했어요.");
+                        pubkey.set(String::new());
+                        link.restart();
+                    }
+                    Err(failure) => error.set(failure.message()),
+                }
+                busy.set(false);
+            }
         }
+    };
+    let current = match &*link.read() {
+        Some(Ok(current)) => current.clone(),
         _ => return rsx! {},
     };
+    if current.status == pango_api::integration::BuzzLinkStatus::None {
+        return rsx! {
+            section { class: "member-section",
+                h3 { class: "sub-title", "Buzz 연결" }
+                p { class: "field-hint",
+                    "연결 안 됨. Buzz ID를 넣으면 본인 확인 없이 바로 연결되고, 구성원에게 연결 알림이 가요."
+                }
+                form { class: "form", onsubmit: assign,
+                    FormError { message: error() }
+                    TextField {
+                        label: "Buzz ID",
+                        value: pubkey(),
+                        placeholder: "npub1…",
+                        autocomplete: "off",
+                        oninput: move |value| pubkey.set(value),
+                    }
+                    div { class: "modal-actions",
+                        Button { submit: true, busy: busy(), disabled: pubkey.read().trim().is_empty(), "연결" }
+                    }
+                }
+            }
+        };
+    }
     let unlink = move |_| {
         let path = path.clone();
         async move {
@@ -1562,7 +1611,7 @@ fn MemberBuzzSection(member_id: pango_core::id::MemberId, name: String) -> Eleme
                 "{state} · "
                 span { class: "mono-wrap", {current.npub_short.clone().unwrap_or_default()} }
             }
-            p { class: "field-hint", "끊으면 Buzz로 알림이 가지 않아요. 다시 연결은 구성원 본인이 내 정보에서 해요." }
+            p { class: "field-hint", "끊으면 Buzz로 알림이 가지 않아요. 다른 ID로 바꾸려면 끊은 뒤 다시 등록해요." }
             div { class: "modal-actions",
                 Button { kind: ButtonKind::Grey, busy: busy(), onclick: move |_| confirm.set(true), "Buzz 연결 해제" }
             }

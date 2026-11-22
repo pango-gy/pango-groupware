@@ -9,10 +9,13 @@
 //! - 확인 코드 DM은 아웃박스를 거치지 않고 바로 보낸다(사람이 기다리고 있다).
 //! - 한 Buzz 계정은 한 구성원만 확인할 수 있다(DB 유일 색인으로도 보장).
 //! - 감사 로그의 공개키는 줄인 표기(`npub1abcd…wxyz`)만 남긴다.
+//! - 관리자는 구성원의 Buzz ID를 확인 코드 없이 바로 등록할 수 있다(한 명씩 또는 일괄).
+//!   잘못 넣은 ID를 받은 사람이 알 수 있도록, 등록하면 구성원에게 "연결됨" 알림이 가고 그 알림은
+//!   같은 트랜잭션에서 Buzz 아웃박스에도 들어간다(채널이 켜져 있으면).
 
 use pango_api::integration::{
-    BuzzLinkStart, BuzzLinkStatus, BuzzLinkVerify, BuzzSettingsDto, BuzzSettingsInput,
-    MemberBuzzDto, MyBuzzDto,
+    BuzzAssignInput, BuzzBulkInput, BuzzBulkResult, BuzzBulkRow, BuzzLinkStart, BuzzLinkStatus,
+    BuzzLinkVerify, BuzzSettingsDto, BuzzSettingsInput, MemberBuzzDto, MyBuzzDto,
 };
 use pango_api::Versioned;
 use pango_core::authz;
@@ -22,6 +25,7 @@ use pango_core::buzz::{
 };
 use pango_core::error::ConflictReason;
 use pango_core::id::{MemberId, OutboundMessageId};
+use pango_core::member::MemberStatus;
 use pango_core::nostr::PublicKey;
 use pango_core::time::Timestamp;
 use pango_core::DomainError;
@@ -33,8 +37,8 @@ use subtle::ConstantTimeEq;
 use super::integrations::stats_dto;
 use super::outbound::{BuzzTarget, Delivery, OutboundPayload, Recipient, SendError, Target};
 use super::support::{
-    audit, count_u32, current_member, found, require_current_admin, require_updated, Audit,
-    AuthContext,
+    audit, count_u32, current_member, found, managed_member, notify, require_current_admin,
+    require_updated, Audit, AuthContext, Notify,
 };
 use crate::error::{ServiceError, ServiceResult};
 use crate::state::AppState;
@@ -373,7 +377,7 @@ pub async fn unlink_mine(state: &AppState, ctx: &AuthContext) -> ServiceResult<M
     my_link(state, ctx).await
 }
 
-/// 관리자가 보는 구성원의 연결. 관리자는 해제만 할 수 있고 대신 연결할 수는 없다.
+/// 관리자가 보는 구성원의 연결.
 pub async fn member_link(
     state: &AppState,
     ctx: &AuthContext,
@@ -402,12 +406,187 @@ pub async fn admin_unlink(
     let now = state.now();
     state
         .write(async |conn: &mut Conn| {
-            require_current_admin(conn, ctx).await?;
-            found(members::find(conn, member_id).await?)?;
+            managed_member(conn, ctx, member_id, authz::manage_account).await?;
             unlink_tx(conn, now, member_id, "buzz.admin_unlink", ctx).await
         })
         .await?;
     member_link(state, ctx, member_id).await
+}
+
+/// 관리자 등록 한 건의 결과.
+enum Assigned {
+    Linked,
+    Unchanged,
+}
+
+/// 관리자 등록 알림의 종류.
+pub const LINKED_BY_ADMIN: &str = "buzz.linked";
+
+/// 구성원에게 확인된 Buzz 연결을 만든다(관리자 등록). 호출 전에 관리자 권한을 확인한다.
+///
+/// 계정 관리 권한이 있어야 한다(`authz::manage_account`: 관리자는 일반 구성원만, 최고 관리자는
+/// 누구나). 그렇지 않으면 관리자가 최고 관리자의 알림을 자기 Buzz로 돌릴 수 있다.
+/// 재직 중인 구성원만 등록한다(그 밖의 구성원에게는 어차피 알림이 가지 않는다). 다른 구성원이
+/// 이미 확인한 ID면 거부한다.
+async fn assign_tx(
+    conn: &mut Conn,
+    ctx: &AuthContext,
+    actor: &authz::Actor,
+    now: Timestamp,
+    member: &members::Member,
+    pubkey: &PublicKey,
+) -> ServiceResult<Assigned> {
+    authz::manage_account(actor, &member.subject())?;
+    if member.status != MemberStatus::Active {
+        return Err(conflict(ConflictReason::MemberInactive));
+    }
+    let hex = pubkey.to_hex();
+    if buzz::verified_owner(conn, &hex)
+        .await?
+        .is_some_and(|owner| owner != member.id)
+    {
+        return Err(conflict(ConflictReason::BuzzAccountTaken));
+    }
+    let current = buzz::find(conn, member.id).await?;
+    if current
+        .as_ref()
+        .is_some_and(|a| a.status == AccountStatus::Verified && a.pubkey == hex)
+    {
+        return Ok(Assigned::Unchanged);
+    }
+    buzz::put_verified(conn, member.id, &hex, now).await?;
+    audit(
+        conn,
+        now,
+        Audit {
+            action: "buzz.admin_link",
+            target_type: "member",
+            target_id: Some(member.id.to_string()),
+            detail: Some(serde_json::json!({ "pubkey": pubkey.short() })),
+            ctx: Some(ctx),
+        },
+    )
+    .await?;
+    notify(
+        conn,
+        now,
+        Notify {
+            to: member.id,
+            kind: LINKED_BY_ADMIN,
+            title: "Buzz 알림이 연결됐어요".to_owned(),
+            body: format!(
+                "관리자가 {}님의 그룹웨어 알림을 Buzz 계정({})으로 연결했어요. 본인이 아니거나 \
+                 받고 싶지 않다면 관리자에게 알리거나 내 정보에서 연결을 끊어 주세요.",
+                member.name,
+                pubkey.short()
+            ),
+            link: Some("/me".to_owned()),
+            dedupe_key: None,
+        },
+    )
+    .await?;
+    Ok(Assigned::Linked)
+}
+
+/// 관리자가 구성원 한 명의 Buzz ID를 등록한다(본인 확인 없이 바로 연결).
+pub async fn admin_assign(
+    state: &AppState,
+    ctx: &AuthContext,
+    member_id: MemberId,
+    input: &BuzzAssignInput,
+) -> ServiceResult<MemberBuzzDto> {
+    authz::require_admin(&ctx.actor)?;
+    let pubkey = PublicKey::parse(&input.pubkey)?;
+    let now = state.now();
+    state
+        .write(async |conn: &mut Conn| {
+            let (actor, member) =
+                managed_member(conn, ctx, member_id, authz::manage_account).await?;
+            assign_tx(conn, ctx, &actor, now, &member, &pubkey).await?;
+            Ok(())
+        })
+        .await?;
+    member_link(state, ctx, member_id).await
+}
+
+/// 일괄 등록. 줄마다 결과를 돌려주고, 문제가 있는 줄만 빼고 나머지는 한 트랜잭션에서 등록한다.
+/// 같은 아이디나 같은 Buzz ID가 입력에 두 번 이상 나오면 그 줄들은 모두 `duplicate`다.
+pub async fn admin_assign_bulk(
+    state: &AppState,
+    ctx: &AuthContext,
+    input: &BuzzBulkInput,
+) -> ServiceResult<BuzzBulkResult> {
+    authz::require_admin(&ctx.actor)?;
+    if input.entries.is_empty() || input.entries.len() > BuzzBulkInput::MAX {
+        return Err(
+            DomainError::validation("entries", pango_core::ValidationReason::OutOfRange).into(),
+        );
+    }
+    let parsed: Vec<(String, Option<PublicKey>)> = input
+        .entries
+        .iter()
+        .map(|entry| {
+            (
+                entry.login_id.trim().to_lowercase(),
+                PublicKey::parse(&entry.pubkey).ok(),
+            )
+        })
+        .collect();
+    let mut login_counts = std::collections::HashMap::<&str, usize>::new();
+    let mut key_counts = std::collections::HashMap::<String, usize>::new();
+    for (login_id, key) in &parsed {
+        *login_counts.entry(login_id.as_str()).or_default() += 1;
+        if let Some(key) = key {
+            *key_counts.entry(key.to_hex()).or_default() += 1;
+        }
+    }
+    let now = state.now();
+    let rows = state
+        .write(async |conn: &mut Conn| {
+            let actor = require_current_admin(conn, ctx).await?;
+            let mut rows = Vec::with_capacity(parsed.len());
+            for (login_id, key) in &parsed {
+                let outcome = match key {
+                    None => "invalid_pubkey",
+                    Some(key)
+                        if login_counts.get(login_id.as_str()).copied().unwrap_or(0) > 1
+                            || key_counts.get(&key.to_hex()).copied().unwrap_or(0) > 1 =>
+                    {
+                        "duplicate"
+                    }
+                    Some(key) => match members::find_by_login_id(conn, login_id).await? {
+                        None => "not_found",
+                        Some(member) => match assign_tx(conn, ctx, &actor, now, &member, key).await
+                        {
+                            Ok(Assigned::Linked) => "linked",
+                            Ok(Assigned::Unchanged) => "unchanged",
+                            Err(ServiceError::Domain(DomainError::Forbidden)) => "forbidden",
+                            Err(ServiceError::Domain(DomainError::Conflict(reason))) => {
+                                reason.code()
+                            }
+                            Err(error) => return Err(error),
+                        },
+                    },
+                };
+                rows.push(BuzzBulkRow {
+                    login_id: login_id.clone(),
+                    outcome: outcome.to_owned(),
+                });
+            }
+            Ok(rows)
+        })
+        .await?;
+    let count = |wanted: &str| rows.iter().filter(|row| row.outcome == wanted).count();
+    let linked = count("linked");
+    let unchanged = count("unchanged");
+    Ok(BuzzBulkResult {
+        linked: count_u32(i64::try_from(linked).map_err(ServiceError::internal)?)?,
+        unchanged: count_u32(i64::try_from(unchanged).map_err(ServiceError::internal)?)?,
+        failed: count_u32(
+            i64::try_from(rows.len() - linked - unchanged).map_err(ServiceError::internal)?,
+        )?,
+        rows,
+    })
 }
 
 async fn settings_dto(

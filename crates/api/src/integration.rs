@@ -147,7 +147,50 @@ impl std::fmt::Debug for BuzzLinkVerify {
     }
 }
 
-/// 관리자가 보는 구성원의 Buzz 연결(해제만 할 수 있다).
+/// 관리자의 Buzz ID 등록(`PUT /admin/members/{id}/buzz`). 본인 확인 없이 바로 연결되며,
+/// 구성원에게 "연결됨" 알림이 간다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuzzAssignInput {
+    pub pubkey: String,
+}
+
+/// 일괄 등록 한 줄.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuzzBulkEntry {
+    pub login_id: String,
+    pub pubkey: String,
+}
+
+/// 일괄 등록(`POST /admin/integrations/buzz/accounts`). 한 번에 [`BuzzBulkInput::MAX`]줄까지.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuzzBulkInput {
+    pub entries: Vec<BuzzBulkEntry>,
+}
+
+impl BuzzBulkInput {
+    pub const MAX: usize = 1000;
+}
+
+/// 일괄 등록 한 줄의 결과. 실패한 줄이 있어도 나머지는 등록된다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuzzBulkRow {
+    pub login_id: String,
+    /// `linked`(새로 연결), `unchanged`(이미 같은 ID로 연결됨), 또는 오류 코드
+    /// (`not_found`, `forbidden`, `member_inactive`, `invalid_pubkey`, `buzz_account_taken`,
+    /// `duplicate`).
+    pub outcome: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuzzBulkResult {
+    pub linked: u32,
+    pub unchanged: u32,
+    pub failed: u32,
+    /// 입력 순서 그대로.
+    pub rows: Vec<BuzzBulkRow>,
+}
+
+/// 관리자가 보는 구성원의 Buzz 연결.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemberBuzzDto {
     pub status: BuzzLinkStatus,
