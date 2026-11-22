@@ -5,6 +5,7 @@
 //! 트랜잭션 경계를 정한다.
 
 pub mod approval;
+pub mod attachments;
 pub mod attendance;
 pub mod attendance_corrections;
 pub mod audit;

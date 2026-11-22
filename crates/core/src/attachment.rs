@@ -3,8 +3,8 @@
 use crate::error::{DomainError, DomainResult, ValidationReason};
 use crate::text::TextRule;
 
-/// 공지 하나에 붙일 수 있는 첨부파일 수.
-pub const MAX_PER_NOTICE: usize = 10;
+/// 공지·결재 문서 하나에 붙일 수 있는 첨부파일 수.
+pub const MAX_PER_OWNER: usize = 10;
 
 /// 첨부파일 이름. 내려받을 때 그대로 쓰는 이름이라 경로처럼 보이는 값은 받지 않는다.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

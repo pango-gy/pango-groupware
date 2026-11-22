@@ -1,7 +1,7 @@
 //! 공지 첨부파일 통합 테스트.
 
 use http::StatusCode;
-use pango_core::attachment::MAX_PER_NOTICE;
+use pango_core::attachment::MAX_PER_OWNER;
 use pango_core::authz::Role;
 use pango_server::config::Config;
 use pango_server::testing::{TestApp, TestMember};
@@ -198,7 +198,7 @@ async fn removing_deletes_the_content_and_is_audited() {
     assert!(attachments(&s, &s.owner).await.is_empty());
     assert_eq!(
         s.app
-            .count("SELECT COUNT(*) FROM notice_attachment_contents")
+            .count("SELECT COUNT(*) FROM attachment_contents")
             .await,
         0
     );
@@ -298,10 +298,7 @@ async fn malformed_uploads_are_rejected_without_storing_anything() {
         .await
         .expect_error(StatusCode::NOT_FOUND, "not_found");
 
-    assert_eq!(
-        s.app.count("SELECT COUNT(*) FROM notice_attachments").await,
-        0
-    );
+    assert_eq!(s.app.count("SELECT COUNT(*) FROM attachments").await, 0);
 }
 
 #[tokio::test]
@@ -330,7 +327,7 @@ async fn size_limit_applies_to_uploads_only() {
 #[tokio::test]
 async fn attachment_count_is_limited_per_notice() {
     let s = setup().await;
-    for n in 0..MAX_PER_NOTICE {
+    for n in 0..MAX_PER_OWNER {
         upload(&s, &s.owner, &s.notice, &format!("{n}.txt"), b"x")
             .await
             .expect(StatusCode::CREATED);
@@ -338,7 +335,7 @@ async fn attachment_count_is_limited_per_notice() {
     upload(&s, &s.owner, &s.notice, "one-more.txt", b"x")
         .await
         .expect_error(StatusCode::CONFLICT, "attachment_limit");
-    assert_eq!(attachments(&s, &s.owner).await.len(), MAX_PER_NOTICE);
+    assert_eq!(attachments(&s, &s.owner).await.len(), MAX_PER_OWNER);
 }
 
 #[tokio::test]
@@ -379,4 +376,124 @@ async fn archived_notice_takes_no_uploads_and_hides_files_but_allows_removal() {
         .send()
         .await
         .expect(StatusCode::NO_CONTENT);
+}
+
+// ── 앱용 내려받기 링크 ──────────────────────────────────────────────────
+
+async fn link_for(s: &Setup, token: &str, path: &str) -> pango_server::testing::TestResponse {
+    s.app
+        .post("/download-links")
+        .bearer(token)
+        .json(&json!({ "path": path }))
+        .send()
+        .await
+}
+
+/// 링크의 URL(API 접두사 포함)에서 접두사를 뗀다(테스트 요청 도우미가 붙인다).
+fn without_prefix(url: &str) -> String {
+    url.strip_prefix(pango_api::API_PREFIX)
+        .expect("prefixed")
+        .to_owned()
+}
+
+#[tokio::test]
+async fn signed_links_open_without_credentials_only_for_that_file_and_session() {
+    let s = setup().await;
+    let created = upload(&s, &s.owner, &s.notice, "a.txt", b"hello")
+        .await
+        .expect(StatusCode::CREATED);
+    let second = upload(&s, &s.owner, &s.notice, "b.txt", b"other")
+        .await
+        .expect(StatusCode::CREATED);
+    let path = download_path(&s, created["id"].as_str().expect("id"));
+    let link = link_for(&s, &s.member.token, &path)
+        .await
+        .expect(StatusCode::OK);
+    let url = without_prefix(link["url"].as_str().expect("url"));
+    assert!(url.starts_with(&format!("{path}?download_token=")));
+
+    // 쿠키도 Bearer도 없이 열린다(시스템 브라우저).
+    let response = s.app.get(&url).send().await;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(response.body, "hello");
+
+    // 시스템 브라우저에 만료된 세션 쿠키가 남아 있어도 서명으로 열린다.
+    let stale = s
+        .app
+        .get(&url)
+        .header("cookie", &format!("pango_session={}", "0".repeat(64)))
+        .send()
+        .await;
+    assert_eq!(stale.status, StatusCode::OK);
+
+    // 같은 토큰을 다른 파일에 붙이면 안 된다.
+    let token = url.split("download_token=").nth(1).expect("token");
+    let other = download_path(&s, second["id"].as_str().expect("id"));
+    s.app
+        .get(&format!("{other}?download_token={token}"))
+        .send()
+        .await
+        .expect_error(StatusCode::UNAUTHORIZED, "unauthenticated");
+
+    // 몇 분 뒤에는 만료된다.
+    s.app.advance(chrono::Duration::minutes(5));
+    s.app
+        .get(&url)
+        .send()
+        .await
+        .expect_error(StatusCode::UNAUTHORIZED, "unauthenticated");
+}
+
+#[tokio::test]
+async fn signed_links_die_with_the_session_and_still_check_permissions() {
+    let s = setup().await;
+    let created = upload(&s, &s.owner, &s.notice, "a.txt", b"x")
+        .await
+        .expect(StatusCode::CREATED);
+    let path = download_path(&s, created["id"].as_str().expect("id"));
+
+    // 대상 밖 구성원도 링크는 받지만, 열면 공지와 같은 규칙으로 404다.
+    let outsider = link_for(&s, &s.outsider.token, &path)
+        .await
+        .expect(StatusCode::OK);
+    s.app
+        .get(&without_prefix(outsider["url"].as_str().expect("url")))
+        .send()
+        .await
+        .expect_error(StatusCode::NOT_FOUND, "not_found");
+
+    // 로그아웃하면 그 세션으로 받은 링크도 쓸 수 없다.
+    let link = link_for(&s, &s.member.token, &path)
+        .await
+        .expect(StatusCode::OK);
+    s.app
+        .post("/auth/logout")
+        .bearer(&s.member.token)
+        .send()
+        .await
+        .expect(StatusCode::OK);
+    s.app
+        .get(&without_prefix(link["url"].as_str().expect("url")))
+        .send()
+        .await
+        .expect_error(StatusCode::UNAUTHORIZED, "unauthenticated");
+
+    // 허용한 내려받기 경로만 서명한다.
+    for bad in [
+        "/admin/members",
+        "/notices/x/attachments/y",
+        &format!("{path}?download_token=abc"),
+        &format!("{path}/../../admin/members"),
+    ] {
+        link_for(&s, &s.owner, bad)
+            .await
+            .expect_error(StatusCode::BAD_REQUEST, "validation_failed");
+    }
+    link_for(
+        &s,
+        &s.owner,
+        "/admin/attendance/export.csv?from=2026-03-01&to=2026-03-31",
+    )
+    .await
+    .expect(StatusCode::OK);
 }

@@ -22,6 +22,16 @@ pub fn routes() -> Router<AppState> {
         .route("/me/password", post(change_password))
         .route("/me/sessions", get(list_sessions))
         .route("/me/sessions/{id}", delete(revoke_session))
+        .route("/download-links", post(download_link))
+}
+
+
+async fn download_link(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    Auth(ctx): Auth,
+    ApiJson(request): ApiJson<pango_api::auth::DownloadLinkRequest>,
+) -> ServiceResult<Json<pango_api::auth::DownloadLink>> {
+    auth::download_link(&state, &ctx, &request.path).map(Json)
 }
 
 fn session_cookie(state: &AppState, value: &str, max_age_secs: i64) -> ServiceResult<HeaderValue> {

@@ -1,6 +1,7 @@
 //! 공용 UI 컴포넌트. 화면은 여기 있는 조각만 조립하고, 모양은 `assets/style.css`가 정한다.
 
 pub mod approval_line;
+pub mod attachments;
 pub mod form_fields;
 pub mod form_picker;
 mod icon;
@@ -9,6 +10,7 @@ mod select;
 pub mod workday_bar;
 
 pub use approval_line::{use_line_draft, ApprovalLineEditor, ApproverEntry};
+pub use attachments::{AttachmentEditor, AttachmentLinks};
 pub use form_fields::{FieldErrors, FormFields};
 pub use form_picker::{FormPicker, PickedForm};
 pub use icon::{Icon, IconName};
@@ -88,6 +90,47 @@ pub fn Button(
             if busy {
                 span { class: "spinner", "aria-hidden": "true" }
             }
+            {children}
+        }
+    }
+}
+
+/// 파일 내려받기. `path`는 API 접두사를 뺀 경로(`/notices/…/attachments/…`).
+///
+/// 웹은 쿠키로 인증되는 일반 링크로 받는다. 앱은 브라우저가 토큰을 실을 수 없으므로 누르면
+/// 서버에서 몇 분짜리 서명 링크를 받아 시스템 브라우저로 연다([`crate::api::open_download`]).
+#[component]
+pub fn DownloadLink(
+    #[props(into)] path: String,
+    #[props(into, default)] class: String,
+    /// 내려받을 파일 이름(웹의 `download` 속성). 비우면 서버가 정한 이름.
+    #[props(into, default)]
+    filename: String,
+    children: Element,
+) -> Element {
+    if cfg!(target_arch = "wasm32") {
+        let href = format!("{}{path}", pango_api::API_PREFIX);
+        return rsx! {
+            a { class, href, download: filename, {children} }
+        };
+    }
+    let mut busy = use_signal(|| false);
+    rsx! {
+        button {
+            r#type: "button",
+            class: "{class} link-button",
+            disabled: busy(),
+            "aria-busy": busy(),
+            onclick: move |_| {
+                let path = path.clone();
+                async move {
+                    busy.set(true);
+                    if let Err(error) = crate::api::open_download(&path).await {
+                        report_error(&error);
+                    }
+                    busy.set(false);
+                }
+            },
             {children}
         }
     }
@@ -720,6 +763,11 @@ fn ToastItem(toast: Toast) -> Element {
 /// 세션 만료·권한 변경은 요청이 실패할 때 `api`가 이미 반영했다.
 pub fn report_error(error: &ApiError) {
     consume_context::<Toasts>().error(error.message());
+}
+
+/// 오류 응답 하나로 나타낼 수 없는 실패 안내(여러 파일의 올리기 실패 등).
+pub fn report_failure(message: impl Into<String>) {
+    consume_context::<Toasts>().error(message);
 }
 
 pub fn report_success(message: impl Into<String>) {

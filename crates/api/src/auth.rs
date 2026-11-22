@@ -78,6 +78,21 @@ pub struct SessionInfo {
     pub last_seen_at: Timestamp,
 }
 
+/// 내려받기 링크 요청(`POST /download-links`). `path`는 API 접두사를 뺀 경로와 쿼리
+/// (`/notices/{id}/attachments/{attachment_id}` 또는 `/admin/attendance/export.csv?from=…&to=…`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DownloadLinkRequest {
+    pub path: String,
+}
+
+/// 몇 분 동안만 유효한 내려받기 링크(API 접두사를 포함한 경로). 앱은 서버 주소를 붙여 시스템
+/// 브라우저로 연다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DownloadLink {
+    pub url: String,
+    pub expires_at: Timestamp,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

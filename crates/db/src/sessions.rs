@@ -113,6 +113,17 @@ pub async fn find_by_token_hash(
     .transpose()
 }
 
+pub async fn find(conn: &mut Conn, id: SessionId) -> DbResult<Option<Session>> {
+    sqlx::query_as::<_, SessionRow>(&format!(
+        "SELECT {SESSION_COLUMNS} FROM sessions WHERE id = ?"
+    ))
+    .bind(id.to_string())
+    .fetch_optional(conn)
+    .await?
+    .map(Session::try_from)
+    .transpose()
+}
+
 /// 구성원의 유효한 세션 목록(최근 사용 순).
 pub async fn list_active(
     conn: &mut Conn,

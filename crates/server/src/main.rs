@@ -59,7 +59,7 @@ enum Command {
         /// 클라우드 메타데이터·link-local 주소는 이 옵션을 켜도 막는다.
         #[arg(long, env = "PANGO_OUTBOUND_ALLOW_PRIVATE")]
         outbound_allow_private: bool,
-        /// 공지 첨부파일 하나의 최대 크기(MiB). 파일은 DB에 저장되므로 DB 크기도 함께 늘어난다.
+        /// 첨부파일(공지·결재 문서) 하나의 최대 크기(MiB). 파일은 DB에 저장되므로 DB 크기도 함께 늘어난다.
         #[arg(long, env = "PANGO_MAX_ATTACHMENT_MB", default_value_t = 10,
               value_parser = clap::value_parser!(u32).range(1..=100))]
         max_attachment_mb: u32,

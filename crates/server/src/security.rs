@@ -1,11 +1,13 @@
-//! 비밀번호 해시와 세션 토큰.
+//! 비밀번호 해시, 세션 토큰, 내려받기 링크 서명.
 
 use std::sync::Arc;
 
 use argon2::password_hash::{PasswordHash, PasswordHasher as _, PasswordVerifier as _, SaltString};
 use argon2::{Algorithm, Argon2, Params, Version};
 use hmac::{Hmac, Mac};
+use pango_core::id::SessionId;
 use pango_core::password::PlainPassword;
+use pango_core::time::Timestamp;
 use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
 
@@ -16,6 +18,70 @@ fn random_bytes<const N: usize>() -> ServiceResult<[u8; N]> {
     let mut bytes = [0u8; N];
     getrandom::fill(&mut bytes).map_err(|e| ServiceError::internal(e.to_string()))?;
     Ok(bytes)
+}
+
+/// 짧게 유효한 내려받기 링크의 서명.
+///
+/// 앱(Bearer 토큰)은 시스템 브라우저로 파일을 받게 하는데, 브라우저는 토큰을 실어 보낼 수 없다.
+/// 그래서 로그인한 세션이 **특정 경로 하나**에 대해 몇 분짜리 서명을 받아 쿼리에 붙인다.
+/// 서명은 세션에 묶이므로 로그아웃·기기 로그아웃하면 링크도 함께 쓸 수 없게 된다. 키는 실행할
+/// 때마다 새로 만든다(다시 시작하면 발급한 링크는 모두 무효).
+#[derive(Clone)]
+pub struct DownloadSigner {
+    key: Arc<[u8; 32]>,
+}
+
+impl std::fmt::Debug for DownloadSigner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DownloadSigner(***)")
+    }
+}
+
+impl DownloadSigner {
+    pub fn generate() -> ServiceResult<Self> {
+        Ok(Self {
+            key: Arc::new(random_bytes::<32>()?),
+        })
+    }
+
+    fn mac(&self, session: SessionId, expires_ms: i64, target: &str) -> [u8; 32] {
+        // 키 길이는 고정(32바이트)이라 실패하지 않는다.
+        let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&self.key[..])
+            .unwrap_or_else(|_| unreachable!("HMAC accepts any key length"));
+        mac.update(b"pango-download\0");
+        mac.update(session.to_string().as_bytes());
+        mac.update(b"\0");
+        mac.update(expires_ms.to_string().as_bytes());
+        mac.update(b"\0");
+        mac.update(target.as_bytes());
+        mac.finalize().into_bytes().into()
+    }
+
+    /// `세션ID.만료(ms).서명` 형태의 토큰. URL에 그대로 넣을 수 있는 글자만 쓴다.
+    pub fn sign(&self, session: SessionId, expires: Timestamp, target: &str) -> String {
+        let expires_ms = expires.as_millis();
+        format!(
+            "{session}.{expires_ms}.{}",
+            hex(&self.mac(session, expires_ms, target))
+        )
+    }
+
+    /// 토큰이 이 `target`에 대해 이 시각에 유효하면 세션 ID.
+    pub fn verify(&self, token: &str, target: &str, now: Timestamp) -> Option<SessionId> {
+        let mut parts = token.splitn(3, '.');
+        let session = SessionId::parse(parts.next()?).ok()?;
+        let expires_ms: i64 = parts.next()?.parse().ok()?;
+        let given = parts.next()?;
+        if now.as_millis() >= expires_ms {
+            return None;
+        }
+        let expected = hex(&self.mac(session, expires_ms, target));
+        bool::from(subtle::ConstantTimeEq::ct_eq(
+            expected.as_bytes(),
+            given.as_bytes(),
+        ))
+        .then_some(session)
+    }
 }
 
 /// Argon2id 해시기. 해시 연산은 블로킹 스레드에서, 동시 실행 수를 제한해 돌린다.
@@ -194,6 +260,52 @@ pub fn generate_temporary_password() -> ServiceResult<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn download_tokens_bind_session_target_and_expiry() {
+        let signer = DownloadSigner::generate().expect("signer");
+        let session = SessionId::new();
+        let at = |ms| Timestamp::from_millis(ms).expect("ts");
+        let token = signer.sign(session, at(10_000), "/notices/a/attachments/b");
+        assert_eq!(
+            signer.verify(&token, "/notices/a/attachments/b", at(9_999)),
+            Some(session)
+        );
+        assert_eq!(
+            signer.verify(&token, "/notices/a/attachments/b", at(10_000)),
+            None,
+            "만료"
+        );
+        assert_eq!(
+            signer.verify(&token, "/notices/a/attachments/c", at(0)),
+            None,
+            "다른 경로"
+        );
+        // 만료 시각이나 세션을 바꾸면 서명이 맞지 않는다.
+        let forged = token.replacen("10000", "99999", 1);
+        assert_eq!(
+            signer.verify(&forged, "/notices/a/attachments/b", at(0)),
+            None
+        );
+        let other = format!("{}{}", SessionId::new(), &token[36..]);
+        assert_eq!(
+            signer.verify(&other, "/notices/a/attachments/b", at(0)),
+            None
+        );
+        // 다른 키(다시 시작한 서버)로는 통과하지 않는다.
+        let restarted = DownloadSigner::generate().expect("signer");
+        assert_eq!(
+            restarted.verify(&token, "/notices/a/attachments/b", at(0)),
+            None
+        );
+        for junk in ["", "a.b", "x.1.y", &format!("{session}.notanumber.ab")] {
+            assert_eq!(
+                signer.verify(junk, "/notices/a/attachments/b", at(0)),
+                None,
+                "{junk}"
+            );
+        }
+    }
     use crate::config::Config;
     use pango_core::text::LoginId;
     use std::collections::HashSet;

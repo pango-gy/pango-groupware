@@ -5,6 +5,7 @@ pub mod approval;
 pub mod attendance;
 pub mod auth;
 pub mod calendar;
+pub mod download;
 pub mod extract;
 pub mod home;
 pub mod integrations;
@@ -40,7 +41,7 @@ fn api_routes(state: &AppState) -> Router<AppState> {
         .merge(notices::routes(state.config.max_attachment_bytes))
         .merge(notifications::routes())
         .merge(admin::routes())
-        .merge(approval::routes())
+        .merge(approval::routes(state.config.max_attachment_bytes))
         .merge(leave::routes())
         .merge(home::routes())
         .merge(calendar::routes())
@@ -88,6 +89,9 @@ pub fn router(state: AppState) -> Router {
                  frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
             ),
         ))
-        .layer(TraceLayer::new_for_http())
+        // 쿼리 문자열에는 몇 분짜리 내려받기 서명이 올 수 있으므로 로그에는 경로만 남긴다.
+        .layer(TraceLayer::new_for_http().make_span_with(|request: &http::Request<_>| {
+            tracing::debug_span!("request", method = %request.method(), path = %request.uri().path())
+        }))
         .with_state(state)
 }

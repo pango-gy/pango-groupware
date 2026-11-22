@@ -187,6 +187,9 @@ fn validation_message(field: Option<&str>, reason: Option<&str>) -> String {
 }
 
 /// 오류 코드를 사용자 문구로 바꾼다. 모르는 코드는 일반 문구로 처리한다.
+// 아래 `attachment_limit` 문구의 개수와 서버 상수가 어긋나지 않게 한다.
+const _: () = assert!(pango_core::attachment::MAX_PER_OWNER == 10);
+
 pub fn error_message(code: &str, field: Option<&str>, reason: Option<&str>) -> String {
     let fixed = match code {
         "validation_failed" => return validation_message(field, reason),
@@ -224,7 +227,7 @@ pub fn error_message(code: &str, field: Option<&str>, reason: Option<&str>) -> S
         "withdraw_too_late" => "결재가 진행되어 회수할 수 없습니다.",
         "form_inactive" => "사용할 수 없는 양식입니다.",
         "notice_archived" => "삭제된 공지입니다.",
-        "attachment_limit" => "첨부파일은 공지마다 10개까지 올릴 수 있어요.",
+        "attachment_limit" => "첨부파일은 10개까지 올릴 수 있어요.",
         "buzz_unavailable" => "회사에서 Buzz 연동을 켜지 않았어요. 관리자에게 문의해 주세요.",
         "buzz_account_taken" => "이미 다른 구성원이 연결한 Buzz ID예요. 내 Buzz ID가 맞는지 확인해 주세요.",
         "buzz_code_wrong" => "확인 코드가 맞지 않아요. Buzz DM으로 받은 6자리를 다시 확인해 주세요.",
@@ -352,6 +355,14 @@ pub const AUDIT_ACTIONS: &[(&str, &str)] = &[
     ("notice.create", "공지 게시"),
     ("notice.update", "공지 수정"),
     ("notice.archive", "공지 보관"),
+    ("approval.attachment.add", "결재 문서 첨부파일 추가"),
+    ("approval.attachment.remove", "결재 문서 첨부파일 삭제"),
+    (
+        "approval.attachment.admin_download",
+        "결재 문서 첨부파일 열람(관리자)",
+    ),
+    ("notice.attachment.add", "공지 첨부파일 추가"),
+    ("notice.attachment.remove", "공지 첨부파일 삭제"),
     ("settings.update", "회사 설정 변경"),
     ("integration.webhook_update", "외부 알림 연동 변경"),
     (
@@ -1008,6 +1019,11 @@ mod tests {
         "member.status",
         "member.update",
         "notice.archive",
+        "approval.attachment.add",
+        "approval.attachment.admin_download",
+        "approval.attachment.remove",
+        "notice.attachment.add",
+        "notice.attachment.remove",
         "notice.create",
         "notice.update",
         "position.archive",

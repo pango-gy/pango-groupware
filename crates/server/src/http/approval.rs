@@ -1,6 +1,7 @@
 //! 전자결재 경로.
 
-use axum::extract::State;
+use axum::extract::{DefaultBodyLimit, State};
+use axum::response::Response;
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use http::StatusCode;
@@ -10,14 +11,15 @@ use pango_api::approval::{
     NewDocumentRequest, NewFormRequest, RejectRequest,
 };
 use pango_api::{Empty, Page};
-use pango_core::id::{DocumentId, FormId};
+use pango_core::id::{AttachmentId, DocumentId, FormId};
 
-use super::extract::{ApiJson, ApiPath, ApiQuery, Auth, IdempotentJson};
+use super::extract::{ApiJson, ApiPath, ApiQuery, Auth, DownloadAuth, FileUpload, IdempotentJson};
 use crate::error::ServiceResult;
 use crate::service::approval;
 use crate::state::AppState;
 
-pub fn routes() -> Router<AppState> {
+/// `max_attachment_bytes`: 첨부 올리기 경로의 본문 상한(다른 경로는 공통 상한을 쓴다).
+pub fn routes(max_attachment_bytes: usize) -> Router<AppState> {
     Router::new()
         .route("/approval/forms", get(list_forms))
         .route("/approval/counts", get(counts))
@@ -36,6 +38,14 @@ pub fn routes() -> Router<AppState> {
         .route("/approval/documents/{id}/approve", post(approve))
         .route("/approval/documents/{id}/reject", post(reject))
         .route("/approval/documents/{id}/withdraw", post(withdraw))
+        .route(
+            "/approval/documents/{id}/attachments",
+            post(add_attachment).layer(DefaultBodyLimit::max(max_attachment_bytes)),
+        )
+        .route(
+            "/approval/documents/{id}/attachments/{attachment_id}",
+            get(download_attachment).delete(remove_attachment),
+        )
         .route(
             "/admin/approval/forms",
             get(admin_list_forms).post(admin_create_form),
@@ -215,4 +225,40 @@ async fn admin_reject(
     approval::admin_reject(&state, &ctx, id, &request)
         .await
         .map(Json)
+}
+
+async fn add_attachment(
+    State(state): State<AppState>,
+    Auth(ctx): Auth,
+    ApiPath(id): ApiPath<DocumentId>,
+    upload: FileUpload,
+) -> ServiceResult<(StatusCode, Json<pango_api::attachment::Attachment>)> {
+    let created = approval::add_attachment(
+        &state,
+        &ctx,
+        id,
+        &upload.filename,
+        &upload.data,
+        upload.idempotency.as_ref(),
+    )
+    .await?;
+    Ok((StatusCode::CREATED, Json(created)))
+}
+
+async fn remove_attachment(
+    State(state): State<AppState>,
+    Auth(ctx): Auth,
+    ApiPath((id, attachment_id)): ApiPath<(DocumentId, AttachmentId)>,
+) -> ServiceResult<StatusCode> {
+    approval::remove_attachment(&state, &ctx, id, attachment_id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn download_attachment(
+    State(state): State<AppState>,
+    DownloadAuth(ctx): DownloadAuth,
+    ApiPath((id, attachment_id)): ApiPath<(DocumentId, AttachmentId)>,
+) -> ServiceResult<Response> {
+    let file = approval::download_attachment(&state, &ctx, id, attachment_id).await?;
+    super::download::attachment_response(file)
 }

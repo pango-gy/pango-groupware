@@ -21,9 +21,9 @@ use crate::session::use_session;
 use crate::text;
 use crate::ui::{
     loaded_or_empty, now, report_error, report_success, resource_view, use_initial_tab,
-    use_more_pages, Badge, Button, ButtonKind, Card, EmptyState, FormError, Icon, IconName,
-    LoadMore, MemberPicker, Meta, Modal, PageHeader, PickedMember, SelectField, Tabs, TextArea,
-    TextField,
+    use_more_pages, Badge, Button, ButtonKind, Card, DownloadLink, EmptyState, FormError, Icon,
+    IconName, LoadMore, MemberPicker, Meta, Modal, PageHeader, PickedMember, SelectField, Tabs,
+    TextArea, TextField,
 };
 
 use logic::{AdminRow, FailureAction, Filter};
@@ -80,7 +80,7 @@ pub fn AdminAttendance() -> Element {
         .err()
         .map(|issue| issue.message().to_owned())
         .unwrap_or_default();
-    let export_href = logic::export_href(&current).ok();
+    let export_path = logic::export_path(&current).ok();
     let department_options =
         org_tree::department_options(&loaded_or_empty(&departments), "전체 부서");
     let tabs = vec![
@@ -93,8 +93,8 @@ pub fn AdminAttendance() -> Element {
             title: "근태 관리",
             description: "기록을 고치면 사유와 함께 이력이 남아요.",
             actions: rsx! {
-                if let Some(href) = export_href {
-                    a { class: "btn btn-weak", href: "{href}", "CSV 내보내기" }
+                if let Some(path) = export_path {
+                    DownloadLink { class: "btn btn-weak", path, "CSV 내보내기" }
                 } else {
                     Button { kind: ButtonKind::Weak, disabled: true, "CSV 내보내기" }
                 }
@@ -552,7 +552,6 @@ mod logic {
     use pango_api::attendance::{
         AdminAttendanceItem, AdminCreateRecordRequest, AdminEditRecordRequest, AttendanceRecordDto,
     };
-    use pango_api::API_PREFIX;
     use pango_core::approval::{DocumentKind, DocumentStatus};
     use pango_core::attendance::WorkType;
     use pango_core::calendar::{parse_date, DateRange};
@@ -653,11 +652,11 @@ mod logic {
         Ok(crate::api::with_cursor(path, cursor))
     }
 
-    /// CSV 내려받기 주소. 쿠키로 인증되므로 일반 링크로 연다.
-    pub fn export_href(filter: &Filter) -> Result<String, FilterError> {
+    /// CSV 내려받기 경로(API 접두사 제외). 웹은 일반 링크로, 앱은 서명 링크로 연다.
+    pub fn export_path(filter: &Filter) -> Result<String, FilterError> {
         let valid = validate(filter)?;
         Ok(format!(
-            "{API_PREFIX}/admin/attendance/export.csv?{}",
+            "/admin/attendance/export.csv?{}",
             range_query(valid.range)
         ))
     }
@@ -890,17 +889,17 @@ mod logic {
         }
 
         #[test]
-        fn export_href_uses_only_the_range() {
+        fn export_path_uses_only_the_range() {
             let with_member = Filter {
                 member: Some(MemberId::new()),
                 ..filter("2026-03-01", "2026-03-31")
             };
             assert_eq!(
-                export_href(&with_member),
-                Ok("/api/v1/admin/attendance/export.csv?from=2026-03-01&to=2026-03-31".into())
+                export_path(&with_member),
+                Ok("/admin/attendance/export.csv?from=2026-03-01&to=2026-03-31".into())
             );
             assert_eq!(
-                export_href(&filter("2026-04-01", "2026-03-01")),
+                export_path(&filter("2026-04-01", "2026-03-01")),
                 Err(FilterError::Reversed)
             );
         }

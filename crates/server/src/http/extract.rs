@@ -146,6 +146,14 @@ async fn authenticate(parts: &mut Parts, state: &AppState) -> Result<AuthContext
     service::auth::authenticate(state, &token, meta).await
 }
 
+/// 임시 비밀번호 상태면 거부한다(비밀번호를 바꾸기 전에는 다른 기능을 쓸 수 없다).
+fn ready(ctx: AuthContext) -> Result<AuthContext, ServiceError> {
+    if ctx.member.must_change_password {
+        return Err(ServiceError::PasswordChangeRequired);
+    }
+    Ok(ctx)
+}
+
 /// 인증된 요청. 임시 비밀번호 상태면 거부한다.
 pub struct Auth(pub AuthContext);
 
@@ -156,12 +164,58 @@ impl FromRequestParts<AppState> for Auth {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let ctx = authenticate(parts, state).await?;
-        if ctx.member.must_change_password {
-            return Err(ServiceError::PasswordChangeRequired);
-        }
-        Ok(Self(ctx))
+        ready(authenticate(parts, state).await?).map(Self)
     }
+}
+
+/// 내려받기 경로의 인증. 쿼리 끝에 `download_token`(앱이 `POST /download-links`로 받은 몇 분짜리
+/// 서명)이 있으면 그것으로만 인증하고, 없으면 보통 요청처럼 쿠키·Bearer로 인증한다.
+///
+/// 서명을 먼저 보는 것은 시스템 브라우저에 오래된(만료·폐기된) 세션 쿠키가 남아 있어도 링크가
+/// 열리게 하려는 것이다. 어느 쪽이든 권한은 경로가 다시 확인한다.
+///
+/// 서명은 토큰 앞까지의 경로와 쿼리 전체에 걸려 있으므로 다른 파일·기간으로 바꿔 쓸 수 없다.
+pub struct DownloadAuth(pub AuthContext);
+
+impl FromRequestParts<AppState> for DownloadAuth {
+    type Rejection = ServiceError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let unauthenticated = || ServiceError::Domain(DomainError::Unauthenticated);
+        let target = parts
+            .uri
+            .path_and_query()
+            .map(|pq| pq.as_str())
+            .unwrap_or("");
+        let Some((signed, token)) = split_download_token(target) else {
+            return Auth::from_request_parts(parts, state)
+                .await
+                .map(|Auth(ctx)| Self(ctx));
+        };
+        let session = state
+            .downloads
+            .verify(token, signed, state.now())
+            .ok_or_else(unauthenticated)?;
+        let meta = request_meta(parts, state.config.trust_proxy);
+        ready(service::auth::authenticate_session(state, session, meta).await?).map(Self)
+    }
+}
+
+/// `…?a=1&download_token=X`를 `("…?a=1", "X")`로 나눈다. 토큰은 마지막 쿼리 값이어야 한다.
+fn split_download_token(target: &str) -> Option<(&str, &str)> {
+    let index = target.rfind("download_token=")?;
+    let before = index.checked_sub(1)?;
+    if !matches!(target.as_bytes().get(before), Some(b'?' | b'&')) {
+        return None;
+    }
+    let token = &target[index + "download_token=".len()..];
+    if token.is_empty() || token.contains('&') {
+        return None;
+    }
+    Some((&target[..before], token))
 }
 
 /// 인증만 확인한다. 임시 비밀번호 상태에서도 써야 하는 경로(내 정보, 비밀번호 변경, 로그아웃)용.
@@ -559,6 +613,26 @@ mod tests {
         );
         for bad in ["", "unknown", "example.com", "1.2.3.4.5", "' OR 1=1"] {
             assert_eq!(parse_forwarded_ip(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn download_token_is_split_from_the_end_only() {
+        assert_eq!(
+            split_download_token("/notices/a/attachments/b?download_token=s.1.ab"),
+            Some(("/notices/a/attachments/b", "s.1.ab"))
+        );
+        assert_eq!(
+            split_download_token("/admin/attendance/export.csv?from=1&to=2&download_token=t"),
+            Some(("/admin/attendance/export.csv?from=1&to=2", "t"))
+        );
+        for bad in [
+            "/x",
+            "/x?download_token=",
+            "/x?download_token=t&from=1",
+            "/x?mydownload_token=t",
+        ] {
+            assert_eq!(split_download_token(bad), None, "{bad}");
         }
     }
 

@@ -1,10 +1,10 @@
 //! 출퇴근·근태 경로.
 
 use axum::extract::State;
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
-use http::{header, HeaderValue, StatusCode};
+use http::StatusCode;
 use pango_api::attendance::{
     AdminAttendanceItem, AdminAttendanceQuery, AdminCreateRecordRequest, AdminEditRecordRequest,
     AttendanceEventDto, AttendanceRecordDto, ClockInRequest, CorrectionDto, CorrectionQuery,
@@ -14,8 +14,8 @@ use pango_api::attendance::{
 use pango_api::Page;
 use pango_core::id::{AttendanceCorrectionId, AttendanceRecordId};
 
-use super::extract::{ApiJson, ApiPath, ApiQuery, Auth, IdempotentJson};
-use crate::error::{ServiceError, ServiceResult};
+use super::extract::{ApiJson, ApiPath, ApiQuery, Auth, DownloadAuth, IdempotentJson};
+use crate::error::ServiceResult;
 use crate::service::attendance;
 use crate::state::AppState;
 
@@ -161,21 +161,9 @@ async fn admin_edit(
 
 async fn export_csv(
     State(state): State<AppState>,
-    Auth(ctx): Auth,
+    DownloadAuth(ctx): DownloadAuth,
     ApiQuery(query): ApiQuery<ExportQuery>,
 ) -> ServiceResult<Response> {
     let file = attendance::export_csv(&state, &ctx, &query).await?;
-    let disposition = HeaderValue::from_str(&format!("attachment; filename=\"{}\"", file.filename))
-        .map_err(ServiceError::internal)?;
-    Ok((
-        [
-            (
-                header::CONTENT_TYPE,
-                HeaderValue::from_static("text/csv; charset=utf-8"),
-            ),
-            (header::CONTENT_DISPOSITION, disposition),
-        ],
-        file.body,
-    )
-        .into_response())
+    super::download::file_response("text/csv; charset=utf-8", &file.filename, file.body.into())
 }

@@ -209,6 +209,14 @@ pub async fn send(request: Request<'_>) -> Result<RawResponse, NetworkError> {
     Ok(RawResponse { status, body })
 }
 
+/// 웹은 같은 출처의 일반 링크로 내려받으므로 쓰지 않는다(앱과 같은 이름을 맞춰 둔다).
+#[allow(dead_code)]
+pub fn open_external(url: &str) {
+    if let Some(window) = web_sys::window() {
+        let _ = window.location().set_href(url);
+    }
+}
+
 /// 웹은 자기 출처로만 보내므로 서버 주소를 따로 두지 않는다.
 pub fn server_origin() -> Option<String> {
     None

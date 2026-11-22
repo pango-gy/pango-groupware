@@ -26,16 +26,18 @@ use pango_core::approval::{
 use pango_core::authz;
 use pango_core::error::{ConflictReason, ValidationReason};
 use pango_core::form_schema::{FieldError, FieldKind, FormSchema};
-use pango_core::id::{ApprovalEventId, DocumentId, FormId, MemberId};
+use pango_core::id::{ApprovalEventId, AttachmentId, DocumentId, FormId, MemberId};
 use pango_core::text::{self, Body, Code, Comment, LabelName, Reason, Title};
 use pango_core::time::Timestamp;
 use pango_core::DomainError;
 use pango_db::approval::{
     self, DocumentFilter, DocumentListItem, DocumentRecord, DocumentState, Event, Form, Scope,
 };
+use pango_db::attachments::Owner;
 use pango_db::members::{self, Member};
 use pango_db::{org, Conn};
 
+use super::attachments;
 use super::support::{
     audit, audit_as, count_u32, department_tree_of, found, member_names, members_by_id, next_page,
     notify, require_active_members, require_current_admin, require_updated, Audit, AuthContext,
@@ -649,6 +651,7 @@ async fn detail_tx(
                 created_at: event.created_at,
             })
             .collect(),
+        attachments: attachments::list_tx(conn, Owner::Document(id)).await?,
         submitted_at: record.submitted_at,
         completed_at: record.completed_at,
         created_at: record.created_at,
@@ -1677,4 +1680,126 @@ pub async fn withdraw_linked_tx(
         commit_transition_tx(conn, actor_id, &loaded, &events, now).await?;
     }
     Ok(())
+}
+
+// ───────────── 첨부파일 ─────────────
+
+/// 기안자의 임시저장 문서인지 확인한다(`delete_document`와 같은 순서: 볼 수 없으면 404, 남의
+/// 문서면 403, 상신했으면 409 `document_not_editable`). 상신한 문서의 첨부는 결재자가 본 그대로
+/// 고정된다.
+async fn editable_draft_tx(
+    conn: &mut Conn,
+    ctx: &AuthContext,
+    id: DocumentId,
+) -> ServiceResult<()> {
+    let loaded = load(conn, id).await?;
+    rules::view(&ctx.actor, &loaded.document)?;
+    authz::require_own(
+        &ctx.actor,
+        loaded.document.drafter(),
+        DomainError::Forbidden,
+    )?;
+    if loaded.document.status() != DocumentStatus::Draft {
+        return Err(DomainError::Conflict(ConflictReason::DocumentNotEditable).into());
+    }
+    Ok(())
+}
+
+/// 임시저장 문서에 파일을 붙인다(기안자만). 같은 멱등성 키로 다시 보내면 처음 결과를 돌려준다.
+pub async fn add_attachment(
+    state: &AppState,
+    ctx: &AuthContext,
+    id: DocumentId,
+    filename: &str,
+    data: &[u8],
+    idempotency: Option<&Idempotency>,
+) -> ServiceResult<pango_api::attachment::Attachment> {
+    let file = attachments::prepare(filename, data)?;
+    let now = state.now();
+    state
+        .write_idempotent(ctx.member_id(), idempotency, async |conn: &mut Conn| {
+            editable_draft_tx(conn, ctx, id).await?;
+            let item =
+                attachments::insert_tx(conn, Owner::Document(id), &file, ctx.member_id(), now)
+                    .await?;
+            audit(
+                conn,
+                now,
+                Audit {
+                    action: "approval.attachment.add",
+                    target_type: "approval_document",
+                    target_id: Some(id.to_string()),
+                    detail: Some(attachments::audit_detail(&item)),
+                    ctx: Some(ctx),
+                },
+            )
+            .await?;
+            attachments::dto(item)
+        })
+        .await
+}
+
+/// 임시저장 문서의 첨부를 지운다(기안자만).
+pub async fn remove_attachment(
+    state: &AppState,
+    ctx: &AuthContext,
+    id: DocumentId,
+    attachment_id: AttachmentId,
+) -> ServiceResult<()> {
+    let now = state.now();
+    state
+        .write(async |conn: &mut Conn| {
+            editable_draft_tx(conn, ctx, id).await?;
+            let item = attachments::remove_tx(conn, Owner::Document(id), attachment_id).await?;
+            audit(
+                conn,
+                now,
+                Audit {
+                    action: "approval.attachment.remove",
+                    target_type: "approval_document",
+                    target_id: Some(id.to_string()),
+                    detail: Some(attachments::audit_detail(&item)),
+                    ctx: Some(ctx),
+                },
+            )
+            .await?;
+            Ok(())
+        })
+        .await
+}
+
+/// 첨부 내려받기. 문서를 볼 수 있는 사람만(`rules::view`). 당사자가 아닌 관리자가 받으면 문서
+/// 열람과 같이 감사 로그(`approval.attachment.admin_download`)를 남긴다(링크만으로 상세를 열지
+/// 않고 받을 수 있으므로).
+pub async fn download_attachment(
+    state: &AppState,
+    ctx: &AuthContext,
+    id: DocumentId,
+    attachment_id: AttachmentId,
+) -> ServiceResult<attachments::AttachmentFile> {
+    let now = state.now();
+    let mut conn = state.read().await?;
+    let loaded = load(&mut conn, id).await?;
+    rules::view(&ctx.actor, &loaded.document)?;
+    let file = attachments::file_tx(&mut conn, Owner::Document(id), attachment_id).await?;
+    drop(conn);
+    if loaded.document.participant_role(ctx.member_id()).is_none() {
+        state
+            .write(async |conn: &mut Conn| {
+                audit(
+                    conn,
+                    now,
+                    Audit {
+                        action: "approval.attachment.admin_download",
+                        target_type: "approval_document",
+                        target_id: Some(id.to_string()),
+                        detail: Some(serde_json::json!({ "attachment_id": attachment_id })),
+                        ctx: Some(ctx),
+                    },
+                )
+                .await
+            })
+            .await?;
+    }
+    Ok(file)
 }

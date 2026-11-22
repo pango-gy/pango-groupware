@@ -1582,3 +1582,6 @@ body:has(.action-bar) .toasts { bottom: calc(24px + var(--action-bar-h) + env(sa
 .attachment-pick { position: relative; align-self: flex-start; }
 .attachment-pick input[type="file"] { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
 .attachment-pick:focus-within { outline: 2px solid var(--blue); outline-offset: 2px; border-radius: var(--radius-control); }
+/* 앱에서 링크처럼 보이는 내려받기 버튼 */
+.link-button { border: 0; font: inherit; text-align: left; cursor: pointer; width: 100%; }
+.btn.link-button { width: auto; text-align: center; }

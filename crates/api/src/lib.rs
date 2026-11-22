@@ -4,6 +4,7 @@
 
 pub mod admin;
 pub mod approval;
+pub mod attachment;
 pub mod attendance;
 pub mod auth;
 pub mod calendar;

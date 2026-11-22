@@ -609,6 +609,34 @@ pub fn ApprovalDetail(id: String) -> Element {
     }
 }
 
+/// 문서 첨부파일. 기안자의 임시저장 문서면 붙이고 뺄 수 있고(바로 반영), 그 밖에는 내려받기만.
+/// 상신한 뒤에는 결재자가 본 그대로 고정된다.
+#[component]
+fn DocumentAttachments(
+    id: pango_core::id::DocumentId,
+    files: Vec<pango_api::attachment::Attachment>,
+    editable: bool,
+) -> Element {
+    let uploaded = use_signal(|| files.clone());
+    let pending = use_signal(Vec::new);
+    let base = format!("/approval/documents/{id}/attachments");
+    if editable {
+        return rsx! {
+            Card { title: "첨부파일",
+                crate::ui::AttachmentEditor { base: Some(base), uploaded, pending }
+            }
+        };
+    }
+    if files.is_empty() {
+        return rsx! {};
+    }
+    rsx! {
+        Card { title: "첨부파일",
+            crate::ui::AttachmentLinks { download_base: base, files }
+        }
+    }
+}
+
 /// 문서 한 장: 머리 정보 → (왼쪽) 문서 내용, (오른쪽) 동작·결재선·참조·이력.
 ///
 /// 넓은 화면에서는 오른쪽 단이 화면에 붙어 따라오고 동작도 그 안에 있다. 좁은 화면에서는 한 줄로
@@ -714,6 +742,12 @@ fn DocumentView(
                         // 본문은 사용자가 쓴 글이므로 텍스트로만 넣는다. 줄바꿈은 CSS(pre-wrap)로 살린다.
                         div { class: "doc-body", "{detail.body}" }
                     }
+                }
+                DocumentAttachments {
+                    key: "{detail.id}-{detail.version}",
+                    id: detail.id,
+                    files: detail.attachments.clone(),
+                    editable: actions.edit,
                 }
             }
             aside { class: "doc-side", "aria-label": "결재 진행",
@@ -912,6 +946,7 @@ mod tests {
                 read_at: None,
             }],
             events: vec![],
+            attachments: vec![],
             submitted_at: None,
             completed_at: None,
             created_at: Timestamp::from_millis(0).expect("ts"),

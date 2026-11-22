@@ -222,33 +222,118 @@ pub async fn authenticate(
     meta: RequestMeta,
 ) -> ServiceResult<AuthContext> {
     let now = state.now();
-    let unauthenticated = || ServiceError::Domain(DomainError::Unauthenticated);
     let mut conn = state.read().await?;
-    let session = sessions::find_by_token_hash(&mut conn, &token.hash())
-        .await?
-        .filter(|session| session.is_valid_at(now))
-        .ok_or_else(unauthenticated)?;
-    let member = members::find(&mut conn, session.member_id)
-        .await?
-        .filter(|member| member.status.can_sign_in())
-        .ok_or_else(unauthenticated)?;
-    let actor = build_actor(&mut conn, &member).await?;
+    let session = sessions::find_by_token_hash(&mut conn, &token.hash()).await?;
+    let (ctx, last_seen_at) = context_for(&mut conn, session, meta, now).await?;
     drop(conn);
 
-    if now.since(session.last_seen_at).num_milliseconds() >= TOUCH_INTERVAL_MS {
+    if now.since(last_seen_at).num_milliseconds() >= TOUCH_INTERVAL_MS {
         let idle = now
             .checked_add(state.config.session_idle)
             .ok_or_else(|| ServiceError::internal("session expiry overflow"))?;
         state
-            .write(async |conn: &mut Conn| Ok(sessions::touch(conn, session.id, now, idle).await?))
+            .write(async |conn: &mut Conn| {
+                Ok(sessions::touch(conn, ctx.session_id, now, idle).await?)
+            })
             .await?;
     }
-    Ok(AuthContext {
-        actor,
-        member,
-        session_id: session.id,
-        via: session.via,
-        meta,
+    Ok(ctx)
+}
+
+/// 세션으로 요청자 정보를 만든다(토큰·내려받기 링크 인증이 함께 쓴다). 세션이 없거나
+/// 만료·폐기됐거나 구성원이 로그인할 수 없으면 `Unauthenticated`. 세션의 마지막 사용 시각도
+/// 돌려준다.
+async fn context_for(
+    conn: &mut Conn,
+    session: Option<Session>,
+    meta: RequestMeta,
+    now: Timestamp,
+) -> ServiceResult<(AuthContext, Timestamp)> {
+    let unauthenticated = || ServiceError::Domain(DomainError::Unauthenticated);
+    let session = session
+        .filter(|session| session.is_valid_at(now))
+        .ok_or_else(unauthenticated)?;
+    let member = members::find(conn, session.member_id)
+        .await?
+        .filter(|member| member.status.can_sign_in())
+        .ok_or_else(unauthenticated)?;
+    let actor = build_actor(conn, &member).await?;
+    Ok((
+        AuthContext {
+            actor,
+            member,
+            session_id: session.id,
+            via: session.via,
+            meta,
+        },
+        session.last_seen_at,
+    ))
+}
+
+/// 내려받기 링크의 세션으로 인증한다. 세션이 살아 있고 구성원이 로그인할 수 있어야 한다.
+/// 사용 시각은 늘리지 않는다(링크 열기는 사용자가 앱을 쓰는 것이 아니다).
+pub async fn authenticate_session(
+    state: &AppState,
+    session_id: SessionId,
+    meta: RequestMeta,
+) -> ServiceResult<AuthContext> {
+    let mut conn = state.read().await?;
+    let session = sessions::find(&mut conn, session_id).await?;
+    Ok(context_for(&mut conn, session, meta, state.now()).await?.0)
+}
+
+/// 내려받기 링크 유효 시간.
+pub const DOWNLOAD_LINK_TTL: chrono::Duration = chrono::Duration::minutes(5);
+
+/// 내려받기 링크로 열 수 있는 경로인지: 공지·결재 문서 첨부파일과 근태 CSV 내보내기만.
+fn downloadable(target: &str) -> bool {
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    if query.contains("download_token") || target.contains("..") || target.contains('#') {
+        return false;
+    }
+    let segments: Vec<&str> = path.split('/').collect();
+    match segments.as_slice() {
+        ["", "notices", owner, "attachments", attachment] => {
+            query.is_empty()
+                && pango_core::id::NoticeId::parse(owner).is_ok()
+                && pango_core::id::AttachmentId::parse(attachment).is_ok()
+        }
+        ["", "approval", "documents", owner, "attachments", attachment] => {
+            query.is_empty()
+                && pango_core::id::DocumentId::parse(owner).is_ok()
+                && pango_core::id::AttachmentId::parse(attachment).is_ok()
+        }
+        ["", "admin", "attendance", "export.csv"] => query
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"=&-_".contains(&b)),
+        _ => false,
+    }
+}
+
+/// 앱이 시스템 브라우저로 열 내려받기 링크를 만든다. 링크는 지금 세션과 그 경로 하나에만
+/// 유효하고 [`DOWNLOAD_LINK_TTL`] 뒤에 만료된다. 권한은 링크를 열 때 그 경로가 다시 확인한다.
+pub fn download_link(
+    state: &AppState,
+    ctx: &AuthContext,
+    target: &str,
+) -> ServiceResult<pango_api::auth::DownloadLink> {
+    if !downloadable(target) {
+        return Err(
+            DomainError::validation("path", pango_core::ValidationReason::InvalidFormat).into(),
+        );
+    }
+    let expires_at = state
+        .now()
+        .checked_add(DOWNLOAD_LINK_TTL)
+        .ok_or_else(|| ServiceError::internal("expiry overflow"))?;
+    let token = state.downloads.sign(ctx.session_id, expires_at, target);
+    let separator = if target.contains('?') { '&' } else { '?' };
+    Ok(pango_api::auth::DownloadLink {
+        url: format!(
+            "{}{target}{separator}download_token={token}",
+            pango_api::API_PREFIX
+        ),
+        expires_at,
     })
 }
 

@@ -469,6 +469,15 @@ fn DocumentEditor(
     let form_ref = use_hook(|| CopyValue::new(form.clone()));
 
     let editing: Option<(DocumentId, i64)> = draft.as_ref().map(|d| (d.id, d.version));
+    // 첨부파일. 임시저장 문서를 고치는 중이면 고르는 즉시 올리고, 새 문서면 모아 두었다가
+    // 임시저장으로 만든 뒤 올리고 나서 상신한다(상신한 문서의 첨부는 바꿀 수 없다).
+    let uploaded = use_signal(|| {
+        draft
+            .as_ref()
+            .map(|detail| detail.attachments.clone())
+            .unwrap_or_default()
+    });
+    let mut pending = use_signal(Vec::<crate::ui::attachments::PendingFile>::new);
     let is_edit = editing.is_some();
     let member_names = draft
         .as_ref()
@@ -561,6 +570,8 @@ fn DocumentEditor(
         };
         match editing {
             None => {
+                // 고른 파일이 있으면 임시저장으로 만들고, 파일을 올린 뒤에 상신한다.
+                let files = pending.read().clone();
                 let request = logic::create_request(
                     &form,
                     &title(),
@@ -568,22 +579,55 @@ fn DocumentEditor(
                     &cleaned,
                     &steps(),
                     &references(),
-                    submit,
+                    submit && files.is_empty(),
                 );
                 let result =
                     api::post_once::<_, DocumentDetail>("/approval/documents", &request, &key())
                         .await;
-                saving.set(None);
-                match result {
-                    Ok(detail) => {
-                        key.set(api::new_idempotency_key());
-                        report_success(done_message);
-                        nav.push(Route::ApprovalDetail {
-                            id: detail.id.to_string(),
-                        });
+                let detail = match result {
+                    Ok(detail) => detail,
+                    Err(failure) => {
+                        saving.set(None);
+                        show_failure(failure);
+                        return;
                     }
-                    Err(failure) => show_failure(failure),
+                };
+                key.set(api::new_idempotency_key());
+                let path = format!("/approval/documents/{}", detail.id);
+                let (left, problems) = if files.is_empty() {
+                    (Vec::new(), Vec::new())
+                } else {
+                    crate::ui::attachments::upload_pending(&format!("{path}/attachments"), files)
+                        .await
+                };
+                pending.set(left);
+                let outcome = if !problems.is_empty() {
+                    Err(format!(
+                        "문서는 임시 저장했지만 파일 {}개를 올리지 못했어요. 문서에서 다시 올린 뒤 상신해 주세요.\n{}",
+                        problems.len(),
+                        problems.join("\n")
+                    ))
+                } else if submit && detail.status == pango_core::approval::DocumentStatus::Draft {
+                    api::post::<_, DocumentDetail>(&format!("{path}/submit"), &Empty {})
+                        .await
+                        .map(|_| ())
+                        .map_err(|failure| {
+                            format!(
+                                "임시 저장은 했지만 상신하지 못했어요. {}",
+                                failure.message()
+                            )
+                        })
+                } else {
+                    Ok(())
+                };
+                saving.set(None);
+                match outcome {
+                    Ok(()) => report_success(done_message),
+                    Err(message) => crate::ui::report_failure(message),
                 }
+                nav.push(Route::ApprovalDetail {
+                    id: detail.id.to_string(),
+                });
             }
             Some((id, version)) => {
                 let request = logic::update_request(
@@ -682,6 +726,11 @@ fn DocumentEditor(
                                 CharCount { count: body().chars().count(), max: Body::RULE.max_chars }
                             }
                         }
+                    }
+                    crate::ui::AttachmentEditor {
+                        base: editing.map(|(id, _)| format!("/approval/documents/{id}/attachments")),
+                        uploaded,
+                        pending,
                     }
                 }
             }
@@ -1043,6 +1092,7 @@ mod tests {
                 read_at: None,
             }],
             events: vec![],
+            attachments: vec![],
             submitted_at: None,
             completed_at: None,
             created_at: at,

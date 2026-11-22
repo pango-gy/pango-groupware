@@ -83,6 +83,12 @@ pub fn set_scroll_top(id: &str, top: f64) {
     ));
 }
 
+/// `https://…` 주소를 시스템 브라우저로 연다. 앱의 웹뷰는 외부 주소로의 이동을 막고 그 주소를
+/// 시스템 브라우저로 넘긴다(dioxus-desktop의 탐색 처리기). 파일 내려받기에 쓴다.
+pub fn open_external(url: &str) {
+    run(format!("window.location.href = {};", js_string(url)));
+}
+
 pub fn focus_element(id: &str) {
     run(format!(
         "{{ const el = document.getElementById({}); if (el) {{ el.scrollIntoView(); \

@@ -1,9 +1,7 @@
 //! 공지 목록과 상세.
 
 use dioxus::prelude::*;
-use pango_api::notice::{
-    NoticeAttachment, NoticeDetail as NoticeDto, NoticeReadReceipt, NoticeSummary,
-};
+use pango_api::notice::{NoticeDetail as NoticeDto, NoticeReadReceipt, NoticeSummary};
 use pango_api::{Empty, Page};
 use pango_core::id::NoticeId;
 
@@ -13,11 +11,11 @@ use crate::format;
 use crate::route::Route;
 use crate::session::use_session;
 use crate::ui::{
-    now, report_error, resource_view, use_more_pages, Badge, Button, ButtonKind, Card, EmptyState,
-    Icon, IconName, LoadMore, Meta, PageHeader, Tone,
+    now, report_error, resource_view, use_more_pages, AttachmentLinks, Badge, Button, ButtonKind,
+    Card, EmptyState, Icon, IconName, LoadMore, Meta, PageHeader, Tone,
 };
 
-use logic::{apply_receipt, attachment_href, audience_text, is_missing, LIST_PATH};
+use logic::{apply_receipt, audience_text, is_missing, LIST_PATH};
 
 #[component]
 pub fn Notices() -> Element {
@@ -176,7 +174,10 @@ pub fn NoticeDetail(id: String) -> Element {
                         }
                     }
                     div { class: "notice-body", "{notice_dto.body}" }
-                    AttachmentLinks { notice: summary.id, files: notice_dto.attachments.clone() }
+                    AttachmentLinks {
+                        download_base: format!("/notices/{}/attachments", summary.id),
+                        files: notice_dto.attachments.clone(),
+                    }
                     if summary.must_read {
                         if let Some(read_at) = notice_dto.read_at {
                             div { class: "callout callout-success must-read", role: "status",
@@ -205,48 +206,14 @@ pub fn NoticeDetail(id: String) -> Element {
     }
 }
 
-/// 공지 첨부파일 내려받기 목록. 웹은 쿠키로 인증되므로 일반 링크로 받는다.
-#[component]
-pub fn AttachmentLinks(notice: NoticeId, files: Vec<NoticeAttachment>) -> Element {
-    if files.is_empty() {
-        return rsx! {};
-    }
-    rsx! {
-        section { class: "attachments", "aria-label": "첨부파일",
-            h2 { class: "sub-title", "첨부파일 {files.len()}개" }
-            ul { class: "attachment-list",
-                for file in files {
-                    li { key: "{file.id}",
-                        a {
-                            class: "attachment-link",
-                            href: "{attachment_href(notice, file.id)}",
-                            download: "{file.filename}",
-                            Icon { name: IconName::Document }
-                            span { class: "attachment-name", "{file.filename}" }
-                            small { class: "attachment-size", "{format::file_size(file.size)}" }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 pub mod logic {
     use pango_api::notice::{NoticeDetail, NoticeSummary};
-    use pango_api::API_PREFIX;
     use pango_core::authz::AudienceKind;
-    use pango_core::id::{NoticeAttachmentId, NoticeId};
     use pango_core::time::Timestamp;
 
     use crate::api::ApiError;
 
     pub const LIST_PATH: &str = "/notices?limit=30";
-
-    /// 첨부파일 내려받기 주소.
-    pub fn attachment_href(notice: NoticeId, attachment: NoticeAttachmentId) -> String {
-        format!("{API_PREFIX}/notices/{notice}/attachments/{attachment}")
-    }
 
     /// 없는 공지(또는 볼 수 없어 없는 것으로 취급된 공지)인지.
     pub fn is_missing(error: &ApiError) -> bool {
@@ -270,7 +237,7 @@ pub mod logic {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use pango_core::id::MemberId;
+        use pango_core::id::{MemberId, NoticeId};
 
         fn ts(millis: i64) -> Timestamp {
             Timestamp::from_millis(millis).expect("ts")

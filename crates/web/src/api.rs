@@ -162,7 +162,7 @@ pub async fn delete<T: DeserializeOwned>(path: &str) -> ApiResult<T> {
 }
 
 /// 파일 올리기. 내용은 본문 그대로, 이름은 `X-File-Name` 헤더로 보낸다(서버 규약은
-/// `pango_api::notice::NoticeAttachment`). `key`로 다시 보내도 한 번만 올라간다.
+/// `pango_api::attachment`). `key`로 다시 보내도 한 번만 올라간다.
 pub async fn upload<T: DeserializeOwned>(
     path: &str,
     file_name: &str,
@@ -181,6 +181,23 @@ pub async fn upload<T: DeserializeOwned>(
         Some(&encode(file_name)),
     )
     .await
+}
+
+/// 내려받기 경로(`/notices/…/attachments/…` 등, API 접두사 제외)를 연다.
+///
+/// 웹은 쿠키가 실리는 일반 링크(`DownloadLink`)로 받으므로 이 함수는 앱에서 쓴다: 서버에서
+/// 몇 분짜리 서명 링크를 받아 서버 주소를 붙여 시스템 브라우저로 연다.
+pub async fn open_download(path: &str) -> ApiResult<()> {
+    let link: pango_api::auth::DownloadLink = post(
+        "/download-links",
+        &pango_api::auth::DownloadLinkRequest {
+            path: path.to_owned(),
+        },
+    )
+    .await?;
+    let origin = platform::server_origin().unwrap_or_default();
+    platform::open_external(&format!("{origin}{}", link.url));
+    Ok(())
 }
 
 /// 쿼리 문자열 값을 인코딩한다(RFC 3986 비예약 문자만 그대로 둔다).

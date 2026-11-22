@@ -270,6 +270,10 @@ pub struct DocumentDetail {
     pub steps: Vec<StepDto>,
     pub references: Vec<ReferenceDto>,
     pub events: Vec<EventDto>,
+    /// 첨부파일(올린 순). 기안자가 임시저장 상태에서만 붙이고 뺄 수 있고, 상신하면 고정된다.
+    /// 내용은 `GET /approval/documents/{id}/attachments/{attachment_id}`로 받는다.
+    #[serde(default)]
+    pub attachments: Vec<crate::attachment::Attachment>,
     pub submitted_at: Option<Timestamp>,
     pub completed_at: Option<Timestamp>,
     pub created_at: Timestamp,

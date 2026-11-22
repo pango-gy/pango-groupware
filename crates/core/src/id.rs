@@ -85,7 +85,7 @@ define_id!(
     ApprovalStepId,
     ApprovalEventId,
     NoticeId,
-    NoticeAttachmentId,
+    AttachmentId,
     NotificationId,
     OutboundMessageId,
     AuditLogId,
