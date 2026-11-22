@@ -27,4 +27,4 @@ pub mod settings;
 pub mod testing;
 
 pub use error::{DbError, DbResult};
-pub use pool::{Conn, Db, DbOptions, ReadConn, ReadSnapshot, WriteTx};
+pub use pool::{backup, Conn, Db, DbOptions, ReadConn, ReadSnapshot, WriteTx};

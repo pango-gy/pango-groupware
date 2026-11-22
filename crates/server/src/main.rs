@@ -42,6 +42,14 @@ enum Command {
         #[arg(skip = std::env::var("PANGO_OWNER_PASSWORD").ok())]
         owner_password: Option<String>,
     },
+    /// 데이터베이스(첨부파일 포함)의 사본을 만든다. 서버가 도는 중에도 된다.
+    ///
+    /// 복구는 서버를 멈추고 데이터 디렉터리의 pango.db를 사본으로 바꾼 뒤(-wal·-shm 파일은 지운다)
+    /// 다시 실행한다.
+    Backup {
+        /// 사본 파일 경로. 이미 있으면 덮어쓰지 않고 실패한다.
+        dest: PathBuf,
+    },
     /// 서버를 실행한다.
     Serve {
         #[arg(long, env = "PANGO_BIND", default_value = "127.0.0.1:8080")]
@@ -110,6 +118,16 @@ async fn run(cli: Cli) -> Result<(), AnyError> {
                 println!("  임시 비밀번호: {password}");
                 println!("임시 비밀번호는 다시 볼 수 없습니다. 첫 로그인 때 바꿔야 합니다.");
             }
+            Ok(())
+        }
+        Command::Backup { dest } => {
+            let path = cli.data_dir.join("pango.db");
+            if !path.exists() {
+                return Err(format!("데이터베이스가 없습니다: {}", path.display()).into());
+            }
+            // 마이그레이션을 돌리지 않는다(판올림 전 백업이 운영 DB를 바꾸지 않게).
+            pango_db::backup(&path, &dest).await?;
+            println!("백업을 만들었습니다: {}", dest.display());
             Ok(())
         }
         Command::Serve {

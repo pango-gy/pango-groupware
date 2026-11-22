@@ -129,7 +129,8 @@ HTTPS 없이 로컬에서만 써 볼 때는 `serve`에 `--insecure-cookies`를 �
 ### 운영 시 권장 사항
 
 - 앞단에 TLS를 처리하는 리버스 프록시(Caddy, nginx 등)를 둡니다. 모바일 앱은 HTTPS 서버에만 연결합니다.
-- 백업은 SQLite의 `VACUUM INTO` 또는 온라인 백업 API로 실행 중에도 안전하게 만들 수 있습니다. 서버가 실행 중일 때 DB 파일을 그대로 복사하지 마세요.
+- 백업은 `pango-groupware --data-dir ./data backup <사본 경로>`로 실행 중에도 안전하게 만듭니다(첨부파일 포함). 서버가 실행 중일 때 DB 파일을 그대로 복사하지 마세요.
+- Docker 이미지, systemd, 리버스 프록시, 백업·복구, 판올림은 [docs/DEPLOY.md](docs/DEPLOY.md)를 봅니다.
 
 ## 모바일 앱 배포
 

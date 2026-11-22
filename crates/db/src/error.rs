@@ -19,6 +19,9 @@ pub enum DbError {
         column: &'static str,
         source: serde_json::Error,
     },
+    /// 파일 작업(백업 사본 만들기 등) 실패.
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 impl DbError {

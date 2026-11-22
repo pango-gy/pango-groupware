@@ -94,3 +94,54 @@ impl Db {
         self.writer.close().await;
     }
 }
+
+/// `source` DB 파일의 같은 시점 사본을 `dest`에 만든다(`VACUUM INTO`). 서버가 도는 중에도 되고
+/// 쓰기를 막지 않는다.
+///
+/// - 마이그레이션을 돌리지 않는 읽기 전용 연결 하나만 쓴다. 판올림 전에 새 실행 파일로 백업해도
+///   운영 중인 DB를 바꾸지 않고, 예전 실행 파일로도 더 새 DB를 백업할 수 있다.
+/// - 사본에는 개인정보·첨부파일·2단계 인증 비밀키가 모두 들어 있으므로, 유닉스에서는 처음부터
+///   소유자만 읽고 쓸 수 있는(0600) 빈 파일을 만든 뒤 그 안에 쓴다. `dest`가 이미 있으면 덮어쓰지
+///   않고 실패한다.
+pub async fn backup(source: &Path, dest: &Path) -> DbResult<()> {
+    let io =
+        |kind, message: &str| crate::DbError::Io(std::io::Error::new(kind, message.to_owned()));
+    let target = dest.to_str().ok_or_else(|| {
+        io(
+            std::io::ErrorKind::InvalidInput,
+            "backup path is not valid UTF-8",
+        )
+    })?;
+    if !source.exists() {
+        return Err(io(std::io::ErrorKind::NotFound, "database file not found"));
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    // 이미 있으면 `AlreadyExists`. SQLite의 `VACUUM INTO`는 빈 파일에는 쓸 수 있다.
+    options.open(dest).map_err(crate::DbError::Io)?;
+    let connect = SqliteConnectOptions::new()
+        .filename(source)
+        .read_only(true)
+        .busy_timeout(Duration::from_secs(5));
+    let result = async {
+        let mut conn = sqlx::ConnectOptions::connect(&connect).await?;
+        sqlx::query("VACUUM INTO ?")
+            .bind(target)
+            .execute(&mut conn)
+            .await?;
+        sqlx::Connection::close(conn).await?;
+        Ok::<(), sqlx::Error>(())
+    }
+    .await;
+    if let Err(error) = result {
+        // 반쯤 쓴 사본을 남기지 않는다.
+        let _ = std::fs::remove_file(dest);
+        return Err(error.into());
+    }
+    Ok(())
+}

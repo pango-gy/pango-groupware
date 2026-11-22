@@ -1,0 +1,11 @@
+target
+data
+crates/server/web-dist
+.claude
+.worktrees
+.git
+*.db
+*.db-shm
+*.db-wal
+.env
+.DS_Store
