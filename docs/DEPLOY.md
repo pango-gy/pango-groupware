@@ -45,6 +45,7 @@ pango-groupware --data-dir /var/lib/pango serve --bind 127.0.0.1:8080 --trust-pr
 | `--public-origin` | `PANGO_PUBLIC_ORIGIN` | 공개 주소. 프록시 뒤에서는 지정을 권장(CSRF 출처 확인 기준) |
 | `--insecure-cookies` | — | HTTPS 없는 로컬 시험용. 운영에서는 쓰지 않는다 |
 | `--max-attachment-mb` | `PANGO_MAX_ATTACHMENT_MB` | 첨부파일 하나의 최대 크기(기본 10, 1~100) |
+| `--mcp`, `--mcp-allow-loopback` | `PANGO_MCP`, `PANGO_MCP_ALLOW_LOOPBACK` | Claude 등 AI 앱 연결(원격 MCP). [MCP.md](MCP.md) |
 | `--outbound-allow-private` | `PANGO_OUTBOUND_ALLOW_PRIVATE` | 웹훅·Buzz 릴레이를 사설망 주소로도 보낸다 |
 | Buzz 설정 | `PANGO_BUZZ_RELAY_URL` 등 | [BUZZ.md](BUZZ.md) |
 

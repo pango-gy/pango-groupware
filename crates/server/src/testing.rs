@@ -255,6 +255,15 @@ impl TestApp {
         }
     }
 
+    /// API 접두사 없이 루트 경로로 보낸다(`/mcp`, `/oauth/…`, `/.well-known/…`).
+    pub fn root(&self, method: Method, path: &str) -> TestRequest<'_> {
+        TestRequest {
+            app: self,
+            builder: Request::builder().method(method).uri(path),
+            body: None,
+        }
+    }
+
     pub fn get(&self, path: &str) -> TestRequest<'_> {
         self.request(Method::GET, path)
     }

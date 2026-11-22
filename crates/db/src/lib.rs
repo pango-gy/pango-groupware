@@ -18,6 +18,7 @@ pub mod leave;
 pub mod members;
 pub mod notices;
 pub mod notifications;
+pub mod oauth;
 pub mod org;
 pub mod outbound;
 pub mod pool;

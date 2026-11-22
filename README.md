@@ -51,6 +51,7 @@ pango-groupware는 다음을 목표로 합니다.
 | 전자결재 | 문서 기안, 결재라인 지정(결재·합의·참조), 승인·반려·회수, 결재 대기함, 첨부파일 |
 | 공지사항 | 공지 열람, 필독 공지 확인 표시, 첨부파일 |
 | 알림 | 결재 요청·결과, 공지, 퇴근 누락 알림, 외부 연동(서명한 웹훅, 사내 메신저 Buzz DM — [운영 가이드](docs/BUZZ.md)) |
+| AI 연결 | Claude 같은 AI 앱에서 대화로 휴가 신청·결재 기안·승인·공지 게시(원격 MCP + OAuth — [연결 매뉴얼](docs/MCP.md)) |
 
 ### 관리자
 
@@ -131,6 +132,7 @@ HTTPS 없이 로컬에서만 써 볼 때는 `serve`에 `--insecure-cookies`를 �
 - 앞단에 TLS를 처리하는 리버스 프록시(Caddy, nginx 등)를 둡니다. 모바일 앱은 HTTPS 서버에만 연결합니다.
 - 백업은 `pango-groupware --data-dir ./data backup <사본 경로>`로 실행 중에도 안전하게 만듭니다(첨부파일 포함). 서버가 실행 중일 때 DB 파일을 그대로 복사하지 마세요.
 - Docker 이미지, systemd, 리버스 프록시, 백업·복구, 판올림은 [docs/DEPLOY.md](docs/DEPLOY.md)를 봅니다.
+- Claude 등 AI 앱 연결(원격 MCP)은 `--mcp`로 켭니다. [docs/MCP.md](docs/MCP.md)를 봅니다.
 
 ## 모바일 앱 배포
 

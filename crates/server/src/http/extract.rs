@@ -248,6 +248,21 @@ impl FromRequestParts<AppState> for Meta {
     }
 }
 
+/// 요청의 출처 정보만(출처 검사 없음). 출처를 자기 허용 목록으로 따로 확인하는 경로(원격 MCP,
+/// OAuth 동의 화면)가 쓴다.
+pub struct ClientMeta(pub RequestMeta);
+
+impl FromRequestParts<AppState> for ClientMeta {
+    type Rejection = ServiceError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(Self(request_meta(parts, state.config.trust_proxy)))
+    }
+}
+
 fn is_json(headers: &HeaderMap) -> bool {
     header_str(headers, header::CONTENT_TYPE)
         .and_then(|value| value.split(';').next())

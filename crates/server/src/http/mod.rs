@@ -10,9 +10,11 @@ pub mod extract;
 pub mod home;
 pub mod integrations;
 pub mod leave;
+pub mod mcp;
 pub mod members;
 pub mod notices;
 pub mod notifications;
+pub mod oauth;
 pub mod org;
 pub mod web;
 
@@ -72,9 +74,12 @@ pub fn router(state: AppState) -> Router {
     let api = api_routes(&state)
         // API 응답은 개인 정보를 담으므로 어디에도 캐시하지 않는다.
         .layer(static_header("cache-control", "no-store"));
-    Router::new()
-        .nest(API_PREFIX, api)
-        .fallback(web::serve)
+    // 원격 MCP(`/mcp`)는 늘 두고(꺼져 있으면 503), OAuth 경로는 켰을 때만 둔다.
+    let mut root = Router::new().nest(API_PREFIX, api).merge(mcp::routes());
+    if state.config.mcp.is_some() {
+        root = root.merge(oauth::routes());
+    }
+    root.fallback(web::serve)
         .layer(DefaultBodyLimit::max(state.config.max_body_bytes))
         // 패닉 응답에도 아래의 보안 헤더가 붙도록 헤더 계층보다 안쪽에 둔다.
         .layer(CatchPanicLayer::custom(panic_response))

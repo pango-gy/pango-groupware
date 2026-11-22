@@ -155,6 +155,14 @@ UUID v7을 타입별 newtype(`MemberId`, `DocumentId` …)으로 감쌉니다. D
   - 한계: 부여 경계(기념일)를 넘는 신청도 전부 첫날에 유효하던 부여에서 차감됩니다. 첫날의 부여만으로 전체를 낼 수 없으면 경계 뒤의 부여가 넉넉해도 거부되므로, 그때는 경계에서 둘로 나눠 신청합니다.
 - 취소와 결재 문서는 함께 움직입니다. 대기 중인 신청의 취소는 곧 문서 **회수**이며(누군가 결재한 뒤에는 회수할 수 없으므로 본인의 취소는 `withdraw_too_late`로 거부, 반려로 종료), **관리자의 취소**는 회수할 수 없는 문서를 대리 반려로 끝냅니다(신청은 문서와 같이 `rejected`, 잔여 복원. 그래서 관리자 취소는 `withdraw_too_late`가 되지 않습니다). 승인된 휴가의 취소는 문서를 승인된 기록으로 둔 채 신청만 취소하고 잔여를 복원합니다. 본인은 휴가 시작 전에만, 관리자는 언제든 취소할 수 있습니다.
 
+### AI 앱 연결(원격 MCP)
+- `POST /mcp`(Streamable HTTP, 세션 없는 JSON-RPC)와 OAuth 2.1 인가 서버(`/.well-known/oauth-protected-resource[/mcp]`, `/.well-known/oauth-authorization-server`, `/oauth/register`·`authorize`·`token`)를 `--mcp`일 때만 둡니다(꺼져 있으면 `/mcp`는 503). issuer는 공개 주소입니다. 사용법은 [MCP.md](MCP.md).
+- **승인 = 로그인 세션 하나**: 동의 화면이 기존 `auth::login`(시도 한도·2단계 인증·감사 로그)으로 Bearer 세션을 만들고 코드·토큰을 그 세션에 매답니다(`oauth_codes`·`oauth_tokens`, 해시만, 세션을 지우면 연쇄 삭제). 그래서 로그아웃·기기 로그아웃·비밀번호 변경·비활성화가 MCP 연결도 끊습니다. 세션의 기기 이름은 `AI 연결(MCP) · 앱 이름`.
+- 공개 클라이언트 + PKCE S256 필수, `resource`는 `{issuer}/mcp`와 정확히 같아야 하고, 응답에 `iss`를 붙입니다. 동적 등록은 claude.ai·claude.com 콜백만(선택적으로 loopback), 클라이언트 ID는 이름·주소로 정해집니다. 접근 토큰 10분, 갱신 토큰은 회전하며 재사용(코드 포함)이 보이면 세션을 끊고 `oauth.token_reuse`를 남깁니다.
+- scope: `groupware:read`(조회) / `groupware:write`(본인 업무 실행) / `groupware:admin`(공지 게시 등, 관리자에게만 부여). 요청에 scope가 없으면 조회만. 401 challenge는 세 scope를 모두 알려 한 번의 승인으로 쓰게 하고, 받지 않은 scope의 도구는 403 `insufficient_scope`.
+- 도구(`crate::mcp`)는 기존 유스케이스를 요청자 `AuthContext`로 바로 부르고 입력을 기존 요청 타입으로 읽습니다. 권한·감사 로그·알림이 웹과 같고, 만드는 도구는 `request_id`를 멱등성 키로 씁니다. 서비스가 거부하면 도구 결과의 오류(`isError`)로 돌려줍니다.
+- 동의 화면은 서버가 그리는 HTML(외부 자원 없음)이며 `Referrer-Policy: same-origin`(승인 POST의 `Origin`이 `null`이 되지 않게), 전용 CSP, `Path=/oauth/authorize` nonce 쿠키를 씁니다. 승인 POST의 `Origin`은 issuer와 같아야 하고(`null` 거부), `/mcp`의 `Origin`은 있으면 claude.ai·claude.com·issuer만 받습니다.
+
 ### 기록 보존 기간
 - 최고 관리자만 출퇴근 기록 보존 연수(3~10년, 기본 `NULL` = 지우지 않음, `retention_settings`)를 정합니다(`GET·PUT /admin/retention`, 버전·감사 로그 `retention.update`). 응답에는 지금 설정으로 지워질 기준일과 건수가 있습니다.
 - 하루 한 번(주기 작업) 오늘 근무일에서 그 연수를 뺀 날짜보다 이른 근무일의 `attendance_records`와 `attendance_events`를 한 트랜잭션에서 지우고 `retention.purge`(시스템)를 남깁니다. 이력 표는 추가 전용 트리거가 삭제를 막으므로, 정리 트랜잭션 안에서만 `retention_purge_guard`에 한 줄을 넣어 허용하고 끝나기 전에 뺍니다(그 밖의 삭제는 계속 막힘).

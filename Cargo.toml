@@ -23,7 +23,7 @@ chrono-tz = { version = "0.10", default-features = false, features = ["std"] }
 uuid = { version = "1", features = ["v7", "serde"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "macros"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "form", "tokio", "macros"] }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["trace", "set-header", "limit", "catch-panic"] }
 http = "1"

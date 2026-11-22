@@ -23,6 +23,8 @@ pub struct Cleanup {
     pub throttle_buckets: u64,
     pub idempotency_keys: u64,
     pub outbound_messages: u64,
+    /// 만료된 MCP 인가 요청·코드·토큰.
+    pub oauth: u64,
 }
 
 /// 한 번 정리한다. 여러 번 실행해도 안전하다.
@@ -42,6 +44,8 @@ pub async fn run_once(state: &AppState) -> ServiceResult<Cleanup> {
     )?;
     let idempotency_cutoff = before(IDEMPOTENCY_RETENTION)?;
     let outbound_cutoff = before(OUTBOUND_RETENTION)?;
+    // 만료 뒤 하루가 지난 코드·토큰만 지운다(그 사이 재사용 탐지가 남도록).
+    let oauth_cutoff = before(Duration::days(1))?;
     state
         .write(async |conn: &mut Conn| {
             Ok(Cleanup {
@@ -49,6 +53,7 @@ pub async fn run_once(state: &AppState) -> ServiceResult<Cleanup> {
                 throttle_buckets: sessions::throttle_purge(conn, throttle_cutoff).await?,
                 idempotency_keys: idempotency::purge(conn, idempotency_cutoff).await?,
                 outbound_messages: outbound::purge(conn, outbound_cutoff).await?,
+                oauth: pango_db::oauth::purge(conn, now, oauth_cutoff).await?,
             })
         })
         .await

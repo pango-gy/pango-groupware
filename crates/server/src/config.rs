@@ -43,6 +43,53 @@ pub struct Config {
     pub outbound_allow_private: bool,
     /// 사내 메신저 Buzz 연결(릴레이 주소 + 봇 비밀키). 없으면 Buzz 채널을 쓸 수 없다.
     pub buzz: Option<BuzzConfig>,
+    /// AI 앱(Claude 등)용 원격 MCP와 그 OAuth 인가 서버. 없으면 `/mcp`는 503이고 OAuth 경로는 없다.
+    pub mcp: Option<McpConfig>,
+}
+
+/// 원격 MCP 설정.
+#[derive(Debug, Clone)]
+pub struct McpConfig {
+    /// OAuth issuer = 서비스의 공개 주소(`https://gw.example.com`, 경로·끝 `/` 없음). MCP 주소는
+    /// `{issuer}/mcp`다.
+    pub issuer: String,
+    /// Claude Code·Desktop처럼 이 컴퓨터(`http://localhost:포트`, `127.0.0.1`)로 돌아오는
+    /// 클라이언트도 받을지. 기본은 claude.ai·claude.com 커넥터만.
+    pub allow_loopback_redirects: bool,
+}
+
+impl McpConfig {
+    /// 공개 주소로 만든다. https여야 하고, 로컬 시험용 `http://localhost`·`http://127.0.0.1`만 예외다.
+    pub fn from_public_origin(
+        origin: Option<&str>,
+        allow_loopback_redirects: bool,
+    ) -> Result<Self, String> {
+        let origin = origin
+            .map(|o| o.trim().trim_end_matches('/'))
+            .filter(|o| !o.is_empty())
+            .ok_or("MCP를 켜려면 공개 주소(--public-origin, PANGO_PUBLIC_ORIGIN)가 필요합니다.")?;
+        let local =
+            origin.starts_with("http://localhost") || origin.starts_with("http://127.0.0.1");
+        let valid = (origin.starts_with("https://") || local)
+            && !origin
+                .split_once("://")
+                .is_some_and(|(_, rest)| rest.contains(['/', '?', '#']));
+        if !valid {
+            return Err(
+                "MCP의 공개 주소는 경로 없는 https 주소여야 합니다(예: https://gw.example.com)."
+                    .into(),
+            );
+        }
+        Ok(Self {
+            issuer: origin.to_owned(),
+            allow_loopback_redirects,
+        })
+    }
+
+    /// 보호하는 자원(RFC 8707)의 주소.
+    pub fn resource(&self) -> String {
+        format!("{}/mcp", self.issuer)
+    }
 }
 
 /// Buzz 연결 설정. 봇 비밀키는 실행 설정(환경 변수·파일)으로만 받고 DB에 두지 않는다.
@@ -117,6 +164,7 @@ impl Default for Config {
             max_body_bytes: 256 * 1024,
             max_attachment_bytes: 10 * 1024 * 1024,
             outbound_allow_private: false,
+            mcp: None,
             buzz: None,
         }
     }

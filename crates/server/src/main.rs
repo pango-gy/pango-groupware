@@ -71,6 +71,13 @@ enum Command {
         #[arg(long, env = "PANGO_MAX_ATTACHMENT_MB", default_value_t = 10,
               value_parser = clap::value_parser!(u32).range(1..=100))]
         max_attachment_mb: u32,
+        /// AI 앱(Claude 등)이 연결하는 원격 MCP(`{공개 주소}/mcp`)와 OAuth 인가 서버를 켠다.
+        /// 공개 주소(--public-origin)가 필요하다. 사용법은 docs/MCP.md.
+        #[arg(long, env = "PANGO_MCP")]
+        mcp: bool,
+        /// MCP 로그인 후 이 컴퓨터(localhost)로 돌아오는 클라이언트(Claude Code·Desktop)도 받는다.
+        #[arg(long, env = "PANGO_MCP_ALLOW_LOOPBACK")]
+        mcp_allow_loopback: bool,
         /// 사내 메신저 Buzz 릴레이 주소(예: https://buzz.example.com). 봇 키와 함께 지정한다.
         #[arg(long, env = "PANGO_BUZZ_RELAY_URL")]
         buzz_relay_url: Option<String>,
@@ -137,6 +144,8 @@ async fn run(cli: Cli) -> Result<(), AnyError> {
             insecure_cookies,
             outbound_allow_private,
             max_attachment_mb,
+            mcp,
+            mcp_allow_loopback,
             buzz_relay_url,
             buzz_bot_key_file,
             buzz_bot_key,
@@ -149,8 +158,20 @@ async fn run(cli: Cli) -> Result<(), AnyError> {
             if let Some(buzz) = &buzz {
                 tracing::info!(relay = %buzz.relay_url, bot = %buzz.bot_key.public_key().to_npub(), "Buzz channel configured");
             }
+            let mcp = if mcp {
+                Some(pango_server::config::McpConfig::from_public_origin(
+                    public_origin.as_deref(),
+                    mcp_allow_loopback,
+                )?)
+            } else {
+                None
+            };
+            if let Some(mcp) = &mcp {
+                tracing::info!(endpoint = %mcp.resource(), "remote MCP enabled");
+            }
             let config = Config {
                 buzz,
+                mcp,
                 trust_proxy,
                 public_origin,
                 cookie_secure: !insecure_cookies,
