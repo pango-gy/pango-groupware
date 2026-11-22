@@ -34,6 +34,10 @@ pub fn routes() -> Router<AppState> {
             "/admin/members/{id}/sessions/{session_id}",
             delete(revoke_member_session),
         )
+        .route(
+            "/admin/members/{id}/totp",
+            get(member_totp).delete(reset_member_totp),
+        )
 }
 
 async fn list_directory(
@@ -153,4 +157,22 @@ async fn revoke_member_sessions(
 ) -> ServiceResult<Json<RevokedSessions>> {
     let revoked = members::revoke_member_sessions(&state, &ctx, id).await?;
     Ok(Json(RevokedSessions { revoked }))
+}
+
+async fn member_totp(
+    State(state): State<AppState>,
+    Auth(ctx): Auth,
+    ApiPath(id): ApiPath<MemberId>,
+) -> ServiceResult<Json<pango_api::auth::MemberTotpDto>> {
+    let enabled = crate::service::totp::member_enabled(&state, &ctx, id).await?;
+    Ok(Json(pango_api::auth::MemberTotpDto { enabled }))
+}
+
+async fn reset_member_totp(
+    State(state): State<AppState>,
+    Auth(ctx): Auth,
+    ApiPath(id): ApiPath<MemberId>,
+) -> ServiceResult<StatusCode> {
+    crate::service::totp::admin_reset(&state, &ctx, id).await?;
+    Ok(StatusCode::NO_CONTENT)
 }

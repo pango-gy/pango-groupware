@@ -13,6 +13,7 @@ pub mod service;
 pub mod state;
 #[cfg(feature = "testing")]
 pub mod testing;
+pub mod totp;
 
 pub use config::Config;
 pub use error::{ServiceError, ServiceResult};

@@ -16,6 +16,9 @@ pub fn Login() -> Element {
     let nav = navigator();
     let mut login_id = use_signal(String::new);
     let mut password = use_signal(String::new);
+    // 2단계 인증: 비밀번호가 맞고 코드가 필요하다는 답을 받으면 코드 칸을 보여 준다.
+    let mut needs_code = use_signal(|| false);
+    let mut code = use_signal(String::new);
     let mut error = use_signal(String::new);
     let mut busy = use_signal(|| false);
 
@@ -38,16 +41,28 @@ pub fn Login() -> Element {
             password: password(),
             // 앱은 토큰을 본문으로 받아 키체인 등에 둔다. 웹은 HttpOnly 쿠키.
             token_in_body: platform::BEARER,
+            totp_code: needs_code().then(|| code.read().trim().to_owned()),
         };
         match api::post::<_, LoginResponse>("/auth/login", &request).await {
             Ok(response) => {
                 password.set(String::new());
+                code.set(String::new());
+                needs_code.set(false);
                 if let Some(token) = response.token {
                     platform::set_token(Some(token));
                 }
                 session.set(Some(response.me));
             }
-            Err(failure) => error.set(failure.message()),
+            Err(failure) if failure.code == "mfa_required" => {
+                needs_code.set(true);
+                platform::focus_element("login-code");
+            }
+            Err(failure) => {
+                if failure.code == "mfa_invalid" {
+                    code.set(String::new());
+                }
+                error.set(failure.message());
+            }
         }
         busy.set(false);
     };
@@ -88,6 +103,19 @@ pub fn Login() -> Element {
                     required: true,
                     maxlength: 128,
                     oninput: move |value| password.set(value),
+                }
+                if needs_code() {
+                    div { id: "login-code",
+                        TextField {
+                            label: "인증 코드",
+                            value: code(),
+                            autocomplete: "one-time-code",
+                            hint: "인증 앱의 6자리 코드를 입력해 주세요. 휴대폰을 쓸 수 없으면 복구 코드를 입력해요.",
+                            required: true,
+                            maxlength: 20,
+                            oninput: move |value| code.set(value),
+                        }
+                    }
                 }
                 Button { submit: true, block: true, large: true, busy: busy(), "로그인" }
                 p { class: "auth-hint", "계정은 관리자가 발급해요. 비밀번호를 잊었다면 관리자에게 초기화를 요청해 주세요." }

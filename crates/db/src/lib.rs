@@ -26,6 +26,7 @@ pub mod sessions;
 pub mod settings;
 #[cfg(feature = "testing")]
 pub mod testing;
+pub mod totp;
 
 pub use error::{DbError, DbResult};
 pub use pool::{backup, Conn, Db, DbOptions, ReadConn, ReadSnapshot, WriteTx};

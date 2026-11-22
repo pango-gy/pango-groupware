@@ -12,6 +12,10 @@ pub struct LoginRequest {
     /// `true`면 응답 본문으로 토큰을 받는다(모바일 앱). 아니면 쿠키로 받는다(웹).
     #[serde(default)]
     pub token_in_body: bool,
+    /// 2단계 인증을 켠 계정의 인증 앱 6자리 코드 또는 복구 코드(`abcd-efgh`). 없이 보내면 비밀번호가
+    /// 맞을 때 401 `mfa_required`로 답하고, 틀린 코드면 401 `mfa_invalid`다.
+    #[serde(default)]
+    pub totp_code: Option<String>,
 }
 
 // 비밀번호가 로그에 찍히지 않게 한다.
@@ -21,7 +25,78 @@ impl std::fmt::Debug for LoginRequest {
             .field("login_id", &self.login_id)
             .field("password", &"***")
             .field("token_in_body", &self.token_in_body)
+            .field("totp_code", &self.totp_code.as_ref().map(|_| "***"))
             .finish()
+    }
+}
+
+/// 내 2단계 인증 상태(`GET /me/totp`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TotpStatus {
+    pub enabled: bool,
+    /// 남은 복구 코드 수(켜져 있을 때).
+    pub recovery_codes_left: u32,
+}
+
+/// 관리자가 보는 구성원의 2단계 인증 여부(`GET /admin/members/{id}/totp`). 초기화는 `DELETE`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemberTotpDto {
+    pub enabled: bool,
+}
+
+/// 켜기 시작(`POST /me/totp/setup`). 지금 비밀번호를 다시 확인한다.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TotpSetupRequest {
+    pub password: String,
+}
+
+impl std::fmt::Debug for TotpSetupRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TotpSetupRequest(***)")
+    }
+}
+
+/// 인증 앱에 넣을 비밀키(base32)와 `otpauth://` 주소. 이 응답에서만 보여 준다.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TotpSetup {
+    pub secret: String,
+    pub otpauth_uri: String,
+}
+
+impl std::fmt::Debug for TotpSetup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TotpSetup(***)")
+    }
+}
+
+/// 첫 코드 확인(`POST /me/totp/confirm`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TotpConfirmRequest {
+    pub code: String,
+}
+
+/// 복구 코드. 켤 때 한 번만 보여 준다(서버에는 해시만 남는다).
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoveryCodes {
+    pub codes: Vec<String>,
+}
+
+impl std::fmt::Debug for RecoveryCodes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "RecoveryCodes({} codes)", self.codes.len())
+    }
+}
+
+/// 끄기(`POST /me/totp/disable`): 비밀번호와 지금 코드(또는 복구 코드).
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TotpDisableRequest {
+    pub password: String,
+    pub code: String,
+}
+
+impl std::fmt::Debug for TotpDisableRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TotpDisableRequest(***)")
     }
 }
 
@@ -109,8 +184,10 @@ mod tests {
             login_id: "gildong".into(),
             password: "hunter2-secret".into(),
             token_in_body: false,
+            totp_code: Some("123456".into()),
         };
         assert!(!format!("{login:?}").contains("hunter2"));
+        assert!(!format!("{login:?}").contains("123456"));
         let change = ChangePasswordRequest {
             current_password: "old-secret".into(),
             new_password: "new-secret".into(),

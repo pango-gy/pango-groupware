@@ -149,6 +149,9 @@ pub async fn login(
             let Some(member) = member else {
                 return Ok(None);
             };
+            // 2단계 인증을 켠 계정은 코드까지 맞아야 한다(틀린 코드는 1)에서 시도로 이미 셌다).
+            super::totp::second_factor_tx(conn, member.id, request.totp_code.as_deref(), now)
+                .await?;
             if let Some(bucket) = &account_bucket {
                 sessions::throttle_clear(conn, bucket).await?;
             }
@@ -405,35 +408,8 @@ pub async fn change_password(
         return Err(DomainError::Conflict(ConflictReason::PasswordReused).into());
     }
 
-    // 탈취된 세션으로 현재 비밀번호를 무제한 추측하지 못하게, 로그인과 같은 한도를 건다.
-    let window = state.config.login_account_window.num_milliseconds();
-    let limit = state.config.login_account_limit;
-    let bucket = format!("pwchg:{}", ctx.member_id());
-    let throttle = state
-        .write(async |conn: &mut Conn| {
-            let mode = ThrottleMode::Lockout { limit };
-            Ok(sessions::throttle_hit(conn, &bucket, now, window, mode).await?)
-        })
-        .await?;
-    check_limit(throttle, limit, window, now)?;
-
-    let credentials =
-        found(members::find_credentials_by_id(&mut *state.read().await?, ctx.member_id()).await?)?;
-    let current = PlainPassword::for_verification(&request.current_password).ok();
-    let verified = match &current {
-        Some(current) => {
-            state
-                .passwords
-                .verify(current, Some(&credentials.password_hash))
-                .await?
-        }
-        None => false,
-    };
-    if !verified {
-        return Err(
-            DomainError::validation("current_password", ValidationReason::InvalidFormat).into(),
-        );
-    }
+    let bucket =
+        verify_own_password(state, ctx, &request.current_password, "current_password").await?;
 
     let new_hash = state.passwords.hash(&new_password).await?;
     state
@@ -456,6 +432,46 @@ pub async fn change_password(
             .await
         })
         .await
+}
+
+/// 로그인한 구성원의 지금 비밀번호를 다시 확인한다(비밀번호 변경, 2단계 인증 켜기·끄기).
+///
+/// 탈취된 세션으로 비밀번호를 무제한 추측하지 못하게 로그인과 같은 한도를 건다. 틀리면 `field`를
+/// 가리키는 검증 오류. 맞으면 시도 기록의 이름을 돌려준다(성공한 쓰기 트랜잭션에서 지운다).
+pub async fn verify_own_password(
+    state: &AppState,
+    ctx: &AuthContext,
+    password: &str,
+    field: &'static str,
+) -> ServiceResult<String> {
+    let now = state.now();
+    let window = state.config.login_account_window.num_milliseconds();
+    let limit = state.config.login_account_limit;
+    let bucket = format!("pwchg:{}", ctx.member_id());
+    let throttle = state
+        .write(async |conn: &mut Conn| {
+            let mode = ThrottleMode::Lockout { limit };
+            Ok(sessions::throttle_hit(conn, &bucket, now, window, mode).await?)
+        })
+        .await?;
+    check_limit(throttle, limit, window, now)?;
+
+    let credentials =
+        found(members::find_credentials_by_id(&mut *state.read().await?, ctx.member_id()).await?)?;
+    let current = PlainPassword::for_verification(password).ok();
+    let verified = match &current {
+        Some(current) => {
+            state
+                .passwords
+                .verify(current, Some(&credentials.password_hash))
+                .await?
+        }
+        None => false,
+    };
+    if !verified {
+        return Err(DomainError::validation(field, ValidationReason::InvalidFormat).into());
+    }
+    Ok(bucket)
 }
 
 pub async fn list_sessions(state: &AppState, ctx: &AuthContext) -> ServiceResult<Vec<SessionInfo>> {

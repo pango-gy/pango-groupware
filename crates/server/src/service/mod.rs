@@ -28,5 +28,6 @@ pub mod retention;
 pub mod settings;
 pub mod setup;
 pub mod support;
+pub mod totp;
 
 pub use support::{AuthContext, RequestMeta};

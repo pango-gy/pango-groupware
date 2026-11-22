@@ -21,6 +21,12 @@ pub enum ServiceError {
     InvalidCredentials,
     #[error("too many attempts")]
     TooManyAttempts { retry_after_secs: u64 },
+    /// 비밀번호는 맞지만 2단계 인증 코드가 필요하다(로그인).
+    #[error("second factor required")]
+    MfaRequired,
+    /// 2단계 인증 코드(또는 복구 코드)가 맞지 않거나 이미 썼다.
+    #[error("second factor invalid")]
+    MfaInvalid,
     /// 임시 비밀번호 상태. 비밀번호를 바꾸기 전에는 다른 기능을 쓸 수 없다.
     #[error("password change required")]
     PasswordChangeRequired,
@@ -51,9 +57,10 @@ impl ServiceError {
             Self::Domain(DomainError::Validation { .. })
             | Self::InvalidFields(_)
             | Self::Malformed(_) => StatusCode::BAD_REQUEST,
-            Self::Domain(DomainError::Unauthenticated) | Self::InvalidCredentials => {
-                StatusCode::UNAUTHORIZED
-            }
+            Self::Domain(DomainError::Unauthenticated)
+            | Self::InvalidCredentials
+            | Self::MfaRequired
+            | Self::MfaInvalid => StatusCode::UNAUTHORIZED,
             Self::Domain(DomainError::Forbidden)
             | Self::PasswordChangeRequired
             | Self::CrossOrigin => StatusCode::FORBIDDEN,
@@ -73,6 +80,8 @@ impl ServiceError {
             Self::Domain(error) => error.code(),
             Self::InvalidFields(_) => "validation_failed",
             Self::InvalidCredentials => "invalid_credentials",
+            Self::MfaRequired => "mfa_required",
+            Self::MfaInvalid => "mfa_invalid",
             Self::TooManyAttempts { .. } => "too_many_attempts",
             Self::PasswordChangeRequired => "password_change_required",
             Self::IdempotencyKeyReused => "idempotency_key_reused",

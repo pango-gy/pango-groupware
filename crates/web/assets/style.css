@@ -1585,3 +1585,6 @@ body:has(.action-bar) .toasts { bottom: calc(24px + var(--action-bar-h) + env(sa
 /* 앱에서 링크처럼 보이는 내려받기 버튼 */
 .link-button { border: 0; font: inherit; text-align: left; cursor: pointer; width: 100%; }
 .btn.link-button { width: auto; text-align: center; }
+/* 2단계 인증 */
+.totp-secret { font-size: 18px; letter-spacing: .08em; font-feature-settings: "tnum"; }
+.recovery-codes { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 4px 16px; margin-top: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }

@@ -80,6 +80,7 @@ pub fn Profile() -> Element {
         }
         ExternalNotifyCard {}
         BuzzLinkCard {}
+        TotpCard {}
         Card { title: "로그인된 기기",
             {resource_view(sessions, |list: Vec<SessionInfo>| rsx! {
                 ul { class: "list",
@@ -403,6 +404,222 @@ fn BuzzGuide(bot_npub: Option<String>) -> Element {
                     }
                 }
             }
+        }
+    }
+}
+
+/// 2단계 인증 켜기 단계.
+#[derive(Debug, Clone, PartialEq)]
+enum TotpStep {
+    /// 켜기 전: 비밀번호 입력.
+    Password,
+    /// 인증 앱에 비밀키를 넣고 첫 코드 입력.
+    Confirm(pango_api::auth::TotpSetup),
+    /// 켜짐: 복구 코드를 한 번만 보여 준다.
+    Recovery(Vec<String>),
+}
+
+/// 2단계 인증(TOTP). 켜면 로그인할 때 인증 앱의 코드가 더 필요하다.
+#[component]
+fn TotpCard() -> Element {
+    let mut status =
+        use_resource(|| async { api::get::<pango_api::auth::TotpStatus>("/me/totp").await });
+    let mut step = use_signal(|| None::<TotpStep>);
+    let mut password = use_signal(String::new);
+    let mut code = use_signal(String::new);
+    let mut error = use_signal(String::new);
+    let mut busy = use_signal(|| false);
+
+    let mut reset = move || {
+        password.set(String::new());
+        code.set(String::new());
+        error.set(String::new());
+    };
+    let start = move |event: FormEvent| async move {
+        event.prevent_default();
+        if busy() {
+            return;
+        }
+        busy.set(true);
+        let request = pango_api::auth::TotpSetupRequest {
+            password: password(),
+        };
+        match api::post::<_, pango_api::auth::TotpSetup>("/me/totp/setup", &request).await {
+            Ok(setup) => {
+                reset();
+                step.set(Some(TotpStep::Confirm(setup)));
+            }
+            Err(failure) => error.set(failure.message()),
+        }
+        busy.set(false);
+    };
+    let confirm = move |event: FormEvent| async move {
+        event.prevent_default();
+        if busy() {
+            return;
+        }
+        busy.set(true);
+        let request = pango_api::auth::TotpConfirmRequest {
+            code: code.read().trim().to_owned(),
+        };
+        match api::post::<_, pango_api::auth::RecoveryCodes>("/me/totp/confirm", &request).await {
+            Ok(done) => {
+                reset();
+                step.set(Some(TotpStep::Recovery(done.codes)));
+                status.restart();
+            }
+            Err(failure) => error.set(failure.message()),
+        }
+        busy.set(false);
+    };
+    let disable = move |event: FormEvent| async move {
+        event.prevent_default();
+        if busy() {
+            return;
+        }
+        busy.set(true);
+        let request = pango_api::auth::TotpDisableRequest {
+            password: password(),
+            code: code.read().trim().to_owned(),
+        };
+        match api::post::<_, pango_api::auth::TotpStatus>("/me/totp/disable", &request).await {
+            Ok(_) => {
+                reset();
+                report_success("2단계 인증을 껐어요.");
+                status.restart();
+            }
+            Err(failure) => error.set(failure.message()),
+        }
+        busy.set(false);
+    };
+
+    let current = match &*status.read() {
+        Some(Ok(current)) => *current,
+        _ => return rsx! {},
+    };
+    rsx! {
+        Card { title: "2단계 인증",
+            action: rsx! {
+                if current.enabled {
+                    Badge { tone: Tone::Success, "켜짐" }
+                } else {
+                    Badge { tone: Tone::Neutral, "꺼짐" }
+                }
+            },
+            p { class: "field-hint",
+                "켜면 로그인할 때 비밀번호와 함께 인증 앱(Google Authenticator, 1Password 등)의 6자리 코드를 넣어요."
+            }
+            FormError { message: error() }
+            match step() {
+                Some(TotpStep::Recovery(codes)) => rsx! {
+                    div { class: "callout callout-warning", role: "alert",
+                        div {
+                            p { strong { "복구 코드를 안전한 곳에 적어 두세요." } }
+                            p { "휴대폰을 잃어버렸을 때 인증 코드 대신 한 번씩 쓸 수 있어요. 이 화면을 닫으면 다시 볼 수 없어요." }
+                            ul { class: "recovery-codes",
+                                for item in codes {
+                                    li { key: "{item}", class: "mono-wrap", "{item}" }
+                                }
+                            }
+                        }
+                    }
+                    div { class: "panel-actions",
+                        Button { onclick: move |_| step.set(None), "적어 뒀어요" }
+                    }
+                },
+                Some(TotpStep::Confirm(setup)) => rsx! {
+                    ol { class: "checklist",
+                        li { "인증 앱에서 계정을 추가하고 아래 키를 직접 입력해요(시간 기준, 6자리)." }
+                        li { "앱에 나온 6자리 코드를 입력해 확인해요." }
+                    }
+                    p { class: "mono-wrap totp-secret", {logic::group_secret(&setup.secret)} }
+                    p { class: "field-hint",
+                        a { href: "{setup.otpauth_uri}", "이 기기의 인증 앱으로 열기" }
+                    }
+                    form { class: "form", onsubmit: confirm,
+                        TextField {
+                            label: "인증 코드",
+                            value: code(),
+                            autocomplete: "one-time-code",
+                            maxlength: 10,
+                            required: true,
+                            oninput: move |value| code.set(value),
+                        }
+                        div { class: "panel-actions",
+                            Button { kind: ButtonKind::Grey, onclick: move |_| { reset(); step.set(None) }, "취소" }
+                            Button { submit: true, busy: busy(), "확인하고 켜기" }
+                        }
+                    }
+                },
+                Some(TotpStep::Password) => rsx! {
+                    form { class: "form", onsubmit: start,
+                        TextField {
+                            label: "지금 비밀번호",
+                            kind: "password",
+                            value: password(),
+                            autocomplete: "current-password",
+                            required: true,
+                            oninput: move |value| password.set(value),
+                        }
+                        div { class: "panel-actions",
+                            Button { kind: ButtonKind::Grey, onclick: move |_| { reset(); step.set(None) }, "취소" }
+                            Button { submit: true, busy: busy(), "다음" }
+                        }
+                    }
+                },
+                None if current.enabled => rsx! {
+                    p { class: "field-hint", "남은 복구 코드 {current.recovery_codes_left}개" }
+                    form { class: "form", onsubmit: disable,
+                        TextField {
+                            label: "지금 비밀번호",
+                            kind: "password",
+                            value: password(),
+                            autocomplete: "current-password",
+                            required: true,
+                            oninput: move |value| password.set(value),
+                        }
+                        TextField {
+                            label: "인증 코드 또는 복구 코드",
+                            value: code(),
+                            autocomplete: "one-time-code",
+                            maxlength: 20,
+                            required: true,
+                            oninput: move |value| code.set(value),
+                        }
+                        div { class: "panel-actions",
+                            Button { kind: ButtonKind::Grey, submit: true, busy: busy(), "2단계 인증 끄기" }
+                        }
+                    }
+                },
+                None => rsx! {
+                    div { class: "panel-actions",
+                        Button { onclick: move |_| step.set(Some(TotpStep::Password)), "2단계 인증 켜기" }
+                    }
+                },
+            }
+        }
+    }
+}
+
+pub mod logic {
+    /// 비밀키를 4글자씩 띄워 읽기 쉽게 한다.
+    pub fn group_secret(secret: &str) -> String {
+        secret
+            .as_bytes()
+            .chunks(4)
+            .map(|chunk| String::from_utf8_lossy(chunk).into_owned())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn secret_is_grouped_by_four() {
+            assert_eq!(group_secret("ABCDEFGHIJ"), "ABCD EFGH IJ");
+            assert_eq!(group_secret(""), "");
         }
     }
 }

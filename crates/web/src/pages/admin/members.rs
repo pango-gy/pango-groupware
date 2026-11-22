@@ -1477,6 +1477,7 @@ fn MemberDetailModal(
                 }
                 MemberBuzzSection { member_id: detail.summary.id, name: detail.summary.name.clone() }
                 MemberDevicesSection { member_id: detail.summary.id, name: detail.summary.name.clone() }
+                MemberTotpSection { member_id: detail.summary.id, name: detail.summary.name.clone() }
             }
         }
         {match pending() {
@@ -1511,6 +1512,68 @@ fn MemberDetailModal(
             },
             None => rsx! {},
         }}
+    }
+}
+
+/// 구성원의 2단계 인증. 켜져 있으면 초기화(휴대폰 분실 등)할 수 있다. 볼 수 없으면 그리지 않는다.
+#[component]
+fn MemberTotpSection(member_id: pango_core::id::MemberId, name: String) -> Element {
+    let path = format!("/admin/members/{member_id}/totp");
+    let mut status = use_resource({
+        let path = path.clone();
+        move || {
+            let path = path.clone();
+            async move { api::get::<pango_api::auth::MemberTotpDto>(&path).await }
+        }
+    });
+    let mut confirm = use_signal(|| false);
+    let mut busy = use_signal(|| false);
+    let enabled = match &*status.read() {
+        Some(Ok(current)) => current.enabled,
+        _ => return rsx! {},
+    };
+    let reset = move |_| {
+        let path = path.clone();
+        async move {
+            if busy() {
+                return;
+            }
+            busy.set(true);
+            match api::delete::<()>(&path).await {
+                Ok(()) => {
+                    report_success("2단계 인증을 초기화했어요.");
+                    status.restart();
+                }
+                Err(error) => report_error(&error),
+            }
+            confirm.set(false);
+            busy.set(false);
+        }
+    };
+    rsx! {
+        section { class: "member-section",
+            h3 { class: "sub-title", "2단계 인증" }
+            p { class: "field-hint", if enabled { "켜짐" } else { "꺼짐" } }
+            if enabled {
+                div { class: "modal-actions",
+                    Button { kind: ButtonKind::Grey, busy: busy(), onclick: move |_| confirm.set(true), "2단계 인증 초기화" }
+                }
+            }
+        }
+        if confirm() {
+            ConfirmModal {
+                title: "2단계 인증을 초기화할까요?",
+                confirm_label: "초기화",
+                danger: true,
+                busy: busy(),
+                onconfirm: reset,
+                oncancel: move |_| confirm.set(false),
+                p {
+                    strong { "{name}" }
+                    " 님은 비밀번호만으로 로그인하게 돼요. 본인 확인을 한 뒤 초기화하고, 다시 켜 달라고 안내해 주세요."
+                }
+            }
+        }
     }
 }
 

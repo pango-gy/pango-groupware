@@ -23,8 +23,48 @@ pub fn routes() -> Router<AppState> {
         .route("/me/sessions", get(list_sessions))
         .route("/me/sessions/{id}", delete(revoke_session))
         .route("/download-links", post(download_link))
+        .route("/me/totp", get(totp_status))
+        .route("/me/totp/setup", post(totp_setup))
+        .route("/me/totp/confirm", post(totp_confirm))
+        .route("/me/totp/disable", post(totp_disable))
 }
 
+async fn totp_status(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    Auth(ctx): Auth,
+) -> ServiceResult<Json<pango_api::auth::TotpStatus>> {
+    crate::service::totp::status(&state, &ctx).await.map(Json)
+}
+
+async fn totp_setup(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    Auth(ctx): Auth,
+    ApiJson(request): ApiJson<pango_api::auth::TotpSetupRequest>,
+) -> ServiceResult<Json<pango_api::auth::TotpSetup>> {
+    crate::service::totp::setup(&state, &ctx, &request)
+        .await
+        .map(Json)
+}
+
+async fn totp_confirm(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    Auth(ctx): Auth,
+    ApiJson(request): ApiJson<pango_api::auth::TotpConfirmRequest>,
+) -> ServiceResult<Json<pango_api::auth::RecoveryCodes>> {
+    crate::service::totp::confirm(&state, &ctx, &request)
+        .await
+        .map(Json)
+}
+
+async fn totp_disable(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    Auth(ctx): Auth,
+    ApiJson(request): ApiJson<pango_api::auth::TotpDisableRequest>,
+) -> ServiceResult<Json<pango_api::auth::TotpStatus>> {
+    crate::service::totp::disable(&state, &ctx, &request)
+        .await
+        .map(Json)
+}
 
 async fn download_link(
     axum::extract::State(state): axum::extract::State<AppState>,
