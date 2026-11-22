@@ -352,16 +352,32 @@ pub async fn purge(conn: &mut Conn, now: Timestamp, older_than: Timestamp) -> Db
         .execute(&mut *conn)
         .await?
         .rows_affected();
-    // 코드·토큰·요청이 하나도 남지 않은 클라이언트(연결이 끝났거나 등록만 한 것).
+    // 코드·토큰·요청이 하나도 남지 않은 클라이언트 중, 승인을 받은 적 없이 하루가 지났거나
+    // 마지막 승인에서 1년이 지난 것. 승인을 받은 클라이언트는 claude.ai가 client_id를 다시 쓴다.
+    let stale = older_than
+        .checked_add(-chrono::Duration::days(365))
+        .unwrap_or(older_than);
     removed += sqlx::query(
-        "DELETE FROM oauth_clients WHERE created_at <= ?
+        "DELETE FROM oauth_clients
+         WHERE ((last_used_at IS NULL AND created_at <= ?1) OR last_used_at <= ?2)
            AND NOT EXISTS (SELECT 1 FROM oauth_tokens t WHERE t.client_id = oauth_clients.client_id)
            AND NOT EXISTS (SELECT 1 FROM oauth_codes c WHERE c.client_id = oauth_clients.client_id)
            AND NOT EXISTS (SELECT 1 FROM oauth_requests r WHERE r.client_id = oauth_clients.client_id)",
     )
     .bind(older_than.as_millis())
+    .bind(stale.as_millis())
     .execute(conn)
     .await?
     .rows_affected();
     Ok(removed)
+}
+
+/// 클라이언트가 승인을 받았다고 표시한다(정리 작업이 오래 남겨 둔다).
+pub async fn mark_client_used(conn: &mut Conn, client_id: &str, now: Timestamp) -> DbResult<()> {
+    sqlx::query("UPDATE oauth_clients SET last_used_at = ? WHERE client_id = ?")
+        .bind(now.as_millis())
+        .bind(client_id)
+        .execute(conn)
+        .await?;
+    Ok(())
 }

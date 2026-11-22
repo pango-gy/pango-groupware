@@ -626,3 +626,36 @@ async fn codes_and_refresh_tokens_are_single_use_and_sessions_cut_access() {
         .await
         .expect(StatusCode::UNAUTHORIZED);
 }
+
+/// 승인을 받은 클라이언트는 연결이 모두 끝나도 남아, claude.ai가 저장해 둔 client_id로 다시
+/// 연결할 수 있다. 등록만 한 클라이언트는 정리된다.
+#[tokio::test]
+async fn cleanup_keeps_clients_that_were_granted() {
+    let app = app().await;
+    let member = app.add_member("kim", Role::Member, None).await;
+    let granted = register(&app).await;
+    connect(&app, &member, "groupware:read").await;
+    let probe = app
+        .root(Method::POST, "/oauth/register")
+        .json(&json!({ "client_name": "Probe", "redirect_uris": [CALLBACK], "token_endpoint_auth_method": "none" }))
+        .send()
+        .await
+        .expect(StatusCode::CREATED);
+    let probe = probe["client_id"].as_str().expect("client_id").to_owned();
+
+    // 토큰이 만료되고(갱신 토큰 포함) 그 뒤 하루가 넘게 지난다.
+    app.advance(chrono::Duration::days(100));
+    pango_server::service::maintenance::run_once(&app.state)
+        .await
+        .expect("cleanup");
+
+    let mut conn = app.state.read().await.expect("read");
+    assert!(pango_db::oauth::find_client(&mut conn, &granted)
+        .await
+        .expect("find")
+        .is_some());
+    assert!(pango_db::oauth::find_client(&mut conn, &probe)
+        .await
+        .expect("find")
+        .is_none());
+}

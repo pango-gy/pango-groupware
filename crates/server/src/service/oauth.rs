@@ -664,6 +664,7 @@ pub async fn decide(
                 },
             )
             .await?;
+            oauth::mark_client_used(conn, &request.client_id, now).await?;
             super::support::audit_as(
                 conn,
                 now,
@@ -694,6 +695,21 @@ pub async fn decide(
         }
         Err(error) => {
             tracing::error!(%error, "oauth code issue failed");
+            // 로그인이 만든 세션은 이미 커밋됐다. 아무도 토큰을 받지 못했으니 끊어 둔다
+            // (그러지 않으면 쓸 수 없는 "AI 연결" 기기가 남고 다시 시도할 때마다 늘어난다).
+            let revoked = state
+                .write(async |conn: &mut Conn| {
+                    let Some(session) = sessions::find_by_token_hash(conn, &token_hash).await?
+                    else {
+                        return Ok(());
+                    };
+                    sessions::revoke(conn, session.member_id, session.id, now).await?;
+                    Ok(())
+                })
+                .await;
+            if let Err(error) = revoked {
+                tracing::error!(%error, "could not revoke the session of a failed oauth grant");
+            }
             retry("잠시 후 다시 시도해 주세요.", false)
         }
     }
