@@ -96,6 +96,7 @@ impl DailyAccrual {
 pub async fn run_forever(state: AppState, every: std::time::Duration) {
     let mut ticker = tokio::time::interval(every);
     let mut accrual = DailyAccrual::default();
+    let mut retention = super::retention::DailyPurge::default();
     loop {
         ticker.tick().await;
         match run_once(&state).await {
@@ -106,6 +107,11 @@ pub async fn run_forever(state: AppState, every: std::time::Duration) {
             Ok(Some(result)) => tracing::info!(?result, "daily leave accrual done"),
             Ok(None) => {}
             Err(error) => tracing::warn!(%error, "daily leave accrual failed"),
+        }
+        match retention.run_if_due(&state).await {
+            Ok(Some(0) | None) => {}
+            Ok(Some(records)) => tracing::info!(records, "expired attendance records purged"),
+            Err(error) => tracing::warn!(%error, "retention purge failed"),
         }
     }
 }

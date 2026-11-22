@@ -25,6 +25,24 @@ pub fn routes() -> Router<AppState> {
             put(upsert_holiday).delete(delete_holiday),
         )
         .route("/admin/audit-log", get(audit_log_list))
+        .route("/admin/retention", get(get_retention).put(update_retention))
+}
+
+async fn get_retention(
+    State(state): State<AppState>,
+    Auth(ctx): Auth,
+) -> ServiceResult<Json<pango_api::admin::RetentionDto>> {
+    crate::service::retention::get(&state, &ctx).await.map(Json)
+}
+
+async fn update_retention(
+    State(state): State<AppState>,
+    Auth(ctx): Auth,
+    ApiJson(request): ApiJson<pango_api::Versioned<pango_api::admin::RetentionInput>>,
+) -> ServiceResult<Json<pango_api::admin::RetentionDto>> {
+    crate::service::retention::update(&state, &ctx, &request)
+        .await
+        .map(Json)
 }
 
 async fn public_settings(

@@ -24,6 +24,7 @@ pub mod notifications;
 pub mod org;
 pub mod outbound;
 pub mod reminders;
+pub mod retention;
 pub mod settings;
 pub mod setup;
 pub mod support;

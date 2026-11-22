@@ -133,3 +133,21 @@ pub struct AuditEntryDto {
     pub detail: Option<serde_json::Value>,
     pub ip: Option<String>,
 }
+
+/// 기록 보존 기간(`GET·PUT /admin/retention`). 바꾸기는 최고 관리자만.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RetentionDto {
+    /// 출퇴근 기록 보존 연수(3~10). `None`이면 지우지 않는다.
+    pub attendance_years: Option<u8>,
+    /// 지금 설정으로 다음 정리 때 지워질 근무일의 기준(이 날짜보다 이른 근무일). 설정이 없으면 `None`.
+    pub attendance_cutoff: Option<NaiveDate>,
+    /// 다음 정리 때 지워질 출퇴근 기록 수.
+    pub attendance_to_delete: u32,
+    pub version: i64,
+    pub updated_at: Timestamp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RetentionInput {
+    pub attendance_years: Option<u8>,
+}

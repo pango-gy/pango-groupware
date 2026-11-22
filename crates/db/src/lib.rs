@@ -21,6 +21,7 @@ pub mod notifications;
 pub mod org;
 pub mod outbound;
 pub mod pool;
+pub mod retention;
 pub mod sessions;
 pub mod settings;
 #[cfg(feature = "testing")]

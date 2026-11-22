@@ -385,6 +385,8 @@ pub const AUDIT_ACTIONS: &[(&str, &str)] = &[
     ("calendar.event_update", "공유 일정 수정"),
     ("calendar.event_delete", "공유 일정 삭제"),
     ("system.initialize", "초기 설정"),
+    ("retention.update", "기록 보존 기간 변경"),
+    ("retention.purge", "보존 기간 지난 출퇴근 기록 정리"),
 ];
 
 /// 알림 종류 코드와 문구. 알림 목록에서 제목 위에 붙인다.
@@ -1034,6 +1036,8 @@ mod tests {
         "notice.attachment.remove",
         "notice.create",
         "notice.update",
+        "retention.purge",
+        "retention.update",
         "position.archive",
         "position.create",
         "position.update",

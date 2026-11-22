@@ -13,7 +13,8 @@ use crate::format;
 use crate::session::use_session;
 use crate::ui::{
     report_error, report_success, resource_view, today, Button, ButtonKind, Card, ConfirmModal,
-    EmptyState, FormError, Icon, IconName, Modal, PageHeader, TextArea, TextField, YearSwitcher,
+    EmptyState, FormError, Icon, IconName, Modal, PageHeader, SelectField, TextArea, TextField,
+    YearSwitcher,
 };
 
 use logic::{
@@ -33,6 +34,110 @@ pub fn AdminPolicy() -> Element {
             })}
         }
         HolidaysCard {}
+        RetentionCard {}
+    }
+}
+
+/// 출퇴근 기록 보존 기간. 바꾸기는 최고 관리자만(관리자는 보기만).
+#[component]
+fn RetentionCard() -> Element {
+    let session = use_session();
+    let is_owner = session
+        .me()
+        .is_some_and(|me| me.role == pango_core::authz::Role::Owner);
+    let mut current = use_resource(|| async {
+        api::get::<pango_api::admin::RetentionDto>("/admin/retention").await
+    });
+    rsx! {
+        Card { title: "기록 보존 기간",
+            {resource_view(current, move |dto: pango_api::admin::RetentionDto| rsx! {
+                RetentionEditor { key: "{dto.version}", dto, editable: is_owner, onreload: move |_| current.restart() }
+            })}
+        }
+    }
+}
+
+#[component]
+fn RetentionEditor(
+    dto: pango_api::admin::RetentionDto,
+    editable: bool,
+    onreload: EventHandler<()>,
+) -> Element {
+    let mut years = use_signal(|| {
+        dto.attendance_years
+            .map(|y| y.to_string())
+            .unwrap_or_default()
+    });
+    let mut busy = use_signal(|| false);
+    let mut confirm = use_signal(|| false);
+    let options: Vec<(String, String)> = std::iter::once((String::new(), "지우지 않음".to_owned()))
+        .chain((3..=10).map(|y| (y.to_string(), format!("{y}년"))))
+        .collect();
+    let chosen = years.read().parse::<u8>().ok();
+    let save = move |_| async move {
+        if busy() {
+            return;
+        }
+        busy.set(true);
+        let request = Versioned {
+            version: dto.version,
+            data: pango_api::admin::RetentionInput {
+                attendance_years: years.read().parse::<u8>().ok(),
+            },
+        };
+        match api::put::<_, pango_api::admin::RetentionDto>("/admin/retention", &request).await {
+            Ok(_) => {
+                report_success("보존 기간을 저장했어요.");
+                onreload.call(());
+            }
+            Err(error) => report_error(&error),
+        }
+        confirm.set(false);
+        busy.set(false);
+    };
+    rsx! {
+        p { class: "field-hint",
+            "보존 기간이 지난 근무일의 출퇴근 기록과 수정 이력을 하루 한 번 지워요. 지운 기록은 되돌릴 수 없어요. "
+            "근로기준법의 보존 의무(3년)보다 짧게는 정할 수 없고, 휴가 기록과 결재 문서는 지우지 않아요."
+        }
+        if let (Some(cutoff), true) = (dto.attendance_cutoff, dto.attendance_years.is_some()) {
+            p { class: "field-hint",
+                "지금 설정이면 {format::date_ymd(cutoff)} 이전 근무일의 기록 {dto.attendance_to_delete}건이 다음 정리 때 지워져요."
+            }
+        }
+        SelectField {
+            label: "출퇴근 기록 보존",
+            value: years(),
+            options,
+            disabled: !editable,
+            onchange: move |value| years.set(value),
+        }
+        if editable {
+            div { class: "panel-actions",
+                Button {
+                    busy: busy(),
+                    disabled: chosen == dto.attendance_years,
+                    onclick: move |_| {
+                        // 지우는 쪽으로 바꿀 때만 한 번 더 확인한다.
+                        if chosen.is_some() { confirm.set(true) } else { spawn(save(())); }
+                    },
+                    "저장"
+                }
+            }
+        } else {
+            p { class: "field-hint", "보존 기간은 최고 관리자만 바꿀 수 있어요." }
+        }
+        if confirm() {
+            ConfirmModal {
+                title: "보존 기간을 바꿀까요?",
+                confirm_label: "저장",
+                danger: true,
+                busy: busy(),
+                onconfirm: move |_| save(()),
+                oncancel: move |_| confirm.set(false),
+                p { "{chosen.unwrap_or_default()}년이 지난 출퇴근 기록은 매일 자동으로 지워지고 되돌릴 수 없어요." }
+            }
+        }
     }
 }
 
