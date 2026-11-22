@@ -217,6 +217,28 @@ pub fn open_external(url: &str) {
     }
 }
 
+/// 라우터를 거치지 않고 주소창의 경로만 바꾼다. 라우터로 옮기면 화면을 새로 만들어 보던 상태가
+/// 사라지기 때문이다. 못 바꾸면 그대로 둔다(새로 고칠 때 이전 주소로 열릴 뿐이다).
+pub fn replace_address(path: &str) {
+    use js_sys::Reflect;
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    // `web_sys::History`는 이 crate의 web-sys 기능에 없어서 속성으로 꺼낸다.
+    let Ok(history) = Reflect::get(&window, &"history".into()) else {
+        return;
+    };
+    let Ok(replace) = Reflect::get(&history, &"replaceState".into()) else {
+        return;
+    };
+    let Ok(replace) = replace.dyn_into::<js_sys::Function>() else {
+        return;
+    };
+    // 라우터가 history.state에 둔 값(스크롤 위치 등)은 그대로 둔다.
+    let state = Reflect::get(&history, &"state".into()).unwrap_or(wasm_bindgen::JsValue::NULL);
+    let _ = replace.call3(&history, &state, &"".into(), &path.into());
+}
+
 /// 웹은 자기 출처로만 보내므로 서버 주소를 따로 두지 않는다.
 pub fn server_origin() -> Option<String> {
     None

@@ -89,6 +89,9 @@ pub fn open_external(url: &str) {
     run(format!("window.location.href = {};", js_string(url)));
 }
 
+/// 앱은 새로 고침이 없고 주소창도 없어 바꿀 주소가 없다.
+pub fn replace_address(_path: &str) {}
+
 pub fn focus_element(id: &str) {
     run(format!(
         "{{ const el = document.getElementById({}); if (el) {{ el.scrollIntoView(); \

@@ -34,6 +34,14 @@ use logic::{CorrectionSlot, CorrectionTarget, DayRow, MonthEndpoint, TodayStage}
 #[component]
 pub fn Attendance() -> Element {
     let mut today = use_resource(|| async { api::get::<TodayResponse>("/attendance/today").await });
+    // 앱을 켜 둔 채 날이 바뀌거나 다른 기기에서 출퇴근할 수 있다. 다시 보일 때마다 새로 읽는다.
+    use_future(move || async move {
+        loop {
+            if crate::platform::visibility_change().await {
+                today.restart();
+            }
+        }
+    });
     // 출퇴근하면 아래 월별 기록을, 정정을 요청하면 요청 내역을 다시 읽는다.
     let mut revision = use_signal(|| 0_u32);
     let mut corrections = use_signal(|| 0_u32);

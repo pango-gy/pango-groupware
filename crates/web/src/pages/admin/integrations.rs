@@ -247,9 +247,13 @@ fn WebhookEditor(dto: WebhookSettingsDto, onreload: EventHandler<()>) -> Element
     let mut new_secret = use_signal(|| None::<String>);
     let mut testing = use_signal(|| false);
     let mut test_result = use_signal(|| None::<WebhookTestResult>);
-    let version = dto.version;
-    let saved_url = dto.url.clone();
-    let has_secret = dto.has_secret;
+    // 서명 키를 만든 뒤의 설정. 다시 읽으면 이 편집기가 새 버전으로 다시 만들어져(`key`) 저장하지
+    // 않은 켜기·주소 입력이 사라지므로, 키 만들기 응답의 버전만 이어서 쓴다.
+    let mut rotated = use_signal(|| None::<WebhookSettingsDto>);
+    let latest = rotated().unwrap_or_else(|| dto.clone());
+    let version = latest.version;
+    let saved_url = latest.url.clone();
+    let has_secret = latest.has_secret;
 
     let save = move |event: FormEvent| async move {
         event.prevent_default();
@@ -298,6 +302,7 @@ fn WebhookEditor(dto: WebhookSettingsDto, onreload: EventHandler<()>) -> Element
         match api::post::<_, WebhookSecretDto>(&format!("{PATH}/secret"), &request).await {
             Ok(created) => {
                 confirm_rotate.set(false);
+                rotated.set(Some(created.settings));
                 new_secret.set(Some(created.secret));
             }
             Err(failure) => {
@@ -330,7 +335,7 @@ fn WebhookEditor(dto: WebhookSettingsDto, onreload: EventHandler<()>) -> Element
         Card {
             title: "웹훅",
             action: rsx! {
-                if dto.enabled {
+                if latest.enabled {
                     Badge { tone: Tone::Success, "보내는 중" }
                 } else {
                     Badge { tone: Tone::Neutral, "꺼짐" }
@@ -407,7 +412,7 @@ fn WebhookEditor(dto: WebhookSettingsDto, onreload: EventHandler<()>) -> Element
             }
         }
         Card { title: "웹훅 발송 현황",
-            DeliveryStats { stats: dto.stats.clone() }
+            DeliveryStats { stats: latest.stats.clone() }
         }
         if confirm_rotate() {
             ConfirmModal {
@@ -431,10 +436,7 @@ fn WebhookEditor(dto: WebhookSettingsDto, onreload: EventHandler<()>) -> Element
                 secret,
                 long: true,
                 warning: "이 창을 닫으면 다시 볼 수 없어요. 지금 복사해 받는 쪽 설정에 넣어 주세요.",
-                onclose: move |_| {
-                    new_secret.set(None);
-                    onreload.call(());
-                },
+                onclose: move |_| new_secret.set(None),
             }
         }
     }

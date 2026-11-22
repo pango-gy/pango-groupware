@@ -26,8 +26,8 @@ use crate::session::use_session;
 use crate::text;
 use crate::ui::{
     loaded_or_empty, now, report_error, report_success, resource_view, today, Avatar, Badge,
-    Button, ButtonKind, ConfirmModal, EmptyState, Icon, IconName, Meta, Modal, MonthCalendar,
-    MonthSwitcher,
+    Button, ButtonKind, ConfirmModal, EmptyState, ErrorState, Icon, IconName, Meta, Modal,
+    MonthCalendar, MonthSwitcher,
 };
 
 use logic::{Filter, Mode, Prepared, Range};
@@ -76,7 +76,6 @@ mod viewport {
 fn CalendarScreen(open: Option<CalendarEventId>) -> Element {
     let tz = use_session().zone();
     let company = use_company();
-    let nav = navigator();
     let today = today(tz);
     let week = company.work_week();
 
@@ -88,11 +87,13 @@ fn CalendarScreen(open: Option<CalendarEventId>) -> Element {
     let mut show_leaves = use_signal(|| true);
     let compact = use_compact();
     let mut detail = use_signal(move || open);
+    // 알림으로 연 일정. 한 번 닫으면 비워 이후로는 라우트 값을 보지 않는다.
+    let mut from_link = use_signal(move || open);
     let mut form = use_signal(|| None::<FormMode>);
     let mut day_sheet = use_signal(|| None::<NaiveDate>);
     let mut picker = use_signal(|| false);
 
-    let calendars =
+    let mut calendars =
         use_resource(|| async { api::get::<Vec<CalendarDto>>("/calendar/calendars").await });
     let path = use_memo(move || {
         let range = logic::visible_range(mode(), anchor(), compact());
@@ -128,9 +129,11 @@ fn CalendarScreen(open: Option<CalendarEventId>) -> Element {
     };
     let close_detail = move |_| {
         detail.set(None);
-        if open.is_some() {
-            // 알림에서 왔으면 주소도 캘린더로 돌려 둔다(새로 고쳐도 다시 뜨지 않게).
-            nav.replace(Route::Calendar {});
+        if from_link.peek().is_some() {
+            from_link.set(None);
+            // 알림에서 왔으면 주소도 캘린더로 돌려 둔다(새로 고쳐도 다시 뜨지 않게). 라우터로
+            // 옮기면 화면이 새로 만들어져 보기(주·월, 숨긴 캘린더)가 처음으로 돌아가므로 주소만 바꾼다.
+            crate::platform::replace_address(&Route::Calendar {}.to_string());
         }
     };
 
@@ -140,17 +143,25 @@ fn CalendarScreen(open: Option<CalendarEventId>) -> Element {
     };
     let viewed_week = (current_mode == Mode::Week).then_some(range);
 
-    let side_list = rsx! {
-        CalendarList {
-            calendars: list.clone(),
-            hidden: filter.hidden.clone(),
-            holidays: filter.holidays,
-            leaves: filter.leaves,
-            ontoggle: toggle,
-            onholidays: move |on| show_holidays.set(on),
-            onleaves: move |on| show_leaves.set(on),
-        }
+    // 캘린더 목록을 못 읽으면 고르기·숨기기를 할 수 없다. 빈 목록 대신 실패와 다시 시도를 보인다.
+    let side_list = {
+        let hidden = filter.hidden.clone();
+        let (holidays, leaves) = (filter.holidays, filter.leaves);
+        resource_view(calendars, move |list: Vec<CalendarDto>| {
+            rsx! {
+                CalendarList {
+                    calendars: list,
+                    hidden,
+                    holidays,
+                    leaves,
+                    ontoggle: toggle,
+                    onholidays: move |on| show_holidays.set(on),
+                    onleaves: move |on| show_leaves.set(on),
+                }
+            }
+        })
     };
+    let calendars_failed = matches!(&*calendars.read(), Some(Err(_)));
 
     rsx! {
         div { class: "cal-layout",
@@ -220,6 +231,15 @@ fn CalendarScreen(open: Option<CalendarEventId>) -> Element {
                             "aria-label": "일정 등록",
                             onclick: move |_| form.set(Some(FormMode::New { date: anchor() })),
                             Icon { name: IconName::Plus }
+                        }
+                    }
+                }
+                // 모바일은 캘린더 목록이 선택 창 안에만 있어 실패를 여기서도 알린다.
+                if calendars_failed {
+                    div { class: "only-mobile",
+                        ErrorState {
+                            message: "캘린더 목록을 불러오지 못했어요.",
+                            onretry: move |_| calendars.restart(),
                         }
                     }
                 }
@@ -312,7 +332,7 @@ fn CalendarScreen(open: Option<CalendarEventId>) -> Element {
                 onchanged: move |_| view.restart(),
                 onloaded: move |event: EventDetail| {
                     // 알림에서 열었으면 그 일정이 있는 날로 옮겨 둔다.
-                    if open == Some(event.summary.id) {
+                    if from_link() == Some(event.summary.id) {
                         if let Some((start, _)) = logic::event_days(&event.summary, tz) {
                             go_to(start);
                         }
@@ -1193,14 +1213,20 @@ fn DetailBody(event: EventDetail, #[props(into)] calendar: String) -> Element {
 /// 홈의 "오늘 일정" 패널. 오늘(회사 시간대) 하루만 읽는다.
 #[component]
 pub fn TodayEvents(tz: Tz) -> Element {
-    let today = today(tz);
-    let events = use_resource(move || async move {
-        let range = Range {
-            from: today,
-            to: today,
-        };
+    let mut events = use_resource(move || async move {
+        let day = today(tz);
+        let range = Range { from: day, to: day };
         api::get::<CalendarView>(&logic::view_path(range, None)).await
     });
+    // 홈을 켜 둔 채 날이 바뀔 수 있다. 다시 보일 때 그날 일정을 새로 읽는다.
+    use_future(move || async move {
+        loop {
+            if crate::platform::visibility_change().await {
+                events.restart();
+            }
+        }
+    });
+    let today = today(tz);
     rsx! {
         crate::ui::Card {
             title: "오늘 일정",

@@ -172,6 +172,11 @@ pub fn AdminNotices() -> Element {
                         departments: department_options,
                         onclose: move |_| dialog.set(Dialog::Closed),
                         onsaved: saved,
+                        // 첨부가 일부 실패해 창이 열려 있어도 게시된 공지는 목록에 보여야 한다.
+                        onposted: move |_| {
+                            list.restart();
+                            refresh_badges();
+                        },
                     }
                 }
             },
@@ -245,6 +250,8 @@ fn NoticeEditor(
     departments: Vec<(String, String)>,
     onclose: EventHandler<()>,
     onsaved: EventHandler<()>,
+    /// 새 공지가 처음 게시됐을 때(첨부를 다 올리기 전).
+    onposted: Option<EventHandler<()>>,
 ) -> Element {
     let mut form = use_signal(|| initial.clone());
     let uploaded = use_signal(|| files.clone());
@@ -254,6 +261,9 @@ fn NoticeEditor(
     let mut busy = use_signal(|| false);
     // 편집기를 열 때 한 번 만든다. 두 번 눌러도 공지는 하나만 생긴다.
     let key = use_signal(api::new_idempotency_key);
+    // 새 공지를 게시한 뒤의 `(ID, 버전, 게시한 내용)`. 첨부 일부가 실패해 다시 누르면 같은 키로
+    // 다시 만들지 않고(본문이 다르면 서버가 거절한다) 이 공지에 이어서 처리한다.
+    let mut posted = use_signal(|| None::<(NoticeId, i64, NoticeForm)>);
 
     let submit = move |event: FormEvent| async move {
         event.prevent_default();
@@ -269,32 +279,55 @@ fn NoticeEditor(
         };
         busy.set(true);
         error.set(String::new());
-        let result = match target {
-            Some((id, version)) => {
-                let request = Versioned {
-                    version,
-                    data: input,
-                };
-                api::patch::<_, NoticeDetail>(&format!("/admin/notices/{id}"), &request).await
+        let sent = form.read().clone();
+        let result = if let Some((id, version)) = target {
+            let request = Versioned {
+                version,
+                data: input,
+            };
+            api::patch::<_, NoticeDetail>(&format!("/admin/notices/{id}"), &request)
+                .await
+                .map(|_| Vec::new())
+        } else {
+            let notice = match posted() {
+                Some((id, version, previous)) if previous == sent => Ok((id, version)),
+                // 게시한 뒤 내용을 고쳤으면 그 공지를 수정한다.
+                Some((id, version, _)) => {
+                    let request = Versioned {
+                        version,
+                        data: input,
+                    };
+                    api::patch::<_, NoticeDetail>(&format!("/admin/notices/{id}"), &request)
+                        .await
+                        .map(|detail| (detail.summary.id, detail.summary.version))
+                }
+                None => {
+                    let created =
+                        api::post_once::<_, NoticeDetail>("/admin/notices", &input, &key()).await;
+                    if created.is_ok() {
+                        if let Some(onposted) = onposted {
+                            onposted.call(());
+                        }
+                    }
+                    created.map(|detail| (detail.summary.id, detail.summary.version))
+                }
+            };
+            match notice {
+                Ok((id, version)) => {
+                    posted.set(Some((id, version, sent)));
+                    let files = pending.read().clone();
+                    let base = format!("/admin/notices/{id}/attachments");
+                    let (left, problems) = upload_pending(&base, files).await;
+                    pending.set(left);
+                    Ok(problems)
+                }
+                Err(failure) => Err(failure),
             }
-            None => api::post_once::<_, NoticeDetail>("/admin/notices", &input, &key()).await,
-        };
-        let result = match result {
-            Ok(created) if target.is_none() => {
-                let files = pending.read().clone();
-                let base = format!("/admin/notices/{}/attachments", created.summary.id);
-                let (left, problems) = upload_pending(&base, files).await;
-                pending.set(left);
-                Ok(problems)
-            }
-            Ok(_) => Ok(Vec::new()),
-            Err(failure) => Err(failure),
         };
         busy.set(false);
         match result {
             Ok(problems) if !problems.is_empty() => {
-                // 공지는 이미 게시됐다. 창을 열어 두고, 다시 "게시"를 누르면 같은 멱등성 키로
-                // 같은 공지를 돌려받아 남은 파일만 다시 올린다.
+                // 공지는 이미 게시됐다. 창을 열어 두고, 다시 "게시"를 누르면 남은 파일만 올린다.
                 error.set(format!(
                     "공지는 게시했지만 파일 {}개를 올리지 못했어요. 다시 게시를 누르면 남은 파일만 올려요.\n{}",
                     problems.len(),

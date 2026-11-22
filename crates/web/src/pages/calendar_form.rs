@@ -300,7 +300,11 @@ pub fn EventForm(
                         if !current.attendees.is_empty() {
                             match &*conflicts.read() {
                                 Some(Ok(Some(report))) => rsx! {
-                                    ConflictStrip { report: report.clone(), proposal: logic::proposal(&current, report.from, report.to, tz) }
+                                    ConflictStrip {
+                                        report: report.clone(),
+                                        proposal: logic::proposal(&current, report.from, report.to, tz),
+                                        editing: editing.map(|(id, _, _)| id),
+                                    }
                                 },
                                 Some(Err(error)) => rsx! {
                                     p { class: "field-hint", role: "status", "참석자 일정을 불러오지 못했어요. {error.message()}" }
@@ -324,10 +328,15 @@ pub fn EventForm(
 /// 참석자 일정 확인: 참석자마다 고른 날의 바쁜 시간을 하루 막대처럼 그린다.
 /// 제목은 서버가 준 것(내가 볼 수 있는 일정)만 보이고, 나머지는 "바쁨"이다.
 #[component]
-fn ConflictStrip(report: ConflictReport, proposal: Option<logic::Span>) -> Element {
+fn ConflictStrip(
+    report: ConflictReport,
+    proposal: Option<logic::Span>,
+    /// 고치는 중인 일정(새 일정이면 `None`).
+    editing: Option<CalendarEventId>,
+) -> Element {
     let tz = use_session().zone();
     let (work_start, work_end) = use_company().work_hours();
-    let rows = logic::busy_rows(&report, tz);
+    let rows = logic::busy_rows(&report, tz, editing);
     let bands = logic::work_bands(report.from, report.to, work_start, work_end);
     let ticks = logic::axis_ticks(report.from, report.to);
     rsx! {
@@ -393,7 +402,7 @@ pub(crate) mod logic {
     use pango_core::calendar_event::{
         parse_description, parse_location, MAX_ATTENDEES, MAX_CONFLICT_DAYS, MAX_EVENT_DAYS,
     };
-    use pango_core::id::{CalendarId, MemberId};
+    use pango_core::id::{CalendarEventId, CalendarId, MemberId};
     use pango_core::text::Title;
     use pango_core::time::{MinuteOfDay, Timestamp};
 
@@ -919,7 +928,12 @@ pub(crate) mod logic {
         pub summary: String,
     }
 
-    pub fn busy_rows(report: &ConflictReport, tz: Tz) -> Vec<BusyRow> {
+    /// `editing`은 고치는 중인 일정. 자기 자신과 겹친다고 보이지 않게 뺀다.
+    pub fn busy_rows(
+        report: &ConflictReport,
+        tz: Tz,
+        editing: Option<CalendarEventId>,
+    ) -> Vec<BusyRow> {
         report
             .members
             .iter()
@@ -927,6 +941,7 @@ pub(crate) mod logic {
                 let blocks: Vec<BusySpan> = member
                     .busy
                     .iter()
+                    .filter(|block| editing.is_none() || block.event_id != editing)
                     .filter_map(|block| {
                         let span = block_span(block, report.from, report.to, tz)?;
                         Some(BusySpan {
@@ -1518,7 +1533,7 @@ pub(crate) mod logic {
                     },
                 ],
             };
-            let rows = busy_rows(&report, tz);
+            let rows = busy_rows(&report, tz, None);
             assert_eq!(
                 rows[0].blocks[0].span,
                 Span {
@@ -1546,6 +1561,46 @@ pub(crate) mod logic {
             assert_eq!(rows[1].blocks[0].label, "종일 휴가(종일)");
             assert_eq!(rows[2].summary, "다: 겹치는 일정 없음");
             assert!(rows[0].summary.starts_with("가: 06:00–12:00 주간 회의"));
+        }
+
+        #[test]
+        fn the_event_being_edited_is_not_shown_as_busy() {
+            let tz = seoul();
+            let id = CalendarEventId::new();
+            let mut own = block(
+                BusyKind::Event,
+                "2026-11-20T06:00",
+                "2026-11-20T12:00",
+                Some("이 일정"),
+            );
+            own.event_id = Some(id);
+            let mut other = block(
+                BusyKind::Event,
+                "2026-11-20T13:00",
+                "2026-11-20T14:00",
+                Some("다른 일정"),
+            );
+            other.event_id = Some(CalendarEventId::new());
+            let report = ConflictReport {
+                from: d("2026-11-20"),
+                to: d("2026-11-20"),
+                members: vec![MemberBusy {
+                    member_id: MemberId::new(),
+                    member_name: "가".into(),
+                    busy: vec![
+                        own,
+                        other,
+                        block(BusyKind::Busy, "2026-11-20T15:00", "2026-11-20T16:00", None),
+                    ],
+                }],
+            };
+            assert_eq!(busy_rows(&report, tz, None)[0].blocks.len(), 3);
+            let labels: Vec<String> = busy_rows(&report, tz, Some(id))[0]
+                .blocks
+                .iter()
+                .map(|b| b.label.clone())
+                .collect();
+            assert_eq!(labels, ["13:00–14:00 다른 일정", "15:00–16:00 바쁨"]);
         }
 
         #[test]

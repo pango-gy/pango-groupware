@@ -25,6 +25,14 @@ pub fn Home() -> Element {
     let session = use_session();
     let tz = session.zone();
     let mut home = use_resource(|| async { api::get::<HomeResponse>("/home").await });
+    // 앱을 켜 둔 채 날이 바뀌거나 다른 기기에서 출퇴근할 수 있다. 다시 보일 때마다 새로 읽는다.
+    use_future(move || async move {
+        loop {
+            if crate::platform::visibility_change().await {
+                home.restart();
+            }
+        }
+    });
     let name = session.me().map(|me| me.name).unwrap_or_default();
     let at = now();
     let title = logic::greeting(&name, logic::local_hour(at, tz));

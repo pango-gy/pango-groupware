@@ -329,6 +329,16 @@ enum Editor {
     Edit(Box<FormDto>),
 }
 
+impl Editor {
+    /// 편집 창의 `key`. 대상이 바뀌면 입력 신호를 새로 만들도록 다시 마운트한다.
+    fn key(&self) -> String {
+        match self {
+            Self::New => "new".to_owned(),
+            Self::Edit(form) => form.id.to_string(),
+        }
+    }
+}
+
 #[component]
 pub fn AdminApprovalForms() -> Element {
     let session = use_session();
@@ -364,7 +374,10 @@ pub fn AdminApprovalForms() -> Element {
             Ok(copy) => {
                 report_success("사본을 만들었어요. 꺼진 상태이니 고친 뒤 켜 주세요.");
                 forms.restart();
-                editor.set(Some(Editor::Edit(Box::new(copy))));
+                // 복제를 기다리는 사이 다른 편집 창을 열었으면 그 입력을 덮어쓰지 않는다.
+                if editor.peek().is_none() {
+                    editor.set(Some(Editor::Edit(Box::new(copy))));
+                }
             }
             Err(failure) => report_error(&failure),
         }
@@ -475,6 +488,7 @@ pub fn AdminApprovalForms() -> Element {
         }
         if let Some(open) = editor() {
             FormEditor {
+                key: "{open.key()}",
                 form: match open {
                     Editor::New => None,
                     Editor::Edit(form) => Some(*form),

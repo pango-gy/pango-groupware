@@ -90,7 +90,13 @@ fn RetentionEditor(
                 report_success("보존 기간을 저장했어요.");
                 onreload.call(());
             }
-            Err(error) => report_error(&error),
+            Err(error) => {
+                report_error(&error);
+                // 남이 먼저 바꿨다. 새 값을 다시 읽어야 다음 저장이 통한다.
+                if error.code == "version_conflict" {
+                    onreload.call(());
+                }
+            }
         }
         confirm.set(false);
         busy.set(false);

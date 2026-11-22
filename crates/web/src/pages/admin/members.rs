@@ -1476,8 +1476,19 @@ fn MemberDetailModal(
                     }
                 }
                 MemberBuzzSection { member_id: detail.summary.id, name: detail.summary.name.clone() }
-                MemberDevicesSection { member_id: detail.summary.id, name: detail.summary.name.clone() }
-                MemberTotpSection { member_id: detail.summary.id, name: detail.summary.name.clone() }
+                // 비밀번호 초기화·정지·퇴사는 기기 로그인을 끊는다. 구성원이 바뀌면(버전) 다시 읽는다.
+                {rsx! {
+                    MemberDevicesSection {
+                        key: "{detail.summary.id}-{detail.version}",
+                        member_id: detail.summary.id,
+                        name: detail.summary.name.clone(),
+                    }
+                }}
+                MemberTotpSection {
+                    member_id: detail.summary.id,
+                    name: detail.summary.name.clone(),
+                    own: me.id == detail.summary.id,
+                }
             }
         }
         {match pending() {
@@ -1517,7 +1528,12 @@ fn MemberDetailModal(
 
 /// 구성원의 2단계 인증. 켜져 있으면 초기화(휴대폰 분실 등)할 수 있다. 볼 수 없으면 그리지 않는다.
 #[component]
-fn MemberTotpSection(member_id: pango_core::id::MemberId, name: String) -> Element {
+fn MemberTotpSection(
+    member_id: pango_core::id::MemberId,
+    name: String,
+    /// 내 계정이면 초기화할 수 없다(서버가 막는다). 내 정보에서 끄거나 다시 설정한다.
+    own: bool,
+) -> Element {
     let path = format!("/admin/members/{member_id}/totp");
     let mut status = use_resource({
         let path = path.clone();
@@ -1554,7 +1570,7 @@ fn MemberTotpSection(member_id: pango_core::id::MemberId, name: String) -> Eleme
         section { class: "member-section",
             h3 { class: "sub-title", "2단계 인증" }
             p { class: "field-hint", if enabled { "켜짐" } else { "꺼짐" } }
-            if enabled {
+            if enabled && !own {
                 div { class: "modal-actions",
                     Button { kind: ButtonKind::Grey, busy: busy(), onclick: move |_| confirm.set(true), "2단계 인증 초기화" }
                 }

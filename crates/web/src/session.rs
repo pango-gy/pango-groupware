@@ -238,7 +238,8 @@ impl Toasts {
         self.next_id.set(id + 1);
         self.items.write().push(Toast { id, kind, message });
         let mut items = self.items;
-        spawn(async move {
+        // 띄운 컴포넌트가 사라져도 토스트는 닫혀야 하므로 루트 범위에서 돌린다.
+        dioxus::dioxus_core::spawn_forever(async move {
             crate::platform::sleep_ms(Self::VISIBLE_MS).await;
             items.write().retain(|toast| toast.id != id);
         });
