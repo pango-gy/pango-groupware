@@ -1476,6 +1476,7 @@ fn MemberDetailModal(
                     }
                 }
                 MemberBuzzSection { member_id: detail.summary.id, name: detail.summary.name.clone() }
+                MemberDevicesSection { member_id: detail.summary.id, name: detail.summary.name.clone() }
             }
         }
         {match pending() {
@@ -1510,6 +1511,133 @@ fn MemberDetailModal(
             },
             None => rsx! {},
         }}
+    }
+}
+
+/// 구성원의 로그인 기기. 하나씩 또는 모두 로그아웃시킨다(분실·퇴사 처리 전 등).
+/// 볼 권한이 없으면(다른 관리자의 기기 등) 아무것도 그리지 않는다.
+#[component]
+fn MemberDevicesSection(member_id: pango_core::id::MemberId, name: String) -> Element {
+    let session = crate::session::use_session();
+    let tz = session.zone();
+    let path = format!("/admin/members/{member_id}/sessions");
+    let mut list = use_resource({
+        let path = path.clone();
+        move || {
+            let path = path.clone();
+            async move { api::get::<Vec<pango_api::auth::SessionInfo>>(&path).await }
+        }
+    });
+    let mut busy = use_signal(|| None::<String>);
+    let mut confirm_all = use_signal(|| false);
+    let sessions = match &*list.read() {
+        Some(Ok(sessions)) => sessions.clone(),
+        _ => return rsx! {},
+    };
+    let revoke_one = {
+        let path = path.clone();
+        move |id: String| {
+            let path = path.clone();
+            async move {
+                if busy().is_some() {
+                    return;
+                }
+                busy.set(Some(id.clone()));
+                match api::delete::<()>(&format!("{path}/{id}")).await {
+                    Ok(()) => {
+                        report_success("그 기기를 로그아웃시켰어요.");
+                        list.restart();
+                    }
+                    Err(error) => report_error(&error),
+                }
+                busy.set(None);
+            }
+        }
+    };
+    let revoke_all = move |_| {
+        let path = path.clone();
+        async move {
+            if busy().is_some() {
+                return;
+            }
+            busy.set(Some(String::new()));
+            match api::delete::<pango_api::auth::RevokedSessions>(&path).await {
+                Ok(done) => {
+                    report_success(format!("기기 {}대를 로그아웃시켰어요.", done.revoked));
+                    list.restart();
+                }
+                Err(error) => report_error(&error),
+            }
+            confirm_all.set(false);
+            busy.set(None);
+        }
+    };
+    let others = sessions.iter().filter(|s| !s.current).count();
+    rsx! {
+        section { class: "member-section",
+            h3 { class: "sub-title", "로그인된 기기 {sessions.len()}대" }
+            if sessions.is_empty() {
+                p { class: "field-hint", "로그인된 기기가 없어요." }
+            } else {
+                ul { class: "list",
+                    for item in sessions {
+                        li { key: "{item.id}", class: "list-row",
+                            div { class: "list-row-main",
+                                strong { {item.user_agent.clone().unwrap_or_else(|| "알 수 없는 기기".into())} }
+                                Meta {
+                                    items: vec![
+                                        format!("마지막 사용 {}", format::datetime(item.last_seen_at, tz)),
+                                        item.ip.clone().unwrap_or_default(),
+                                    ],
+                                }
+                            }
+                            div { class: "list-row-side",
+                                if item.current {
+                                    Badge { tone: Tone::Success, "지금 이 기기" }
+                                } else {
+                                    Button {
+                                        kind: ButtonKind::Grey,
+                                        small: true,
+                                        busy: busy().as_deref() == Some(item.id.to_string().as_str()),
+                                        disabled: busy().is_some(),
+                                        onclick: {
+                                            let id = item.id.to_string();
+                                            let revoke_one = revoke_one.clone();
+                                            move |_| revoke_one(id.clone())
+                                        },
+                                        "로그아웃"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if others > 0 {
+                    div { class: "modal-actions",
+                        Button {
+                            kind: ButtonKind::Grey,
+                            disabled: busy().is_some(),
+                            onclick: move |_| confirm_all.set(true),
+                            "모든 기기 로그아웃"
+                        }
+                    }
+                }
+            }
+        }
+        if confirm_all() {
+            ConfirmModal {
+                title: "모든 기기를 로그아웃시킬까요?",
+                confirm_label: "모두 로그아웃",
+                danger: true,
+                busy: busy().is_some(),
+                onconfirm: revoke_all,
+                oncancel: move |_| confirm_all.set(false),
+                p {
+                    strong { "{name}" }
+                    " 님이 쓰는 모든 기기에서 로그아웃돼요. 다시 로그인하면 쓸 수 있어요."
+                }
+            }
+        }
     }
 }
 

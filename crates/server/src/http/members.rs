@@ -1,14 +1,15 @@
 //! 구성원 디렉터리·팀·구성원 관리 경로.
 
 use axum::extract::State;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use http::StatusCode;
+use pango_api::auth::{RevokedSessions, SessionInfo};
 use pango_api::org::{
     ChangeRoleRequest, ChangeStatusRequest, CreateMemberRequest, IssuedCredentials, MemberDetail,
     MemberQuery, MemberSummary, UpdateMemberRequest,
 };
-use pango_core::id::MemberId;
+use pango_core::id::{MemberId, SessionId};
 
 use super::extract::{ApiJson, ApiPath, ApiQuery, Auth};
 use crate::error::ServiceResult;
@@ -25,6 +26,14 @@ pub fn routes() -> Router<AppState> {
         .route("/admin/members/{id}/status", post(change_status))
         .route("/admin/members/{id}/role", post(change_role))
         .route("/admin/members/{id}/reset-password", post(reset_password))
+        .route(
+            "/admin/members/{id}/sessions",
+            get(member_sessions).delete(revoke_member_sessions),
+        )
+        .route(
+            "/admin/members/{id}/sessions/{session_id}",
+            delete(revoke_member_session),
+        )
 }
 
 async fn list_directory(
@@ -116,4 +125,32 @@ async fn reset_password(
     ApiPath(id): ApiPath<MemberId>,
 ) -> ServiceResult<Json<IssuedCredentials>> {
     members::reset_password(&state, &ctx, id).await.map(Json)
+}
+
+async fn member_sessions(
+    State(state): State<AppState>,
+    Auth(ctx): Auth,
+    ApiPath(id): ApiPath<MemberId>,
+) -> ServiceResult<Json<Vec<SessionInfo>>> {
+    members::list_member_sessions(&state, &ctx, id)
+        .await
+        .map(Json)
+}
+
+async fn revoke_member_session(
+    State(state): State<AppState>,
+    Auth(ctx): Auth,
+    ApiPath((id, session_id)): ApiPath<(MemberId, SessionId)>,
+) -> ServiceResult<StatusCode> {
+    members::revoke_member_session(&state, &ctx, id, session_id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn revoke_member_sessions(
+    State(state): State<AppState>,
+    Auth(ctx): Auth,
+    ApiPath(id): ApiPath<MemberId>,
+) -> ServiceResult<Json<RevokedSessions>> {
+    let revoked = members::revoke_member_sessions(&state, &ctx, id).await?;
+    Ok(Json(RevokedSessions { revoked }))
 }

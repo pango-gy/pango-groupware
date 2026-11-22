@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 use chrono::NaiveDate;
+use pango_api::auth::SessionInfo;
 use pango_api::org::{
     ChangeRoleRequest, ChangeStatusRequest, CreateMemberRequest, IssuedCredentials, MemberDetail,
     MemberQuery, MemberSummary, UpdateMemberRequest,
@@ -10,7 +11,7 @@ use pango_api::org::{
 use pango_core::authz::{self, Role};
 use pango_core::calendar::check_date;
 use pango_core::error::{ConflictReason, ValidationReason};
-use pango_core::id::{DepartmentId, MemberId, PositionId};
+use pango_core::id::{DepartmentId, MemberId, PositionId, SessionId};
 use pango_core::member::{validate_hired_on, validate_retired_on, MemberStatus};
 use pango_core::password::PlainPassword;
 use pango_core::text::{optional, Email, LoginId, PersonName, Phone, SearchTerm};
@@ -20,8 +21,8 @@ use pango_db::members::{self, Member, MemberFilter};
 use pango_db::{org, sessions, Conn, DbError};
 
 use super::support::{
-    audit, current_actor, department_names, found, require_updated, Audit, AuthContext, Changes,
-    Company,
+    audit, current_actor, department_names, found, managed_member, require_updated, Audit,
+    AuthContext, Changes, Company,
 };
 use crate::error::{ServiceError, ServiceResult};
 use crate::security::generate_temporary_password;
@@ -620,4 +621,99 @@ pub async fn reset_password(
         member,
         temporary_password: temporary,
     })
+}
+
+// ── 로그인 기기(세션) ───────────────────────────────────────────────────
+
+/// 구성원의 로그인 기기(살아 있는 세션, 최근 사용 순). 계정 관리 권한이 있어야 한다
+/// (`authz::manage_account`: 관리자는 일반 구성원만, 최고 관리자는 전부).
+pub async fn list_member_sessions(
+    state: &AppState,
+    ctx: &AuthContext,
+    id: MemberId,
+) -> ServiceResult<Vec<SessionInfo>> {
+    authz::require_admin(&ctx.actor)?;
+    let mut conn = state.read().await?;
+    managed_member(&mut conn, ctx, id, authz::manage_account).await?;
+    let list = sessions::list_active(&mut conn, id, state.now()).await?;
+    Ok(list
+        .into_iter()
+        .map(|s| SessionInfo {
+            id: s.id,
+            current: s.id == ctx.session_id,
+            user_agent: s.user_agent,
+            ip: s.ip,
+            created_at: s.created_at,
+            last_seen_at: s.last_seen_at,
+        })
+        .collect())
+}
+
+/// 구성원의 기기 하나를 로그아웃시킨다. 이미 끊긴 그 구성원의 세션이면 성공(멱등),
+/// 다른 구성원의 세션이면 `NotFound`.
+pub async fn revoke_member_session(
+    state: &AppState,
+    ctx: &AuthContext,
+    id: MemberId,
+    session_id: SessionId,
+) -> ServiceResult<()> {
+    authz::require_admin(&ctx.actor)?;
+    let now = state.now();
+    state
+        .write(async |conn: &mut Conn| {
+            managed_member(conn, ctx, id, authz::manage_account).await?;
+            if !sessions::belongs_to(conn, id, session_id).await? {
+                return Err(DomainError::NotFound.into());
+            }
+            if sessions::revoke(conn, id, session_id, now).await? {
+                audit(
+                    conn,
+                    now,
+                    Audit {
+                        action: "member.session_revoke",
+                        target_type: "member",
+                        target_id: Some(id.to_string()),
+                        detail: Some(serde_json::json!({ "session_id": session_id })),
+                        ctx: Some(ctx),
+                    },
+                )
+                .await?;
+            }
+            Ok(())
+        })
+        .await
+}
+
+/// 구성원의 모든 기기를 로그아웃시킨다(분실 등). 끊은 세션 수를 돌려준다.
+///
+/// 본인 계정(최고 관리자가 자기 상세를 볼 때)이면 지금 쓰는 세션은 남긴다.
+pub async fn revoke_member_sessions(
+    state: &AppState,
+    ctx: &AuthContext,
+    id: MemberId,
+) -> ServiceResult<u64> {
+    authz::require_admin(&ctx.actor)?;
+    let now = state.now();
+    state
+        .write(async |conn: &mut Conn| {
+            managed_member(conn, ctx, id, authz::manage_account).await?;
+            let keep = (id == ctx.member_id()).then_some(ctx.session_id);
+            let revoked = sessions::revoke_all(conn, id, keep, now).await?;
+            if revoked > 0 {
+                audit(
+                    conn,
+                    now,
+                    Audit {
+                        action: "member.sessions_revoke_all",
+                        target_type: "member",
+                        target_id: Some(id.to_string()),
+                        detail: Some(serde_json::json!({ "revoked_sessions": revoked })),
+                        ctx: Some(ctx),
+                    },
+                )
+                .await?;
+            }
+            Ok(revoked)
+        })
+        .await
 }

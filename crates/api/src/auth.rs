@@ -93,6 +93,12 @@ pub struct DownloadLink {
     pub expires_at: Timestamp,
 }
 
+/// 한꺼번에 로그아웃시킨 결과.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RevokedSessions {
+    pub revoked: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
