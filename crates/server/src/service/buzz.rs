@@ -167,22 +167,39 @@ pub async fn start_link(
                 }
             }
             let current = buzz::find(conn, member.id).await?;
-            // 이미 확인을 마친 같은 계정이면 다시 확인할 필요가 없다.
             if let Some(account) = &current {
-                if account.status == AccountStatus::Verified && account.pubkey == pubkey {
-                    return Ok(None);
+                if account.status == AccountStatus::Verified {
+                    // 이미 확인을 마친 같은 계정이면 다시 확인할 필요가 없다.
+                    if account.pubkey == pubkey {
+                        return Ok(None);
+                    }
+                    // 다른 계정으로 바꾸려면 먼저 연결을 끊는다. 바로 바꾸면 새 계정을 확인하기도
+                    // 전에(오타라면 영영) 지금 계정으로 가던 알림이 멈춘다.
+                    return Err(conflict(ConflictReason::AlreadyExists));
                 }
             }
-            let window = current
-                .as_ref()
-                .and_then(|a| a.send_window_start.map(|start| (start, a.sends_in_window)))
-                .map(|(start, count)| SendWindow { start, count });
-            let last_sent = current.as_ref().and_then(|a| a.code_sent_at);
+            // 제한은 연결과 따로 기록해 두어, 연결을 끊었다 다시 시작해도 풀리지 않는다.
+            let sends = buzz::code_sends(conn, member.id).await?;
+            let window = sends.map(|s| SendWindow {
+                start: s.window_start,
+                count: s.sends_in_window,
+            });
+            let last_sent = sends.map(|s| s.last_sent_at);
             let window = next_send(last_sent, window, now).map_err(|wait| {
                 ServiceError::TooManyAttempts {
                     retry_after_secs: u64::try_from(wait.num_seconds().max(1)).unwrap_or(60),
                 }
             })?;
+            buzz::record_code_send(
+                conn,
+                member.id,
+                &buzz::CodeSends {
+                    last_sent_at: now,
+                    window_start: window.start,
+                    sends_in_window: window.count,
+                },
+            )
+            .await?;
             // 같은 계정으로 다시 보내면 열어 둔 DM을 그대로 쓴다.
             let dm_channel = current
                 .as_ref()

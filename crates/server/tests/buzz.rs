@@ -1185,3 +1185,40 @@ async fn admins_cannot_redirect_the_owners_or_other_admins_notifications() {
         .await
         .expect(StatusCode::OK);
 }
+
+#[tokio::test]
+async fn unlinking_does_not_reset_the_resend_limit() {
+    let (app, relay) = world().await;
+    let member = app.add_member("kim", Role::Member, None).await;
+    start(&app, &member.token, ALICE)
+        .await
+        .expect(StatusCode::OK);
+    app.delete("/me/buzz")
+        .bearer(&member.token)
+        .send()
+        .await
+        .expect(StatusCode::OK);
+
+    let again = start(&app, &member.token, ALICE).await;
+    assert_eq!(again.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        relay.events(9).len(),
+        1,
+        "끊었다 다시 시작해도 코드를 또 보내지 않는다"
+    );
+}
+
+#[tokio::test]
+async fn a_verified_link_is_kept_until_it_is_unlinked() {
+    let (app, relay) = world().await;
+    let member = app.add_member("kim", Role::Member, None).await;
+    link(&app, &relay, &member.token, ALICE).await;
+    app.advance(Duration::seconds(60));
+
+    start(&app, &member.token, BOB_HEX)
+        .await
+        .expect_error(StatusCode::CONFLICT, "already_exists");
+    let mine = my_buzz(&app, &member.token).await;
+    assert_eq!(mine["status"], "verified");
+    assert_eq!(mine["npub"], ALICE);
+}

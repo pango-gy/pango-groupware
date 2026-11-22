@@ -267,7 +267,53 @@ pub async fn cache_dm_channel(
     Ok(())
 }
 
-/// 연결을 지운다. 지웠으면 그 계정.
+/// 구성원의 확인 코드 발송 기록(재발송 제한용). 연결을 끊어도 남는다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CodeSends {
+    pub last_sent_at: Timestamp,
+    pub window_start: Timestamp,
+    pub sends_in_window: u32,
+}
+
+pub async fn code_sends(conn: &mut Conn, member_id: MemberId) -> DbResult<Option<CodeSends>> {
+    let row: Option<(i64, i64, i64)> = sqlx::query_as(
+        "SELECT last_sent_at, window_start, sends_in_window FROM buzz_code_sends
+         WHERE member_id = ?",
+    )
+    .bind(member_id.to_string())
+    .fetch_optional(&mut *conn)
+    .await?;
+    row.map(|(last, start, count)| {
+        Ok(CodeSends {
+            last_sent_at: codec::timestamp("last_sent_at", last)?,
+            window_start: codec::timestamp("window_start", start)?,
+            sends_in_window: codec::narrow("sends_in_window", count)?,
+        })
+    })
+    .transpose()
+}
+
+pub async fn record_code_send(
+    conn: &mut Conn,
+    member_id: MemberId,
+    sends: &CodeSends,
+) -> DbResult<()> {
+    sqlx::query(
+        "INSERT INTO buzz_code_sends (member_id, last_sent_at, window_start, sends_in_window)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT (member_id) DO UPDATE SET last_sent_at = excluded.last_sent_at,
+            window_start = excluded.window_start, sends_in_window = excluded.sends_in_window",
+    )
+    .bind(member_id.to_string())
+    .bind(sends.last_sent_at.as_millis())
+    .bind(sends.window_start.as_millis())
+    .bind(i64::from(sends.sends_in_window))
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+/// 연결을 지운다. 지웠으면 그 계정. 재발송 제한 기록(`buzz_code_sends`)은 남긴다.
 pub async fn remove(conn: &mut Conn, member_id: MemberId) -> DbResult<Option<BuzzAccount>> {
     let found = find(conn, member_id).await?;
     if found.is_some() {

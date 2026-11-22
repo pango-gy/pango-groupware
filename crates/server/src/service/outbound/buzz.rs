@@ -123,6 +123,15 @@ impl BuzzSender {
         })
         .await
         .map(|_| ())
+        .or_else(|error| {
+            // 2xx로 받은 뒤 본문만 이해하지 못했다면 릴레이는 이미 메시지를 받았다. 다시 보내면
+            // 서명 시각이 달라 다른 이벤트가 되므로 같은 DM이 또 간다.
+            if error.reason == BAD_RESPONSE {
+                Ok(())
+            } else {
+                Err(error)
+            }
+        })
     }
 
     /// DM으로 한 번 보낸다. 쓴 채널 ID를 돌려준다.
