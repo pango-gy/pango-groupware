@@ -45,12 +45,13 @@ pub async fn setup(
     ctx: &AuthContext,
     request: &TotpSetupRequest,
 ) -> ServiceResult<TotpSetup> {
-    let bucket = verify_own_password(state, ctx, &request.password, "password").await?;
+    let verified = verify_own_password(state, ctx, &request.password, "password").await?;
     let secret = totp::generate_secret()?;
     let now = state.now();
     let company = state
         .write(async |conn: &mut Conn| {
-            sessions::throttle_clear(conn, &bucket).await?;
+            verified.still_current_tx(conn, ctx, now).await?;
+            sessions::throttle_clear(conn, &verified.bucket).await?;
             if !store::put_pending(conn, ctx.member_id(), &secret, now).await? {
                 return Err(DomainError::Conflict(ConflictReason::AlreadyExists).into());
             }
@@ -169,10 +170,12 @@ pub async fn disable(
     ctx: &AuthContext,
     request: &TotpDisableRequest,
 ) -> ServiceResult<TotpStatus> {
-    let bucket = verify_own_password(state, ctx, &request.password, "password").await?;
+    let verified = verify_own_password(state, ctx, &request.password, "password").await?;
+    let bucket = &verified.bucket;
     let now = state.now();
     state
         .write(async |conn: &mut Conn| {
+            verified.still_current_tx(conn, ctx, now).await?;
             let current = store::find(conn, ctx.member_id())
                 .await?
                 .filter(|t| t.enabled())
@@ -189,7 +192,7 @@ pub async fn disable(
             {
                 return Err(wrong_code());
             }
-            sessions::throttle_clear(conn, &bucket).await?;
+            sessions::throttle_clear(conn, bucket).await?;
             store::remove(conn, ctx.member_id()).await?;
             audit(
                 conn,

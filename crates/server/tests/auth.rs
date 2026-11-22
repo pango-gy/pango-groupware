@@ -965,3 +965,82 @@ async fn audit_log_records_logins_without_secrets() {
     let dump = format!("{entries:?}");
     assert!(!dump.contains(&token) && !dump.contains(OWNER_PASSWORD));
 }
+
+/// 비밀번호를 확인한 뒤 쓰기 전에 다른 세션이 비밀번호를 바꿨다면(그래서 이 세션이 끊겼다면)
+/// 확인 결과로 아무것도 쓰지 못한다.
+#[tokio::test]
+async fn verified_password_goes_stale_when_password_changes_meanwhile() {
+    use pango_server::service::auth;
+    use pango_server::ServiceError;
+
+    let app = TestApp::new().await;
+    let victim = app.login_owner().await;
+    let attacker = app.login_owner().await;
+    let attacker_ctx = app.auth_context(&attacker).await;
+    let verified = auth::verify_own_password(
+        &app.state,
+        &attacker_ctx,
+        OWNER_PASSWORD,
+        "current_password",
+    )
+    .await
+    .expect("verified");
+
+    app.post("/me/password")
+        .bearer(&victim)
+        .json(&change(OWNER_PASSWORD, "victim-new-password-789"))
+        .send()
+        .await
+        .expect(StatusCode::OK);
+
+    let now = app.state.now();
+    let result = app
+        .state
+        .write(async |conn| verified.still_current_tx(conn, &attacker_ctx, now).await)
+        .await;
+    assert!(
+        matches!(
+            result,
+            Err(ServiceError::Domain(
+                pango_core::DomainError::Unauthenticated
+            ))
+        ),
+        "{result:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_host_command_recovers_an_owner_but_no_one_else() {
+    use pango_server::service::setup;
+
+    let app = TestApp::new().await;
+    let session = app.login_owner().await;
+    app.add_member("plain", pango_core::authz::Role::Member, None)
+        .await;
+    assert!(matches!(
+        setup::recover_owner(&app.state, "plain").await,
+        Err(pango_server::ServiceError::Domain(
+            pango_core::DomainError::Forbidden
+        ))
+    ));
+    assert!(setup::recover_owner(&app.state, "nobody").await.is_err());
+
+    let output = setup::recover_owner(&app.state, OWNER_LOGIN)
+        .await
+        .expect("recover");
+    assert_eq!(output.revoked_sessions, 1);
+    app.get("/me")
+        .bearer(&session)
+        .send()
+        .await
+        .expect_error(StatusCode::UNAUTHORIZED, "unauthenticated");
+    assert_eq!(
+        app.try_login(OWNER_LOGIN, OWNER_PASSWORD).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        app.try_login(OWNER_LOGIN, &output.temporary_password).await,
+        StatusCode::OK
+    );
+    assert_eq!(app.audit_entries("system.owner_recover").await.len(), 1);
+}

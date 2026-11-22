@@ -120,6 +120,12 @@ Docker라면 `docker exec pango pango-groupware backup /data/pango-$(date +%F).d
 
 **복구**: 서버를 멈추고, 데이터 디렉터리의 `pango.db`를 사본으로 바꾸고 `pango.db-wal`·`pango.db-shm`을 지운 뒤 다시 실행합니다. 복구한 시점 이후의 변경은 사라집니다.
 
+**최고 관리자 계정 복구**: 최고 관리자가 비밀번호나 2단계 인증 앱을 잃었고 다른 최고 관리자가 없으면 웹에서는 되살릴 수 없습니다. 서버에서 다음을 실행하면 임시 비밀번호를 한 번 보여 주고, 2단계 인증을 끄고, 그 계정의 모든 로그인을 끊습니다(서버가 도는 중에도 됩니다). 감사 로그에 `system.owner_recover`로 남습니다.
+
+```bash
+sudo -u pango pango-groupware --data-dir /var/lib/pango reset-owner admin
+```
+
 ## 6. 판올림
 
 새 실행 파일로 바꾸고 다시 실행하면 DB 마이그레이션이 시작할 때 자동으로 적용됩니다. 되돌릴 수 없으므로 **판올림 전에 백업**을 만듭니다. 새 기본 결재 양식도 시작할 때 채워집니다(이미 있는 양식은 그대로).

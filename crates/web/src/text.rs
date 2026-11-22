@@ -392,6 +392,7 @@ pub const AUDIT_ACTIONS: &[(&str, &str)] = &[
     ("calendar.event_update", "공유 일정 수정"),
     ("calendar.event_delete", "공유 일정 삭제"),
     ("system.initialize", "초기 설정"),
+    ("system.owner_recover", "최고 관리자 계정 복구(서버 명령)"),
     ("retention.update", "기록 보존 기간 변경"),
     ("retention.purge", "보존 기간 지난 출퇴근 기록 정리"),
 ];
@@ -1055,6 +1056,7 @@ mod tests {
         "position.update",
         "settings.update",
         "system.initialize",
+        "system.owner_recover",
     ];
 
     /// 서버가 만드는 알림 종류. `crates/server/src/service`의 `Notify { kind: "…" }`와

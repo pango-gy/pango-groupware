@@ -128,3 +128,64 @@ pub async fn initialize(state: &AppState, input: InitInput) -> ServiceResult<Ini
 pub async fn is_initialized(state: &AppState) -> ServiceResult<bool> {
     Ok(settings::get(&mut *state.read().await?).await?.is_some())
 }
+
+/// [`recover_owner`]의 결과. 임시 비밀번호는 한 번만 보여 준다.
+pub struct RecoverOutput {
+    pub temporary_password: String,
+    pub totp_removed: bool,
+    pub revoked_sessions: u64,
+}
+
+/// 최고 관리자 계정 복구(서버 호스트에서 실행하는 명령 전용).
+///
+/// 관리자는 최고 관리자의 비밀번호·2단계 인증을 초기화할 수 없고 최고 관리자는 본인을 초기화할
+/// 수 없으므로, 최고 관리자가 한 명뿐인데 비밀번호나 인증 앱을 잃으면 웹에서는 되살릴 길이 없다.
+/// 데이터 디렉터리에 접근할 수 있는 사람만 부를 수 있다는 것이 권한 확인이다.
+///
+/// 임시 비밀번호를 주고(첫 로그인 때 변경), 2단계 인증을 끄고, 모든 세션을 끊는다.
+/// 최고 관리자가 아니면 `Forbidden`, 없는 아이디면 `NotFound`.
+pub async fn recover_owner(state: &AppState, login_id: &str) -> ServiceResult<RecoverOutput> {
+    let login_id = LoginId::parse(login_id)?;
+    let temporary_password = generate_temporary_password()?;
+    let hash = state
+        .passwords
+        .hash(&PlainPassword::for_verification(&temporary_password)?)
+        .await?;
+    let now = state.now();
+    let (totp_removed, revoked_sessions) = state
+        .write(async |conn: &mut Conn| {
+            let credentials = members::find_credentials(conn, login_id.as_str())
+                .await?
+                .ok_or(DomainError::NotFound)?;
+            let owner = credentials.member;
+            if owner.role != Role::Owner {
+                return Err(DomainError::Forbidden.into());
+            }
+            members::set_password(conn, owner.id, &hash, true, now).await?;
+            let totp_removed = pango_db::totp::remove(conn, owner.id).await?;
+            let revoked_sessions =
+                pango_db::sessions::revoke_all(conn, owner.id, None, now).await?;
+            audit(
+                conn,
+                now,
+                Audit {
+                    action: "system.owner_recover",
+                    target_type: "member",
+                    target_id: Some(owner.id.to_string()),
+                    detail: Some(serde_json::json!({
+                        "totp_removed": totp_removed,
+                        "revoked_sessions": revoked_sessions,
+                    })),
+                    ctx: None,
+                },
+            )
+            .await?;
+            Ok((totp_removed, revoked_sessions))
+        })
+        .await?;
+    Ok(RecoverOutput {
+        temporary_password,
+        totp_removed,
+        revoked_sessions,
+    })
+}

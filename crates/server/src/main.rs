@@ -50,6 +50,14 @@ enum Command {
         /// 사본 파일 경로. 이미 있으면 덮어쓰지 않고 실패한다.
         dest: PathBuf,
     },
+    /// 최고 관리자 계정을 되살린다: 임시 비밀번호를 주고 2단계 인증을 끄고 모든 로그인을 끊는다.
+    ///
+    /// 최고 관리자가 비밀번호나 인증 앱을 잃었을 때 쓴다(웹에서는 다른 사람이 최고 관리자를
+    /// 초기화할 수 없다). 서버가 도는 중에도 된다.
+    ResetOwner {
+        /// 최고 관리자 로그인 아이디.
+        login_id: String,
+    },
     /// 서버를 실행한다.
     Serve {
         #[arg(long, env = "PANGO_BIND", default_value = "127.0.0.1:8080")]
@@ -135,6 +143,23 @@ async fn run(cli: Cli) -> Result<(), AnyError> {
             // 마이그레이션을 돌리지 않는다(판올림 전 백업이 운영 DB를 바꾸지 않게).
             pango_db::backup(&path, &dest).await?;
             println!("백업을 만들었습니다: {}", dest.display());
+            Ok(())
+        }
+        Command::ResetOwner { login_id } => {
+            let path = cli.data_dir.join("pango.db");
+            if !path.exists() {
+                return Err(format!("데이터베이스가 없습니다: {}", path.display()).into());
+            }
+            let state = open_state(&cli.data_dir, Config::default()).await?;
+            let output = setup::recover_owner(&state, &login_id).await?;
+            println!("최고 관리자 계정을 되살렸습니다.");
+            println!("  로그인 아이디: {login_id}");
+            println!("  임시 비밀번호: {}", output.temporary_password);
+            if output.totp_removed {
+                println!("  2단계 인증을 껐습니다. 로그인한 뒤 다시 켜 주세요.");
+            }
+            println!("  끊은 로그인: {}개", output.revoked_sessions);
+            println!("임시 비밀번호는 다시 볼 수 없습니다. 첫 로그인 때 바꿔야 합니다.");
             Ok(())
         }
         Command::Serve {

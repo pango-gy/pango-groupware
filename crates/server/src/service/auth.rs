@@ -132,6 +132,10 @@ pub async fn login(
         Some(password) => state.passwords.verify(password, stored_hash).await?,
         None => false,
     };
+    let verified_hash = credentials
+        .as_ref()
+        .filter(|c| verified && c.member.status.can_sign_in())
+        .map(|c| c.password_hash.clone());
     let member = credentials
         .map(|c| c.member)
         .filter(|member| verified && member.status.can_sign_in());
@@ -146,9 +150,14 @@ pub async fn login(
     let issued = state
         .write(async |conn: &mut Conn| {
             // 실패한 시도는 1)에서 이미 기록됐다.
-            let Some(member) = member else {
+            let (Some(member), Some(verified_hash)) = (member, verified_hash.as_deref()) else {
                 return Ok(None);
             };
+            // 검증과 이 쓰기 사이에 비밀번호가 바뀌었거나 계정이 정지됐으면 세션을 주지 않는다.
+            // 그러지 않으면 비밀번호 변경이 기존 세션을 모두 끊은 직후 옛 비밀번호로 새 세션이 생긴다.
+            if !password_unchanged_tx(conn, member.id, verified_hash).await? {
+                return Ok(None);
+            }
             // 2단계 인증을 켠 계정은 코드까지 맞아야 한다(틀린 코드는 1)에서 시도로 이미 셌다).
             super::totp::second_factor_tx(conn, member.id, request.totp_code.as_deref(), now)
                 .await?;
@@ -408,14 +417,16 @@ pub async fn change_password(
         return Err(DomainError::Conflict(ConflictReason::PasswordReused).into());
     }
 
-    let bucket =
+    let verified =
         verify_own_password(state, ctx, &request.current_password, "current_password").await?;
 
     let new_hash = state.passwords.hash(&new_password).await?;
     state
         .write(async |conn: &mut Conn| {
+            verified.still_current_tx(conn, ctx, now).await?;
+            let bucket = &verified.bucket;
             members::set_password(conn, ctx.member_id(), &new_hash, false, now).await?;
-            sessions::throttle_clear(conn, &bucket).await?;
+            sessions::throttle_clear(conn, bucket).await?;
             let revoked =
                 sessions::revoke_all(conn, ctx.member_id(), Some(ctx.session_id), now).await?;
             audit(
@@ -437,13 +448,13 @@ pub async fn change_password(
 /// 로그인한 구성원의 지금 비밀번호를 다시 확인한다(비밀번호 변경, 2단계 인증 켜기·끄기).
 ///
 /// 탈취된 세션으로 비밀번호를 무제한 추측하지 못하게 로그인과 같은 한도를 건다. 틀리면 `field`를
-/// 가리키는 검증 오류. 맞으면 시도 기록의 이름을 돌려준다(성공한 쓰기 트랜잭션에서 지운다).
+/// 가리키는 검증 오류. 맞으면 쓰기 트랜잭션에서 [`VerifiedPassword::still_current_tx`]로 다시 확인한다.
 pub async fn verify_own_password(
     state: &AppState,
     ctx: &AuthContext,
     password: &str,
     field: &'static str,
-) -> ServiceResult<String> {
+) -> ServiceResult<VerifiedPassword> {
     let now = state.now();
     let window = state.config.login_account_window.num_milliseconds();
     let limit = state.config.login_account_limit;
@@ -471,7 +482,57 @@ pub async fn verify_own_password(
     if !verified {
         return Err(DomainError::validation(field, ValidationReason::InvalidFormat).into());
     }
-    Ok(bucket)
+    Ok(VerifiedPassword {
+        bucket,
+        hash: credentials.password_hash,
+    })
+}
+
+/// 확인을 마친 지금 비밀번호. 확인(읽기)과 쓰기 트랜잭션은 따로라 그 사이에 다른 요청이 비밀번호를
+/// 바꾸고 이 세션을 끊었을 수 있다.
+pub struct VerifiedPassword {
+    /// 시도 기록의 이름. 성공한 쓰기 트랜잭션에서 지운다.
+    pub bucket: String,
+    hash: String,
+}
+
+impl std::fmt::Debug for VerifiedPassword {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VerifiedPassword")
+            .field("bucket", &self.bucket)
+            .finish_non_exhaustive()
+    }
+}
+
+impl VerifiedPassword {
+    /// 쓰기 트랜잭션 안에서: 비밀번호가 확인한 값 그대로이고 이 세션이 아직 유효한지.
+    /// 아니면 `Unauthenticated`(다시 로그인해야 한다).
+    pub async fn still_current_tx(
+        &self,
+        conn: &mut Conn,
+        ctx: &AuthContext,
+        now: Timestamp,
+    ) -> ServiceResult<()> {
+        let session_valid = sessions::find(conn, ctx.session_id)
+            .await?
+            .is_some_and(|session| session.is_valid_at(now));
+        if session_valid && password_unchanged_tx(conn, ctx.member_id(), &self.hash).await? {
+            Ok(())
+        } else {
+            Err(DomainError::Unauthenticated.into())
+        }
+    }
+}
+
+/// 저장된 비밀번호 해시가 `verified_hash` 그대로이고 로그인할 수 있는 상태인지.
+async fn password_unchanged_tx(
+    conn: &mut Conn,
+    member_id: pango_core::id::MemberId,
+    verified_hash: &str,
+) -> ServiceResult<bool> {
+    Ok(members::find_credentials_by_id(conn, member_id)
+        .await?
+        .is_some_and(|c| c.password_hash == verified_hash && c.member.status.can_sign_in()))
 }
 
 pub async fn list_sessions(state: &AppState, ctx: &AuthContext) -> ServiceResult<Vec<SessionInfo>> {
