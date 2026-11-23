@@ -179,8 +179,14 @@ html,
   background: var(--panel); border-right: 1px solid var(--grey-200);
   padding: 24px 12px 12px;
 }
+.brand-mark { flex: none; display: block; }
+.sidebar-brand {
+  display: flex; align-items: center; gap: 10px;
+  padding: 0 12px 20px; color: var(--grey-900); text-decoration: none;
+}
+.sidebar-brand:hover { text-decoration: none; }
 .sidebar-company {
-  padding: 0 12px 20px; font-size: 18px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.4;
+  font-size: 18px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.4;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .nav { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
@@ -228,6 +234,11 @@ html,
     padding: env(safe-area-inset-top) calc(8px + env(safe-area-inset-right)) 0 calc(20px + env(safe-area-inset-left));
     background: var(--panel);
   }
+  .appbar-brand {
+    display: flex; align-items: center; gap: 8px; min-width: 0;
+    color: var(--grey-900); text-decoration: none;
+  }
+  .appbar-brand:hover { text-decoration: none; }
   .appbar-title {
     font-weight: 600; font-size: 17px; min-width: 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -874,7 +885,10 @@ body:has(.action-bar) .toasts { bottom: calc(24px + var(--action-bar-h) + env(sa
   width: min(400px, 100%); display: flex; flex-direction: column; gap: 20px;
   background: var(--panel); border-radius: var(--radius-modal); padding: 40px 32px;
 }
-.auth-brand { font-size: 15px; font-weight: 700; color: var(--blue-strong); }
+.auth-brand {
+  display: inline-flex; align-items: center; gap: 10px;
+  font-size: 16px; font-weight: 700; letter-spacing: -0.02em; color: var(--grey-900);
+}
 .auth-title { font-size: 26px; font-weight: 700; line-height: 1.35; letter-spacing: -0.02em; margin-top: -12px; }
 .auth-hint { font-size: 13px; color: var(--grey-600); }
 .auth-link { text-align: center; font-size: 14px; }

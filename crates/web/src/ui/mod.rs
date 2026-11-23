@@ -207,6 +207,51 @@ pub fn Badge(#[props(default)] tone: Tone, children: Element) -> Element {
     rsx! { span { class: "badge {tone.class()}", {children} } }
 }
 
+/// 팡고 그룹웨어 브랜드 마크(인라인 SVG). 웹·모바일 어디서나 추가 요청 없이 선명하게 그린다.
+#[component]
+pub fn BrandMark(#[props(default = 26)] size: u32) -> Element {
+    let grad_id = format!("pango-brand-{size}");
+    let fill = format!("url(#{grad_id})");
+    rsx! {
+        svg {
+            class: "brand-mark",
+            width: "{size}",
+            height: "{size}",
+            view_box: "0 0 64 64",
+            fill: "none",
+            "aria-hidden": "true",
+            defs {
+                linearGradient {
+                    id: "{grad_id}",
+                    x1: "8",
+                    y1: "4",
+                    x2: "56",
+                    y2: "60",
+                    gradient_units: "userSpaceOnUse",
+                    stop { offset: "0%", stop_color: "#3B82F6" }
+                    stop { offset: "100%", stop_color: "#1B56D6" }
+                }
+            }
+            rect { x: "2", y: "2", width: "60", height: "60", rx: "15", fill: "{fill}" }
+            rect {
+                x: "2.5",
+                y: "2.5",
+                width: "59",
+                height: "59",
+                rx: "14.5",
+                stroke: "#FFFFFF",
+                stroke_opacity: "0.16",
+            }
+            path {
+                fill: "#FFFFFF",
+                fill_rule: "evenodd",
+                d: "M18 19a4 4 0 0 1 4-4h13.5a11.5 11.5 0 0 1 0 23H27.5v8a3 3 0 0 1-3 3H21a3 3 0 0 1-3-3V19Zm9.5 3v9h8a4.5 4.5 0 0 0 0-9h-8Z",
+            }
+            rect { x: "37", y: "40", width: "9", height: "9", rx: "3", fill: "#BFDBFE" }
+        }
+    }
+}
+
 /// 골격 한 줄의 폭(%). 글줄처럼 보이도록 줄마다 길이를 달리한다.
 pub fn skeleton_width(index: usize) -> u32 {
     const WIDTHS: [u32; 4] = [92, 100, 76, 58];

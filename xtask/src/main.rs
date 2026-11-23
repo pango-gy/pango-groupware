@@ -106,7 +106,15 @@ fn build_web(dev: bool) -> AnyResult<()> {
     })?;
 
     let web = root.join("crates/web");
-    std::fs::copy(web.join("assets/style.css"), assets.join("style.css"))?;
+    for file in [
+        "style.css",
+        "favicon.svg",
+        "favicon.ico",
+        "apple-touch-icon.png",
+        "og-image.png",
+    ] {
+        std::fs::copy(web.join("assets").join(file), assets.join(file))?;
+    }
     // 서체 파일은 이름에 내용이 바뀌는 일이 없어(버전 고정) 그대로 복사한다.
     copy_dir(&web.join("assets/fonts"), &assets.join("fonts"))?;
 
@@ -114,6 +122,8 @@ fn build_web(dev: bool) -> AnyResult<()> {
         assets.join("app.js"),
         assets.join("app_bg.wasm"),
         assets.join("style.css"),
+        assets.join("favicon.svg"),
+        assets.join("og-image.png"),
     ])?;
     std::fs::write(
         assets.join("boot.js"),

@@ -9,7 +9,7 @@ use crate::company::use_company;
 use crate::route::Route;
 use crate::session::{self, use_session, SessionState};
 use crate::text;
-use crate::ui::{EmptyState, ErrorState, Icon, IconName, Skeleton};
+use crate::ui::{BrandMark, EmptyState, ErrorState, Icon, IconName, Skeleton};
 
 /// 메뉴 한 줄.
 #[derive(Clone, PartialEq)]
@@ -121,7 +121,10 @@ fn Sidebar(me: Me) -> Element {
     let logout = move |_| session::logout(session, nav);
     rsx! {
         aside { class: "sidebar",
-            p { class: "sidebar-company", title: "{me.company_name}", "{me.company_name}" }
+            Link { class: "sidebar-brand", to: Route::Home {}, title: "{me.company_name}",
+                BrandMark { size: 26 }
+                span { class: "sidebar-company", "{me.company_name}" }
+            }
             nav { class: "nav", "aria-label": "주 메뉴",
                 for (title , items) in nav_sections(&me) {
                     if !title.is_empty() {
@@ -157,7 +160,10 @@ fn AppBar(me: Me) -> Element {
     let unread = use_badges().notifications();
     rsx! {
         header { class: "appbar",
-            span { class: "appbar-title", "{me.company_name}" }
+            Link { class: "appbar-brand", to: Route::Home {},
+                BrandMark { size: 24 }
+                span { class: "appbar-title", "{me.company_name}" }
+            }
             div { class: "appbar-actions",
                 Link {
                     class: "icon-btn icon-btn-badged",

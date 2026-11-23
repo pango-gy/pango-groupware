@@ -16,6 +16,9 @@ use rust_embed::RustEmbed;
 struct WebDist;
 
 const INDEX: &str = "index.html";
+/// 검색 엔진이 페이지의 `X-Robots-Tag: noindex`와 `<meta name="robots">`를 읽고
+/// 색인에서 완전히 제외할 수 있도록 루트는 열어 두고 API·OAuth 경로만 막는다.
+const ROBOTS_TXT: &str = "User-agent: *\nDisallow: /api/\nDisallow: /oauth/\n";
 /// 내용 해시가 붙은(`?v=`) 자산은 URL이 바뀌기 전까지 다시 받지 않아도 된다.
 const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 const REVALIDATE: &str = "no-cache";
@@ -153,6 +156,21 @@ pub async fn serve(method: Method, headers: HeaderMap, uri: Uri) -> Response {
     }
     let gzip = accepts_gzip(&headers);
     let path = uri.path().trim_start_matches('/');
+    if path == "robots.txt" {
+        let mut response = ROBOTS_TXT.into_response();
+        let headers = response.headers_mut();
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/plain; charset=utf-8"),
+        );
+        headers.insert(header::CACHE_CONTROL, HeaderValue::from_static(REVALIDATE));
+        return response;
+    }
+    if path == "favicon.ico" {
+        let cache = cache_policy(&uri);
+        return file_response("assets/favicon.ico", cache, false)
+            .unwrap_or_else(|| StatusCode::NOT_FOUND.into_response());
+    }
     if path.starts_with("assets/") {
         let cache = cache_policy(&uri);
         // 상위 경로 표기는 번들 밖을 가리키려는 시도이므로 없는 파일로 취급한다.
@@ -218,15 +236,23 @@ mod tests {
 
     #[tokio::test]
     async fn missing_assets_and_file_like_paths_are_404() {
-        for uri in [
-            "/assets/nope.js",
-            "/favicon.ico",
-            "/robots.txt",
-            "/assets/",
-            "/.env",
-            "/wp-login.php",
-        ] {
+        for uri in ["/assets/nope.js", "/assets/", "/.env", "/wp-login.php"] {
             assert_eq!(get(uri).await.status(), StatusCode::NOT_FOUND, "{uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn robots_txt_and_favicon_are_served() {
+        let robots = get("/robots.txt").await;
+        assert_eq!(robots.status(), StatusCode::OK);
+        assert_eq!(
+            robots.headers()[header::CONTENT_TYPE],
+            "text/plain; charset=utf-8"
+        );
+        let favicon = get("/favicon.ico").await;
+        if WebDist::get("assets/favicon.ico").is_some() {
+            assert_eq!(favicon.status(), StatusCode::OK);
+            assert_eq!(favicon.headers()[header::CONTENT_TYPE], "image/x-icon");
         }
     }
 

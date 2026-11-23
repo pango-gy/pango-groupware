@@ -8,7 +8,7 @@ use crate::api;
 use crate::platform::{self, server_url};
 use crate::route::Route;
 use crate::session::{self, use_session, SessionState};
-use crate::ui::{Button, ButtonKind, ErrorState, FormError, Skeleton, TextField};
+use crate::ui::{BrandMark, Button, ButtonKind, ErrorState, FormError, Skeleton, TextField};
 
 #[component]
 pub fn Login() -> Element {
@@ -84,7 +84,10 @@ pub fn Login() -> Element {
     rsx! {
         main { class: "auth",
             form { class: "auth-card", onsubmit: submit,
-                p { class: "auth-brand", "pango" }
+                div { class: "auth-brand",
+                    BrandMark { size: 30 }
+                    span { "팡고 그룹웨어" }
+                }
                 h1 { class: "auth-title", "로그인" }
                 FormError { message: error() }
                 TextField {
@@ -182,7 +185,10 @@ pub fn ServerSetup(onsaved: EventHandler<String>) -> Element {
     rsx! {
         main { class: "auth",
             form { class: "auth-card", onsubmit: submit,
-                p { class: "auth-brand", "pango" }
+                div { class: "auth-brand",
+                    BrandMark { size: 30 }
+                    span { "팡고 그룹웨어" }
+                }
                 h1 { class: "auth-title", "서버 연결" }
                 p { class: "auth-lead", "회사에서 쓰는 그룹웨어 주소를 입력해 주세요." }
                 FormError { message: error() }

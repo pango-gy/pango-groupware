@@ -96,6 +96,11 @@ pub fn router(state: AppState) -> Router {
         .layer(static_header("x-content-type-options", "nosniff"))
         .layer(static_header("x-frame-options", "DENY"))
         .layer(static_header("referrer-policy", "no-referrer"))
+        // 사내 그룹웨어는 어떤 검색 엔진에도 색인되지 않게 모든 응답에 noindex를 붙인다.
+        .layer(static_header(
+            "x-robots-tag",
+            "noindex, nofollow, noarchive",
+        ))
         .layer(SetResponseHeaderLayer::if_not_present(
             header::CONTENT_SECURITY_POLICY,
             HeaderValue::from_static(
