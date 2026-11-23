@@ -16,6 +16,11 @@ pub struct PlainPassword(String);
 impl PlainPassword {
     /// 새 비밀번호를 정책에 맞춰 검증한다.
     pub fn parse_new(raw: &str, login_id: &LoginId) -> DomainResult<Self> {
+        Self::parse_new_for_login(raw, login_id.as_str())
+    }
+
+    /// 저장된 로그인 ID 문자열(레거시 비이메일 계정 포함)을 기준으로 새 비밀번호 정책을 검사한다.
+    pub fn parse_new_for_login(raw: &str, login_id: &str) -> DomainResult<Self> {
         let err = |reason| DomainError::validation(FIELD, reason);
         // 바이트 길이를 먼저 확인해 거대한 입력을 순회하지 않는다.
         if raw.len() > MAX_CHARS * 4 {
@@ -35,14 +40,14 @@ impl PlainPassword {
             return Err(err(ValidationReason::InvalidCharacter));
         }
         let lowered = raw.to_lowercase();
+        let login_lower = login_id.trim().to_ascii_lowercase();
         let all_same = raw.chars().all(|c| raw.starts_with(c));
-        let local_part = login_id
-            .as_str()
+        let local_part = login_lower
             .split_once('@')
             .map(|(local, _)| local)
             .filter(|local| local.len() >= 4);
         if all_same
-            || lowered.contains(login_id.as_str())
+            || (!login_lower.is_empty() && lowered.contains(login_lower.as_str()))
             || local_part.is_some_and(|local| lowered.contains(local))
         {
             return Err(err(ValidationReason::InvalidFormat));

@@ -690,6 +690,8 @@ pub async fn delete_member(
             let cleared_heads = org::clear_head(conn, id, now).await?;
             let totp_removed = totp::remove(conn, id).await?;
             let buzz_removed = buzz::remove(conn, id).await?.is_some();
+            let closed_documents =
+                super::approval::close_drafter_in_progress_tx(conn, ctx, id, now).await?;
             audit(
                 conn,
                 now,
@@ -705,6 +707,7 @@ pub async fn delete_member(
                         "cleared_heads": cleared_heads,
                         "totp_removed": totp_removed,
                         "buzz_removed": buzz_removed,
+                        "closed_documents": closed_documents,
                     })),
                     ctx: Some(ctx),
                 },

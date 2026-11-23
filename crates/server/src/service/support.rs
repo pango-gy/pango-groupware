@@ -177,7 +177,7 @@ pub async fn personal_records_member(
 /// 결재선·참조처럼 **새 업무의 당사자**로 지정된 구성원이 모두 재직 중인지 확인한다.
 /// 없는 ID는 `NotFound`, 재직 중이 아니면 `Conflict(MemberInactive)`.
 pub async fn require_active_members(conn: &mut Conn, ids: &[MemberId]) -> ServiceResult<()> {
-    let found = members::find_many(conn, ids).await?;
+    let found = members::find_many_existing(conn, ids).await?;
     for id in ids {
         let member = found
             .iter()
@@ -257,8 +257,11 @@ pub struct Notify<'a> {
     pub dedupe_key: Option<&'a str>,
 }
 
-/// 새로 만들었으면 `true`(같은 `dedupe_key`가 이미 있으면 `false`).
+/// 새로 만들었으면 `true`(같은 `dedupe_key`가 이미 있거나 삭제된 계정이면 `false`).
 pub async fn notify(conn: &mut Conn, now: Timestamp, message: Notify<'_>) -> ServiceResult<bool> {
+    if members::find_existing(conn, message.to).await?.is_none() {
+        return Ok(false);
+    }
     let notification = Notification {
         id: NotificationId::new(),
         member_id: message.to,

@@ -1905,3 +1905,114 @@ async fn owners_deleting_each_other_concurrently_leave_one_owner() {
         assert_eq!(app.audit_entries("member.delete").await.len(), 1);
     }
 }
+
+#[tokio::test]
+async fn deleting_a_member_closes_pending_workflows_and_hides_tombstone_from_attendance() {
+    let w = org_world().await;
+
+    // 1. 출근만 찍어 둔 상태(퇴근 누락 후보) + 휴가 신청 진행 중(결재 대기).
+    w.app
+        .post("/attendance/clock-in")
+        .bearer(&w.member.token)
+        .json(&json!({ "work_type": "office" }))
+        .send()
+        .await
+        .expect(StatusCode::OK);
+    let types = w
+        .app
+        .get("/leave/types")
+        .bearer(&w.member.token)
+        .send()
+        .await
+        .expect(StatusCode::OK);
+    let annual_id = types
+        .as_array()
+        .expect("types")
+        .iter()
+        .find(|t| t["code"] == "annual")
+        .expect("annual")["id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let leave = w
+        .app
+        .post("/leave/requests")
+        .bearer(&w.member.token)
+        .json(&json!({
+            "leave_type_id": annual_id,
+            "start_date": "2026-03-10",
+            "end_date": "2026-03-10",
+            "unit": "full_day",
+            "reason": "개인 사유"
+        }))
+        .send()
+        .await
+        .expect(StatusCode::CREATED);
+    let doc_id = leave["document_id"].as_str().expect("doc_id").to_owned();
+
+    // 2. 최고 관리자가 해당 구성원을 삭제한다.
+    delete_member(&w.app, &w.owner, w.member.id, 1)
+        .await
+        .expect(StatusCode::OK);
+
+    // 진행 중이던 휴가·결재 문서가 자동 종료되어 대시보드 대기 건수가 0이 된다.
+    w.app.advance(chrono::Duration::hours(26));
+    let dashboard = w
+        .app
+        .get("/admin/dashboard")
+        .bearer(&w.owner)
+        .send()
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(dashboard["pending"]["leave_requests"], 0);
+    assert_eq!(dashboard["pending"]["approval_documents"], 0);
+    assert_eq!(
+        dashboard["missing_clock_out"]
+            .as_array()
+            .expect("arr")
+            .len(),
+        0,
+        "삭제된 계정의 미퇴근 기록은 대시보드에 나오지 않는다"
+    );
+    // 결재자가 뒤늦게 승인하려 해도 이미 종료된 문서다.
+    w.app
+        .post(&format!("/approval/documents/{doc_id}/approve"))
+        .bearer(&w.manager.token)
+        .json(&json!({}))
+        .send()
+        .await
+        .expect_error(StatusCode::CONFLICT, "document_already_closed");
+
+    // 근태 조회·CSV 내보내기에서 내부 톰스톤(`deleted:...`)이 노출되지 않는다.
+    let records = w
+        .app
+        .get("/admin/attendance?from=2026-03-01&to=2026-03-31")
+        .bearer(&w.owner)
+        .send()
+        .await
+        .expect(StatusCode::OK);
+    let item = &records["items"][0];
+    assert_eq!(item["login_id"], "");
+    let csv = w
+        .app
+        .get("/admin/attendance/export.csv?from=2026-03-01&to=2026-03-31")
+        .bearer(&w.owner)
+        .send()
+        .await;
+    assert_eq!(csv.status, StatusCode::OK);
+    assert!(
+        !csv.body.as_str().expect("csv").contains("deleted:"),
+        "CSV에 내부 삭제 표식이 새지 않는다"
+    );
+
+    // 삭제된 계정의 UUID로 새 캘린더 일정 충돌 조회 시 409가 아닌 404가 나온다.
+    w.app
+        .get(&format!(
+            "/calendar/conflicts?from=2026-03-01&to=2026-03-05&member_ids={}",
+            w.member.id
+        ))
+        .bearer(&w.owner)
+        .send()
+        .await
+        .expect_error(StatusCode::NOT_FOUND, "not_found");
+}

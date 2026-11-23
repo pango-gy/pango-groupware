@@ -160,7 +160,7 @@ fn AppBar(me: Me) -> Element {
     let unread = use_badges().notifications();
     rsx! {
         header { class: "appbar",
-            Link { class: "appbar-brand", to: Route::Home {},
+            Link { class: "appbar-brand", to: Route::Home {}, title: "{me.company_name}",
                 BrandMark { size: 24 }
                 span { class: "appbar-title", "{me.company_name}" }
             }

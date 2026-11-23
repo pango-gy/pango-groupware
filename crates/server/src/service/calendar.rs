@@ -242,7 +242,7 @@ fn window(zone: &WorkCalendarZone, range: DateRange) -> ServiceResult<EventWindo
 /// 새로 초대하는 구성원은 디렉터리에서 볼 수 있어야 하고(아니면 `NotFound`), 재직 중이어야
 /// 한다(`MemberInactive`, 정지·퇴사 계정이 보이는 관리자에게만 나온다).
 async fn check_invitees(conn: &mut Conn, actor: &Actor, ids: &[MemberId]) -> ServiceResult<()> {
-    let found = members::find_many(conn, ids).await?;
+    let found = members::find_many_existing(conn, ids).await?;
     for id in ids {
         let member = found
             .iter()
@@ -777,7 +777,7 @@ pub async fn conflicts(
     let mut snapshot = state.read_snapshot().await?;
     let conn: &mut Conn = &mut snapshot;
     let access = Access::load(conn, ctx.actor.clone()).await?;
-    let people = members::find_many(conn, &requested).await?;
+    let people = members::find_many_existing(conn, &requested).await?;
     for id in &requested {
         let member = people
             .iter()

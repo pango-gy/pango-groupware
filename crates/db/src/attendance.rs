@@ -407,7 +407,9 @@ pub async fn list_page(
         binds.extend([day.clone(), day, cursor.id.to_string()]);
     }
     let sql = format!(
-        "SELECT {RECORD_COLUMNS}, m.name AS member_name, m.login_id, d.name AS department_name
+        "SELECT {RECORD_COLUMNS}, m.name AS member_name,
+                CASE WHEN m.deleted_at IS NULL THEN m.login_id ELSE '' END AS login_id,
+                d.name AS department_name
          {DETAILED_FROM} WHERE {condition}
          ORDER BY r.work_date DESC, r.id DESC LIMIT ?"
     );
@@ -422,7 +424,9 @@ pub async fn list_for_export(
 ) -> DbResult<Vec<RecordWithMember>> {
     let (condition, binds) = filter_clause(filter);
     let sql = format!(
-        "SELECT {RECORD_COLUMNS}, m.name AS member_name, m.login_id, d.name AS department_name
+        "SELECT {RECORD_COLUMNS}, m.name AS member_name,
+                CASE WHEN m.deleted_at IS NULL THEN m.login_id ELSE '' END AS login_id,
+                d.name AS department_name
          {DETAILED_FROM} WHERE {condition}
          ORDER BY r.work_date, m.name, r.id"
     );
@@ -437,6 +441,7 @@ pub async fn list_open(conn: &mut Conn, range: DateRange) -> DbResult<Vec<Record
     let sql = format!(
         "SELECT {RECORD_COLUMNS}, m.name AS member_name, m.login_id, d.name AS department_name
          {DETAILED_FROM} WHERE r.work_date BETWEEN ? AND ? AND r.clock_out_at IS NULL
+           AND m.deleted_at IS NULL
          ORDER BY r.work_date DESC, m.name, r.id"
     );
     let binds = [

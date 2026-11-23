@@ -32,7 +32,7 @@
   --red: #e5364b;
   --red-strong: #c92a3e;
   --red-weak: #ffebee;
-  /* 아바타 바탕으로만 쓰는 옅은 색 둘(나머지 넷은 위의 weak) */
+  /* 보조 강조용 옅은 색(캘린더·상태 표시) */
   --violet-strong: #6b3fd4;
   --violet-weak: #f1ebff;
   --teal-strong: #0b7285;
@@ -500,7 +500,7 @@ html,
 }
 .segmented-item-active { background: var(--panel); color: var(--grey-900); }
 
-/* ── 배지·아바타·메타 ─────────────────────────────── */
+/* ── 배지·메타 ────────────────────────────────────── */
 .badge {
   display: inline-flex; align-items: center; flex: none; height: 24px; padding: 0 8px;
   border-radius: 999px; font-size: 12px; font-weight: 600; line-height: 1; white-space: nowrap;

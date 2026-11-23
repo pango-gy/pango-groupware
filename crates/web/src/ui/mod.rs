@@ -210,7 +210,11 @@ pub fn Badge(#[props(default)] tone: Tone, children: Element) -> Element {
 /// 팡고 그룹웨어 브랜드 마크(인라인 SVG). 웹·모바일 어디서나 추가 요청 없이 선명하게 그린다.
 #[component]
 pub fn BrandMark(#[props(default = 26)] size: u32) -> Element {
-    let grad_id = format!("pango-brand-{size}");
+    let grad_id = use_hook(|| {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        format!("pango-brand-{id}")
+    });
     let fill = format!("url(#{grad_id})");
     rsx! {
         svg {

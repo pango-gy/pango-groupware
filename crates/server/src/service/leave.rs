@@ -1127,8 +1127,10 @@ pub async fn admin_balances(
                 require_current_admin(conn, ctx).await?;
                 let mut refreshed = Vec::with_capacity(behind.len());
                 for id in &behind {
-                    // 읽은 뒤에 입사일이 정정됐을 수 있으므로 지금의 값으로 부여한다.
-                    let member = found(members::find(conn, *id).await?)?;
+                    // 읽은 뒤에 입사일이 정정됐거나 삭제됐을 수 있으므로 지금의 값으로 부여한다.
+                    let Some(member) = members::find_existing(conn, *id).await? else {
+                        continue;
+                    };
                     ensure_accrued_tx(conn, &member, today, now).await?;
                     let ledger = leave::list_ledger(conn, *id).await?;
                     refreshed.push((member, ledger));
@@ -1136,12 +1138,15 @@ pub async fn admin_balances(
                 Ok(refreshed)
             })
             .await?;
+        let mut refreshed_ids = std::collections::BTreeSet::new();
         for (member, ledger) in refreshed {
+            refreshed_ids.insert(member.id);
             ledgers.insert(member.id, ledger);
             if let Some(slot) = people.iter_mut().find(|slot| slot.id == member.id) {
                 *slot = member;
             }
         }
+        people.retain(|member| !behind.contains(&member.id) || refreshed_ids.contains(&member.id));
     }
 
     people

@@ -410,9 +410,9 @@ pub async fn change_password(
     request: &ChangePasswordRequest,
 ) -> ServiceResult<()> {
     let now = state.now();
-    let login_id = LoginId::parse(&ctx.member.login_id).map_err(ServiceError::internal)?;
-    let new_password = PlainPassword::parse_new(&request.new_password, &login_id)
-        .map_err(|e| e.with_field("new_password"))?;
+    let new_password =
+        PlainPassword::parse_new_for_login(&request.new_password, &ctx.member.login_id)
+            .map_err(|e| e.with_field("new_password"))?;
     if request.new_password == request.current_password {
         return Err(DomainError::Conflict(ConflictReason::PasswordReused).into());
     }

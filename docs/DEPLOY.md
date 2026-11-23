@@ -125,7 +125,7 @@ Docker라면 `docker exec pango pango-groupware backup /data/pango-$(date +%F).d
 **최고 관리자 계정 복구**: 최고 관리자가 비밀번호나 2단계 인증 앱을 잃었고 다른 최고 관리자가 없으면 웹에서는 되살릴 수 없습니다. 서버에서 다음을 실행하면 임시 비밀번호를 한 번 보여 주고, 2단계 인증을 끄고, 그 계정의 모든 로그인을 끊습니다(서버가 도는 중에도 됩니다). 감사 로그에 `system.owner_recover`로 남습니다.
 
 ```bash
-sudo -u pango pango-groupware --data-dir /var/lib/pango reset-owner admin
+sudo -u pango pango-groupware --data-dir /var/lib/pango reset-owner admin@example.com
 ```
 
 ## 6. 판올림

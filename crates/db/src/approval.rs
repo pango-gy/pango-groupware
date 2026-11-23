@@ -868,3 +868,19 @@ pub async fn count_in_progress(conn: &mut Conn) -> DbResult<i64> {
             .await?;
     Ok(count)
 }
+
+/// 특정 기안자의 진행 중인 결재 문서 ID 목록(계정 삭제 시 자동 종료용).
+pub async fn list_in_progress_by_drafter(
+    conn: &mut Conn,
+    drafter_id: MemberId,
+) -> DbResult<Vec<DocumentId>> {
+    let rows: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM approval_documents
+         WHERE drafter_id = ? AND status = 'in_progress'
+         ORDER BY created_at, id",
+    )
+    .bind(drafter_id.to_string())
+    .fetch_all(conn)
+    .await?;
+    rows.iter().map(|raw| codec::parse("id", raw)).collect()
+}

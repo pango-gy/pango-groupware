@@ -123,6 +123,8 @@ fn build_web(dev: bool) -> AnyResult<()> {
         assets.join("app_bg.wasm"),
         assets.join("style.css"),
         assets.join("favicon.svg"),
+        assets.join("favicon.ico"),
+        assets.join("apple-touch-icon.png"),
         assets.join("og-image.png"),
     ])?;
     std::fs::write(

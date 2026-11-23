@@ -473,7 +473,12 @@ async fn file_values_tx(
         .schema
         .validate_values(values)
         .map_err(|errors| invalid_fields("", errors))?;
-    let people = members_by_id(conn, normalized.members.iter().map(|(_, id)| *id)).await?;
+    let member_ids: Vec<MemberId> = normalized.members.iter().map(|(_, id)| *id).collect();
+    let people: BTreeMap<MemberId, Member> = members::find_many_existing(conn, &member_ids)
+        .await?
+        .into_iter()
+        .map(|member| (member.id, member))
+        .collect();
     let errors: Vec<FieldErrorDto> = normalized
         .members
         .iter()
@@ -1122,6 +1127,9 @@ async fn run_linked_effect_tx(
     // (신청 뒤에 조직장이 바뀌었거나 관리자에서 해제됐을 수 있다).
     if record.kind.is_system() && matches!(outcome, LinkedOutcome::Completed) {
         let requester = found(members::find(conn, record.drafter_id).await?)?;
+        if requester.is_deleted() {
+            return Err(DomainError::Conflict(ConflictReason::MemberInactive).into());
+        }
         if !can_resolve_for_tx(conn, actor_id, &requester).await? {
             return Err(DomainError::Forbidden.into());
         }
@@ -1651,6 +1659,22 @@ pub async fn close_linked_by_admin_tx(
         }
         Err(error) => Err(error.into()),
     }
+}
+
+/// 삭제된 구성원이 기안해 진행 중이던 모든 결재 문서(휴가·근태 정정 포함)를 종료한다.
+/// 호출한 쪽의 쓰기 트랜잭션에 묶인다. 종료한 문서 수를 돌려준다.
+pub async fn close_drafter_in_progress_tx(
+    conn: &mut Conn,
+    ctx: &AuthContext,
+    drafter_id: MemberId,
+    now: Timestamp,
+) -> ServiceResult<usize> {
+    let ids = approval::list_in_progress_by_drafter(conn, drafter_id).await?;
+    let reason = Reason::parse("계정 삭제로 자동 종료").map_err(ServiceError::internal)?;
+    for doc_id in &ids {
+        close_linked_by_admin_tx(conn, ctx, *doc_id, reason.clone(), now).await?;
+    }
+    Ok(ids.len())
 }
 
 /// 회수. 휴가 신청·근태 정정 문서라면 연결된 요청도 같은 트랜잭션에서 취소된다.

@@ -161,6 +161,27 @@ pub async fn find_many(conn: &mut Conn, ids: &[MemberId]) -> DbResult<Vec<Member
         .collect()
 }
 
+/// 삭제되지 않은 계정만 ID 묶음으로 찾는다. 새 업무(결재선·참석자 등)의 대상 검증에 쓴다.
+pub async fn find_many_existing(conn: &mut Conn, ids: &[MemberId]) -> DbResult<Vec<Member>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = codec::placeholders(ids.len());
+    let sql = format!(
+        "SELECT {MEMBER_COLUMNS} FROM members WHERE id IN ({placeholders}) AND deleted_at IS NULL"
+    );
+    let mut query = sqlx::query_as::<_, MemberRow>(&sql);
+    for id in ids {
+        query = query.bind(id.to_string());
+    }
+    query
+        .fetch_all(conn)
+        .await?
+        .into_iter()
+        .map(Member::try_from)
+        .collect()
+}
+
 #[derive(sqlx::FromRow)]
 struct CredentialsRow {
     #[sqlx(flatten)]

@@ -214,10 +214,19 @@ pub mod logic {
     impl ProfileForm {
         pub fn from_detail(detail: &MemberDetail) -> Self {
             let s = &detail.summary;
+            let email = s
+                .email
+                .clone()
+                .or_else(|| {
+                    Email::parse(&detail.login_id)
+                        .ok()
+                        .map(|e| e.as_str().to_owned())
+                })
+                .unwrap_or_default();
             Self {
                 login_id: detail.login_id.clone(),
                 name: s.name.clone(),
-                email: s.email.clone().unwrap_or_else(|| detail.login_id.clone()),
+                email,
                 phone: s.phone.clone().unwrap_or_default(),
                 department_id: s.department_id.map(|id| id.to_string()).unwrap_or_default(),
                 position_id: s.position_id.map(|id| id.to_string()).unwrap_or_default(),
@@ -1205,14 +1214,25 @@ fn MemberDetailModal(
         current.set(detail);
         onchanged.call(());
     };
-    // 실패 처리. 다른 사람이 먼저 고쳤으면 최신 값을 다시 읽는다.
+    // 실패 처리. 다른 사람이 먼저 고쳤으면 최신 값을 다시 읽고, 이미 삭제됐으면 모달을 닫는다.
     let fail = move |failure: api::ApiError| async move {
         show_failure(&failure, errors);
+        if failure.code == "not_found" {
+            onchanged.call(());
+            onclose.call(());
+            return;
+        }
         if failure.code == "version_conflict" {
             let id = current.peek().summary.id;
             match fetch_member(id).await {
                 Ok(fresh) => apply(fresh),
-                Err(reload) => report_error(&reload),
+                Err(reload) => {
+                    report_error(&reload);
+                    if reload.code == "not_found" {
+                        onchanged.call(());
+                        onclose.call(());
+                    }
+                }
             }
         }
     };
