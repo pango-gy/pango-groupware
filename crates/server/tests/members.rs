@@ -1770,3 +1770,138 @@ async fn reinstating_a_retiree_clears_an_archived_department() {
         .as_ref()
         .is_some_and(|d| d["cleared_department"] == true)));
 }
+
+// ── 계정 삭제 ─────────────────────────────────────────────────────────────
+
+async fn delete_member(app: &TestApp, token: &str, id: MemberId, version: i64) -> TestResponse {
+    app.delete(&format!("/admin/members/{id}?version={version}"))
+        .bearer(token)
+        .send()
+        .await
+}
+
+#[tokio::test]
+async fn owner_deletes_another_owner_and_frees_login_email() {
+    let w = org_world().await;
+    let second_owner = w.app.add_member("owner2", Role::Owner, None).await;
+
+    // 일반 구성원·관리자는 누구도 삭제할 수 없고, 최고 관리자도 본인 계정은 삭제할 수 없다.
+    delete_member(&w.app, &w.member.token, w.app.owner_id, 1)
+        .await
+        .expect_error(StatusCode::FORBIDDEN, "forbidden");
+    delete_member(&w.app, &w.admin.token, w.member.id, 1)
+        .await
+        .expect_error(StatusCode::FORBIDDEN, "forbidden");
+    delete_member(&w.app, &w.owner, w.app.owner_id, 1)
+        .await
+        .expect_error(StatusCode::FORBIDDEN, "forbidden");
+    delete_member(&w.app, &second_owner.token, w.app.owner_id, 99)
+        .await
+        .expect_error(StatusCode::CONFLICT, "version_conflict");
+
+    // 기존 최고 관리자가 만든 감사 기록·연차 원장이 있어도 두 번째 최고 관리자가 삭제할 수 있다.
+    w.app
+        .get("/admin/leave/balances")
+        .bearer(&w.owner)
+        .send()
+        .await
+        .expect(StatusCode::OK);
+    delete_member(&w.app, &second_owner.token, w.app.owner_id, 1)
+        .await
+        .expect(StatusCode::OK);
+
+    // 세션 즉시 무효화·재로그인 불가·단건/목록 조회에서 완전히 사라진다.
+    w.app
+        .get("/me")
+        .bearer(&w.owner)
+        .send()
+        .await
+        .expect_error(StatusCode::UNAUTHORIZED, "unauthenticated");
+    assert_eq!(
+        w.app.try_login(OWNER_LOGIN, OWNER_PASSWORD).await,
+        StatusCode::UNAUTHORIZED
+    );
+    w.app
+        .get(&format!("/members/{}", w.app.owner_id))
+        .bearer(&second_owner.token)
+        .send()
+        .await
+        .expect_error(StatusCode::NOT_FOUND, "not_found");
+    w.app
+        .get(&format!("/admin/members/{}", w.app.owner_id))
+        .bearer(&second_owner.token)
+        .send()
+        .await
+        .expect_error(StatusCode::NOT_FOUND, "not_found");
+    let admin_list = w
+        .app
+        .get("/admin/members?include_inactive=true")
+        .bearer(&second_owner.token)
+        .send()
+        .await
+        .expect(StatusCode::OK);
+    assert!(admin_list
+        .as_array()
+        .expect("array")
+        .iter()
+        .all(|m| m["id"] != w.app.owner_id.to_string()));
+    assert_eq!(active_owners(&w.app).await, 1);
+
+    // 같은 이메일을 새 계정에 다시 쓸 수 있고, 기존 감사 로그는 깨지지 않고 조회된다.
+    create(&w.app, &second_owner.token, &new_member(OWNER_LOGIN)).await;
+    w.app
+        .get("/admin/audit-log")
+        .bearer(&second_owner.token)
+        .send()
+        .await
+        .expect(StatusCode::OK);
+    let deletes = w.app.audit_entries("member.delete").await;
+    assert_eq!(deletes.len(), 1);
+    assert_eq!(deletes[0].actor_id, Some(second_owner.id));
+    assert_eq!(
+        deletes[0].detail.as_ref().expect("detail")["login_id"],
+        OWNER_LOGIN
+    );
+    // 삭제된 계정을 다시 삭제하려 하면 404.
+    delete_member(&w.app, &second_owner.token, w.app.owner_id, 2)
+        .await
+        .expect_error(StatusCode::NOT_FOUND, "not_found");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn owners_deleting_each_other_concurrently_leave_one_owner() {
+    for round in 0..5 {
+        let app = Arc::new(TestApp::new().await);
+        let first = app.login_owner().await;
+        let second = app.add_member("owner2", Role::Owner, None).await;
+        let pairs = [
+            (first.clone(), second.id),
+            (second.token.clone(), app.owner_id),
+        ];
+        let tasks: Vec<_> = pairs
+            .into_iter()
+            .map(|(token, target)| {
+                let app = app.clone();
+                tokio::spawn(async move { delete_member(&app, &token, target, 1).await })
+            })
+            .collect();
+        let mut statuses = Vec::new();
+        for task in tasks {
+            statuses.push(task.await.expect("join").status);
+        }
+        let ok = statuses.iter().filter(|s| **s == StatusCode::OK).count();
+        assert_eq!(ok, 1, "round {round}: {statuses:?}");
+        assert!(
+            statuses.iter().all(|s| [
+                StatusCode::OK,
+                StatusCode::UNAUTHORIZED,
+                StatusCode::FORBIDDEN,
+                StatusCode::CONFLICT,
+            ]
+            .contains(s)),
+            "{statuses:?}"
+        );
+        assert_eq!(active_owners(&app).await, 1, "round {round}");
+        assert_eq!(app.audit_entries("member.delete").await.len(), 1);
+    }
+}

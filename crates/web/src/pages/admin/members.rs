@@ -72,6 +72,7 @@ pub mod logic {
         pub change_status: bool,
         pub change_role: bool,
         pub reset_password: bool,
+        pub delete_account: bool,
     }
 
     pub fn allowed_actions(me: &Me, target: &MemberDetail) -> MemberActions {
@@ -80,18 +81,20 @@ pub mod logic {
         let manage = me.capabilities.admin
             && me.role.is_admin()
             && (me.role == Role::Owner || target.role == Role::Member);
+        let owner_other = me.capabilities.manage_roles && me.role == Role::Owner && !is_self;
         MemberActions {
             edit_profile: manage,
             change_status: manage && !is_self,
             reset_password: manage && !is_self,
-            change_role: me.capabilities.manage_roles && me.role == Role::Owner && !is_self,
+            change_role: owner_other,
+            delete_account: owner_other,
         }
     }
 
     /// 동작이 막힌 이유(안내 문구). 막힌 것이 없으면 `None`.
     pub fn restriction(me: &Me, target: &MemberDetail) -> Option<&'static str> {
         if me.id == target.summary.id {
-            Some("본인 계정의 상태·역할·비밀번호는 여기서 바꿀 수 없어요.")
+            Some("본인 계정의 상태·역할·비밀번호·삭제는 여기서 할 수 없어요.")
         } else if me.role != Role::Owner && target.role != Role::Member {
             Some("관리자 계정은 최고 관리자만 관리할 수 있어요.")
         } else {
@@ -398,15 +401,18 @@ pub mod logic {
             change_status: true,
             change_role: true,
             reset_password: true,
+            delete_account: true,
         };
         const NONE: MemberActions = MemberActions {
             edit_profile: false,
             change_status: false,
             change_role: false,
             reset_password: false,
+            delete_account: false,
         };
         const MANAGE: MemberActions = MemberActions {
             change_role: false,
+            delete_account: false,
             ..ALL
         };
 
@@ -464,6 +470,7 @@ pub mod logic {
             let mut owner = me(Role::Owner);
             owner.capabilities.manage_roles = false;
             assert!(!allowed_actions(&owner, &target(Role::Member)).change_role);
+            assert!(!allowed_actions(&owner, &target(Role::Member)).delete_account);
             owner.capabilities.admin = false;
             assert_eq!(
                 allowed_actions(&owner, &target(Role::Member)),
@@ -1163,6 +1170,7 @@ fn MemberCreateModal(
 enum Pending {
     Status,
     ResetPassword,
+    Delete,
 }
 
 async fn fetch_member(id: MemberId) -> ApiResult<MemberDetail> {
@@ -1312,6 +1320,29 @@ fn MemberDetailModal(
             Ok(credentials) => {
                 apply(credentials.member.clone());
                 onissued.call(credentials);
+            }
+            Err(failure) => fail(failure).await,
+        }
+    };
+
+    let delete_account = move || async move {
+        if busy() {
+            return;
+        }
+        let (id, version) = {
+            let m = current.read();
+            (m.summary.id, m.version)
+        };
+        busy.set(true);
+        errors.set(FormErrors::default());
+        let result = api::delete::<Empty>(&format!("/admin/members/{id}?version={version}")).await;
+        busy.set(false);
+        pending.set(None);
+        match result {
+            Ok(_) => {
+                report_success("계정을 삭제했어요.");
+                onchanged.call(());
+                onclose.call(());
             }
             Err(failure) => fail(failure).await,
         }
@@ -1479,6 +1510,22 @@ fn MemberDetailModal(
                     name: detail.summary.name.clone(),
                     own: me.id == detail.summary.id,
                 }
+                if actions.delete_account {
+                    section { class: "member-section",
+                        h3 { class: "sub-title", "계정 삭제" }
+                        p { class: "field-hint",
+                            "계정을 삭제하면 로그인과 구성원 목록에서 완전히 사라지고, 같은 이메일을 다시 쓸 수 있어요. 최고 관리자는 최소 한 명 남아야 해요."
+                        }
+                        div { class: "modal-actions",
+                            Button {
+                                kind: ButtonKind::Danger,
+                                busy: busy(),
+                                onclick: move |_| pending.set(Some(Pending::Delete)),
+                                "계정 삭제"
+                            }
+                        }
+                    }
+                }
             }
         }
         {match pending() {
@@ -1508,6 +1555,20 @@ fn MemberDetailModal(
                     p {
                         strong { "{detail.summary.name}" }
                         " 님의 지금 비밀번호는 더 이상 쓸 수 없게 돼요. 새 임시 비밀번호는 다음 화면에서 한 번만 보여 드려요."
+                    }
+                }
+            },
+            Some(Pending::Delete) => rsx! {
+                ConfirmModal {
+                    title: "계정을 삭제할까요?",
+                    confirm_label: "계정 삭제",
+                    danger: true,
+                    busy: busy(),
+                    onconfirm: move |_| delete_account(),
+                    oncancel: move |_| pending.set(None),
+                    p {
+                        strong { "{detail.summary.name}" }
+                        " ({detail.login_id}) 계정을 삭제해요. 로그인·목록에서 완전히 사라지고 기존 결재·근태·감사 기록만 남아요. 삭제한 계정은 되돌릴 수 없어요."
                     }
                 }
             },

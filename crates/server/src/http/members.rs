@@ -5,10 +5,12 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use http::StatusCode;
 use pango_api::auth::{RevokedSessions, SessionInfo};
+use pango_api::common::VersionQuery;
 use pango_api::org::{
     ChangeRoleRequest, ChangeStatusRequest, CreateMemberRequest, IssuedCredentials, MemberDetail,
     MemberQuery, MemberSummary, UpdateMemberRequest,
 };
+use pango_api::Empty;
 use pango_core::id::{MemberId, SessionId};
 
 use super::extract::{ApiJson, ApiPath, ApiQuery, Auth};
@@ -22,7 +24,10 @@ pub fn routes() -> Router<AppState> {
         .route("/members/{id}", get(get_member))
         .route("/team/members", get(team_members))
         .route("/admin/members", get(admin_list).post(create_member))
-        .route("/admin/members/{id}", get(admin_get).patch(update_member))
+        .route(
+            "/admin/members/{id}",
+            get(admin_get).patch(update_member).delete(delete_member),
+        )
         .route("/admin/members/{id}/status", post(change_status))
         .route("/admin/members/{id}/role", post(change_role))
         .route("/admin/members/{id}/reset-password", post(reset_password))
@@ -99,6 +104,16 @@ async fn update_member(
     members::update_member(&state, &ctx, id, &request)
         .await
         .map(Json)
+}
+
+async fn delete_member(
+    State(state): State<AppState>,
+    Auth(ctx): Auth,
+    ApiPath(id): ApiPath<MemberId>,
+    ApiQuery(query): ApiQuery<VersionQuery>,
+) -> ServiceResult<Json<Empty>> {
+    members::delete_member(&state, &ctx, id, query.version).await?;
+    Ok(Json(Empty {}))
 }
 
 async fn change_status(

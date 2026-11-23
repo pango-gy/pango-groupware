@@ -26,6 +26,8 @@ pub struct Member {
     pub must_change_password: bool,
     /// 계정을 만든 시각. [`insert`]에 넘긴 `now`와 같아야 한다(저장되는 값은 `now`다).
     pub created_at: Timestamp,
+    /// 삭제된 시각. 삭제되면 로그인·목록에서 완전히 제외된다.
+    pub deleted_at: Option<Timestamp>,
     pub version: i64,
 }
 
@@ -36,6 +38,10 @@ impl Member {
             role: self.role,
             department_id: self.department_id,
         }
+    }
+
+    pub fn is_deleted(&self) -> bool {
+        self.deleted_at.is_some()
     }
 }
 
@@ -71,6 +77,7 @@ struct MemberRow {
     retired_on: Option<String>,
     must_change_password: i64,
     created_at: i64,
+    deleted_at: Option<i64>,
     version: i64,
 }
 
@@ -92,13 +99,14 @@ impl TryFrom<MemberRow> for Member {
             retired_on: codec::date_opt("retired_on", row.retired_on.as_deref())?,
             must_change_password: row.must_change_password != 0,
             created_at: codec::timestamp("created_at", row.created_at)?,
+            deleted_at: codec::timestamp_opt("deleted_at", row.deleted_at)?,
             version: row.version,
         })
     }
 }
 
 const MEMBER_COLUMNS: &str = "id, login_id, name, email, phone, department_id, position_id, \
-     role, status, hired_on, retired_on, must_change_password, created_at, version";
+     role, status, hired_on, retired_on, must_change_password, created_at, deleted_at, version";
 
 pub async fn find(conn: &mut Conn, id: MemberId) -> DbResult<Option<Member>> {
     sqlx::query_as::<_, MemberRow>(&format!(
@@ -111,10 +119,22 @@ pub async fn find(conn: &mut Conn, id: MemberId) -> DbResult<Option<Member>> {
     .transpose()
 }
 
+/// 삭제되지 않은 계정을 찾는다. 관리·조회 API는 이 함수를 써서 삭제된 계정을 404로 숨긴다.
+pub async fn find_existing(conn: &mut Conn, id: MemberId) -> DbResult<Option<Member>> {
+    sqlx::query_as::<_, MemberRow>(&format!(
+        "SELECT {MEMBER_COLUMNS} FROM members WHERE id = ? AND deleted_at IS NULL"
+    ))
+    .bind(id.to_string())
+    .fetch_optional(conn)
+    .await?
+    .map(Member::try_from)
+    .transpose()
+}
+
 /// 로그인 아이디로 찾는다(아이디는 소문자로 저장된다).
 pub async fn find_by_login_id(conn: &mut Conn, login_id: &str) -> DbResult<Option<Member>> {
     sqlx::query_as::<_, MemberRow>(&format!(
-        "SELECT {MEMBER_COLUMNS} FROM members WHERE login_id = ?"
+        "SELECT {MEMBER_COLUMNS} FROM members WHERE login_id = ? AND deleted_at IS NULL"
     ))
     .bind(login_id)
     .fetch_optional(conn)
@@ -165,7 +185,7 @@ async fn credentials_where(
     value: &str,
 ) -> DbResult<Option<Credentials>> {
     let row = sqlx::query_as::<_, CredentialsRow>(&format!(
-        "SELECT {MEMBER_COLUMNS}, password_hash FROM members WHERE {condition}"
+        "SELECT {MEMBER_COLUMNS}, password_hash FROM members WHERE {condition} AND deleted_at IS NULL"
     ))
     .bind(value)
     .fetch_optional(conn)
@@ -224,7 +244,7 @@ fn like_contains(term: &str) -> String {
 
 /// 이름순 목록. 구성원 수는 사내 규모(수백 명)이므로 페이지를 나누지 않는다.
 pub async fn list(conn: &mut Conn, filter: &MemberFilter) -> DbResult<Vec<Member>> {
-    let mut sql = format!("SELECT {MEMBER_COLUMNS} FROM members WHERE 1 = 1");
+    let mut sql = format!("SELECT {MEMBER_COLUMNS} FROM members WHERE deleted_at IS NULL");
     let mut binds: Vec<String> = Vec::new();
     if !filter.statuses.is_empty() {
         sql.push_str(&format!(
@@ -307,7 +327,7 @@ pub async fn update(conn: &mut Conn, member: &Member, now: Timestamp) -> DbResul
         "UPDATE members SET
             name = ?, email = ?, phone = ?, department_id = ?, position_id = ?, role = ?,
             status = ?, hired_on = ?, retired_on = ?, updated_at = ?, version = version + 1
-         WHERE id = ? AND version = ?",
+         WHERE id = ? AND version = ? AND deleted_at IS NULL",
     )
     .bind(&member.name)
     .bind(&member.email)
@@ -326,6 +346,35 @@ pub async fn update(conn: &mut Conn, member: &Member, now: Timestamp) -> DbResul
     Ok(result.rows_affected() == 1)
 }
 
+/// 계정을 삭제 표시하고 로그인 이메일을 반환한다(`deleted:{id}`).
+/// `expected_version`이 맞고 아직 삭제되지 않았을 때만 갱신한다.
+pub async fn soft_delete(
+    conn: &mut Conn,
+    id: MemberId,
+    expected_version: i64,
+    retired_on: NaiveDate,
+    now: Timestamp,
+) -> DbResult<bool> {
+    let tombstone_login = format!("deleted:{id}");
+    let result = sqlx::query(
+        "UPDATE members SET
+            login_id = ?, email = NULL, phone = NULL, department_id = NULL, position_id = NULL,
+            status = 'retired', retired_on = COALESCE(retired_on, ?),
+            password_hash = '!deleted', must_change_password = 0,
+            deleted_at = ?, updated_at = ?, version = version + 1
+         WHERE id = ? AND version = ? AND deleted_at IS NULL",
+    )
+    .bind(&tombstone_login)
+    .bind(codec::date_text(retired_on))
+    .bind(now.as_millis())
+    .bind(now.as_millis())
+    .bind(id.to_string())
+    .bind(expected_version)
+    .execute(conn)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
 /// 비밀번호를 바꾼다.
 pub async fn set_password(
     conn: &mut Conn,
@@ -338,7 +387,7 @@ pub async fn set_password(
         "UPDATE members SET
             password_hash = ?, must_change_password = ?, password_changed_at = ?,
             updated_at = ?, version = version + 1
-         WHERE id = ?",
+         WHERE id = ? AND deleted_at IS NULL",
     )
     .bind(password_hash)
     .bind(must_change)
@@ -352,16 +401,17 @@ pub async fn set_password(
 
 /// 로그인할 수 있는 최고 관리자 수. 마지막 한 명을 없애지 않기 위해 쓴다.
 pub async fn count_active_owners(conn: &mut Conn) -> DbResult<i64> {
-    let (count,): (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM members WHERE role = 'owner' AND status = 'active'")
-            .fetch_one(conn)
-            .await?;
+    let (count,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM members WHERE role = 'owner' AND status = 'active' AND deleted_at IS NULL",
+    )
+    .fetch_one(conn)
+    .await?;
     Ok(count)
 }
 
 pub async fn count_in_department(conn: &mut Conn, department_id: DepartmentId) -> DbResult<i64> {
     let (count,): (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM members WHERE department_id = ? AND status <> 'retired'",
+        "SELECT COUNT(*) FROM members WHERE department_id = ? AND status <> 'retired' AND deleted_at IS NULL",
     )
     .bind(department_id.to_string())
     .fetch_one(conn)
@@ -371,7 +421,7 @@ pub async fn count_in_department(conn: &mut Conn, department_id: DepartmentId) -
 
 pub async fn count_with_position(conn: &mut Conn, position_id: PositionId) -> DbResult<i64> {
     let (count,): (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM members WHERE position_id = ? AND status <> 'retired'",
+        "SELECT COUNT(*) FROM members WHERE position_id = ? AND status <> 'retired' AND deleted_at IS NULL",
     )
     .bind(position_id.to_string())
     .fetch_one(conn)
@@ -383,7 +433,7 @@ pub async fn count_with_position(conn: &mut Conn, position_id: PositionId) -> Db
 pub async fn count_active_by_department(conn: &mut Conn) -> DbResult<Vec<(DepartmentId, i64)>> {
     let rows: Vec<(String, i64)> = sqlx::query_as(
         "SELECT department_id, COUNT(*) FROM members
-         WHERE status = 'active' AND department_id IS NOT NULL
+         WHERE status = 'active' AND department_id IS NOT NULL AND deleted_at IS NULL
          GROUP BY department_id",
     )
     .fetch_all(conn)

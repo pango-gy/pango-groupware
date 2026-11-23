@@ -434,7 +434,7 @@ pub fn push_csv_row<S: AsRef<str>>(out: &mut String, cells: impl IntoIterator<It
 pub async fn current_actor(conn: &mut Conn, ctx: &AuthContext) -> ServiceResult<Actor> {
     let member = pango_db::members::find(conn, ctx.member_id())
         .await?
-        .filter(|member| member.status.can_sign_in())
+        .filter(|member| member.status.can_sign_in() && !member.is_deleted())
         .ok_or(ServiceError::Domain(DomainError::Unauthenticated))?;
     build_actor(conn, &member).await
 }
@@ -463,7 +463,7 @@ pub async fn managed_member(
 ) -> ServiceResult<(Actor, Member)> {
     let actor = current_actor(conn, ctx).await?;
     pango_core::authz::require_admin(&actor)?;
-    let member = found(pango_db::members::find(conn, id).await?)?;
+    let member = found(pango_db::members::find_existing(conn, id).await?)?;
     check(&actor, &member.subject())?;
     Ok((actor, member))
 }
@@ -476,7 +476,7 @@ pub async fn managed_member(
 pub async fn current_member(conn: &mut Conn, ctx: &AuthContext) -> ServiceResult<Member> {
     pango_db::members::find(conn, ctx.member_id())
         .await?
-        .filter(|member| member.status.can_sign_in())
+        .filter(|member| member.status.can_sign_in() && !member.is_deleted())
         .ok_or(ServiceError::Domain(DomainError::Unauthenticated))
 }
 

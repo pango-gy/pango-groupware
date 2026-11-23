@@ -159,7 +159,7 @@ impl Access {
             return Ok(Some(Calendar::Department(department)));
         }
         let member = MemberId::from_uuid(id.as_uuid());
-        Ok(members::find(conn, member)
+        Ok(members::find_existing(conn, member)
             .await?
             .map(|_| Calendar::Personal(member)))
     }

@@ -226,7 +226,7 @@ pub async fn enqueue_tx(
     if !webhook && !buzz_on {
         return Ok(());
     }
-    let Some(member) = members::find(conn, member_id).await? else {
+    let Some(member) = members::find_existing(conn, member_id).await? else {
         return Ok(());
     };
     if member.status != MemberStatus::Active || !outbound::external_enabled(conn, member_id).await?

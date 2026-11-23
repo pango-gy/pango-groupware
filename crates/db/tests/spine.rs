@@ -40,6 +40,7 @@ fn member(login_id: &str) -> Member {
         retired_on: None,
         must_change_password: false,
         created_at: ts(1),
+        deleted_at: None,
         version: 1,
     }
 }

@@ -44,6 +44,7 @@ async fn insert_member(db: &Db, login_id: &str, name: &str, dept: Option<Departm
         retired_on: None,
         must_change_password: false,
         created_at: ts(1),
+        deleted_at: None,
         version: 1,
     };
     let mut tx = db.begin_write().await.expect("begin");

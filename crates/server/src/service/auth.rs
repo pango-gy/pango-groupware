@@ -267,7 +267,7 @@ async fn context_for(
         .ok_or_else(unauthenticated)?;
     let member = members::find(conn, session.member_id)
         .await?
-        .filter(|member| member.status.can_sign_in())
+        .filter(|member| member.status.can_sign_in() && !member.is_deleted())
         .ok_or_else(unauthenticated)?;
     let actor = build_actor(conn, &member).await?;
     Ok((

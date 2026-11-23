@@ -1189,7 +1189,7 @@ pub async fn admin_adjust(
     state
         .write_idempotent(ctx.member_id(), idempotency, async |conn: &mut Conn| {
             let actor = require_current_admin(conn, ctx).await?;
-            let member = found(members::find(conn, request.member_id).await?)?;
+            let member = found(members::find_existing(conn, request.member_id).await?)?;
             authz::edit_personal_records(&actor, &member.subject())?;
             let today = Company::load(conn).await?.today(now);
             ensure_accrued_tx(conn, &member, today, now).await?;

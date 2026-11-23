@@ -251,6 +251,17 @@ pub fn change_role(actor: &Actor, subject: &Subject) -> DomainResult<()> {
     }
 }
 
+/// 계정 삭제: 최고 관리자만, 본인 제외.
+/// 다른 최고 관리자를 삭제할 때는 서비스가 `keep_an_owner`로 최소 1명 유지도 함께 확인한다.
+pub fn delete_account(actor: &Actor, subject: &Subject) -> DomainResult<()> {
+    require_owner(actor)?;
+    if actor.member_id == subject.member_id {
+        Err(DomainError::Forbidden)
+    } else {
+        Ok(())
+    }
+}
+
 /// 구성원 디렉터리에서 정지·퇴사 계정까지 볼 수 있는지(관리자만).
 pub fn view_inactive_members(actor: &Actor) -> bool {
     actor.is_admin()
@@ -930,5 +941,31 @@ mod tests {
         // 본인 신청은 관리자·조직장이어도 승인할 수 없다.
         assert!(!can_resolve_personal_request(&admin, &self_subject(&admin)));
         assert!(!can_resolve_personal_request(&head, &self_subject(&head)));
+    }
+
+    #[test]
+    fn only_owners_can_delete_other_accounts() {
+        let owner = actor(Role::Owner, None, &[]);
+        let admin = actor(Role::Admin, None, &[]);
+        let member = actor(Role::Member, None, &[]);
+        for role in Role::ALL.iter().copied() {
+            let target = subject(role, None);
+            assert_eq!(delete_account(&owner, &target), Ok(()), "{role:?}");
+            assert_eq!(
+                delete_account(&admin, &target),
+                Err(DomainError::Forbidden),
+                "{role:?}"
+            );
+            assert_eq!(
+                delete_account(&member, &target),
+                Err(DomainError::Forbidden),
+                "{role:?}"
+            );
+        }
+        assert_eq!(
+            delete_account(&owner, &self_subject(&owner)),
+            Err(DomainError::Forbidden),
+            "본인 계정은 삭제할 수 없다"
+        );
     }
 }

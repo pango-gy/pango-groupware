@@ -67,7 +67,7 @@ pub(super) async fn active_department(
 /// 조직장은 지금 일할 수 있는 구성원이어야 한다. 관할 권한이 곧바로 생기기 때문이다.
 async fn require_head(conn: &mut Conn, head: Option<MemberId>) -> ServiceResult<()> {
     if let Some(id) = head {
-        found(members::find(conn, id).await?)?
+        found(members::find_existing(conn, id).await?)?
             .status
             .require_active()?;
     }

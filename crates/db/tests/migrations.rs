@@ -69,6 +69,7 @@ async fn add_member(conn: &mut Conn, login_id: &str, hired_on: &str) -> MemberId
         retired_on: None,
         must_change_password: false,
         created_at: ts(1),
+        deleted_at: None,
         version: 1,
     };
     members::insert(conn, &member, "hash", ts(1))

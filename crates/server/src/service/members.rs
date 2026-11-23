@@ -18,7 +18,7 @@ use pango_core::text::{optional, Email, LoginId, PersonName, Phone, SearchTerm};
 use pango_core::time::Timestamp;
 use pango_core::DomainError;
 use pango_db::members::{self, Member, MemberFilter};
-use pango_db::{org, sessions, Conn, DbError};
+use pango_db::{buzz, org, sessions, totp, Conn, DbError};
 
 use super::support::{
     audit, current_actor, department_names, found, managed_member, require_updated, Audit,
@@ -169,7 +169,7 @@ pub async fn get_member(
     id: MemberId,
 ) -> ServiceResult<MemberSummary> {
     let mut conn = state.read().await?;
-    let member = found(members::find(&mut conn, id).await?)?;
+    let member = found(members::find_existing(&mut conn, id).await?)?;
     authz::view_member(&ctx.actor, member.status)?;
     Ok(Names::load(&mut conn, std::slice::from_ref(&member))
         .await?
@@ -215,7 +215,7 @@ pub async fn admin_get(
 ) -> ServiceResult<MemberDetail> {
     authz::require_admin(&ctx.actor)?;
     let mut conn = state.read().await?;
-    let member = found(members::find(&mut conn, id).await?)?;
+    let member = found(members::find_existing(&mut conn, id).await?)?;
     detail(&mut conn, &member).await
 }
 
@@ -355,6 +355,7 @@ pub async fn create_member(
                 retired_on: None,
                 must_change_password: true,
                 created_at: now,
+                deleted_at: None,
                 version: 1,
             };
             members::insert(conn, &member, &hash, now)
@@ -407,7 +408,7 @@ pub async fn update_member(
         .write(async |conn: &mut Conn| {
             let actor = current_actor(conn, ctx).await?;
             authz::require_admin(&actor)?;
-            let current = found(members::find(conn, id).await?)?;
+            let current = found(members::find_existing(conn, id).await?)?;
             authz::manage_account(&actor, &current.subject())?;
             // 낡은 화면에서 보낸 요청이 다른 검증 오류로 보이지 않도록 먼저 비교한다.
             require_updated(current.version == request.version)?;
@@ -482,7 +483,7 @@ pub async fn change_status(
         .write(async |conn: &mut Conn| {
             let actor = current_actor(conn, ctx).await?;
             authz::require_admin(&actor)?;
-            let current = found(members::find(conn, id).await?)?;
+            let current = found(members::find_existing(conn, id).await?)?;
             authz::manage_other_account(&actor, &current.subject())?;
             let repeated = current.status == request.status
                 && (request.retired_on.is_none() || request.retired_on == current.retired_on);
@@ -579,7 +580,7 @@ pub async fn change_role(
         .write(async |conn: &mut Conn| {
             let actor = current_actor(conn, ctx).await?;
             authz::require_admin(&actor)?;
-            let current = found(members::find(conn, id).await?)?;
+            let current = found(members::find_existing(conn, id).await?)?;
             authz::change_role(&actor, &current.subject())?;
             let next = Member {
                 role: request.role,
@@ -629,7 +630,7 @@ pub async fn reset_password(
         .write(async |conn: &mut Conn| {
             let actor = current_actor(conn, ctx).await?;
             authz::require_admin(&actor)?;
-            let current = found(members::find(conn, id).await?)?;
+            let current = found(members::find_existing(conn, id).await?)?;
             authz::manage_other_account(&actor, &current.subject())?;
             members::set_password(conn, id, &hash, true, now).await?;
             let revoked_sessions = sessions::revoke_all(conn, id, None, now).await?;
@@ -652,6 +653,66 @@ pub async fn reset_password(
         member,
         temporary_password: temporary,
     })
+}
+
+/// 계정을 삭제한다(최고 관리자만, 본인 제외).
+///
+/// 다른 최고 관리자를 삭제할 때는 최소 한 명의 재직 최고 관리자가 남아야 한다(`last_owner`).
+/// 감사 로그·결재·근태·휴가 원장의 참조 무결성을 지키기 위해 행을 soft-delete 하고,
+/// 로그인 이메일은 즉시 반환하며 모든 세션·조직장 지정·2단계 인증·Buzz 연결을 해제한다.
+pub async fn delete_member(
+    state: &AppState,
+    ctx: &AuthContext,
+    id: MemberId,
+    version: i64,
+) -> ServiceResult<()> {
+    authz::require_owner(&ctx.actor)?;
+    let now = state.now();
+    state
+        .write(async |conn: &mut Conn| {
+            let actor = current_actor(conn, ctx).await?;
+            authz::require_owner(&actor)?;
+            let current = found(members::find_existing(conn, id).await?)?;
+            authz::delete_account(&actor, &current.subject())?;
+            require_updated(current.version == version)?;
+            let active_owners = members::count_active_owners(conn).await?;
+            authz::keep_an_owner(
+                (current.role, current.status),
+                (Role::Member, MemberStatus::Retired),
+                active_owners,
+            )?;
+            let today = Company::load(conn).await?.today(now);
+            let retired_on = current
+                .retired_on
+                .unwrap_or_else(|| today.max(current.hired_on));
+            require_updated(members::soft_delete(conn, id, version, retired_on, now).await?)?;
+            let revoked_sessions = sessions::revoke_all(conn, id, None, now).await?;
+            let cleared_heads = org::clear_head(conn, id, now).await?;
+            let totp_removed = totp::remove(conn, id).await?;
+            let buzz_removed = buzz::remove(conn, id).await?.is_some();
+            audit(
+                conn,
+                now,
+                Audit {
+                    action: "member.delete",
+                    target_type: "member",
+                    target_id: Some(id.to_string()),
+                    detail: Some(serde_json::json!({
+                        "login_id": current.login_id,
+                        "name": current.name,
+                        "role": current.role,
+                        "revoked_sessions": revoked_sessions,
+                        "cleared_heads": cleared_heads,
+                        "totp_removed": totp_removed,
+                        "buzz_removed": buzz_removed,
+                    })),
+                    ctx: Some(ctx),
+                },
+            )
+            .await?;
+            Ok(())
+        })
+        .await
 }
 
 // ── 로그인 기기(세션) ───────────────────────────────────────────────────

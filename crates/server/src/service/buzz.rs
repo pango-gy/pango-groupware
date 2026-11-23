@@ -402,7 +402,7 @@ pub async fn member_link(
 ) -> ServiceResult<MemberBuzzDto> {
     authz::require_admin(&ctx.actor)?;
     let mut conn = state.read().await?;
-    found(members::find(&mut conn, member_id).await?)?;
+    found(members::find_existing(&mut conn, member_id).await?)?;
     let account = buzz::find(&mut conn, member_id).await?;
     Ok(MemberBuzzDto {
         status: match account.as_ref().map(|a| a.status) {

@@ -389,6 +389,7 @@ impl TestApp {
             retired_on: None,
             must_change_password: false,
             created_at,
+            deleted_at: None,
             version: 1,
         };
         let password = PlainPassword::for_verification(MEMBER_PASSWORD).expect("password");
