@@ -56,11 +56,7 @@ pub fn admin_nav() -> Vec<NavItem> {
         ),
         item(Route::AdminNotices {}, "공지 관리", IconName::Megaphone),
         item(Route::AdminPolicy {}, "근무 정책", IconName::Settings),
-        item(
-            Route::AdminIntegrations {},
-            "외부 알림 연동",
-            IconName::Bell,
-        ),
+        item(Route::AdminIntegrations {}, "Buzz 연동", IconName::Bell),
         item(Route::AdminAudit {}, "감사 로그", IconName::List),
     ]
 }

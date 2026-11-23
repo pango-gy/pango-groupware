@@ -30,7 +30,7 @@ pub fn AdminIntegrations() -> Element {
     let mut buzz = use_resource(|| async { api::get::<BuzzSettingsDto>(BUZZ_PATH).await });
     rsx! {
         PageHeader {
-            title: "외부 알림 연동",
+            title: "Buzz 연동",
             description: "앱 알림을 사내 메신저 같은 외부 서비스로도 보내요.",
         }
         {resource_view(buzz, move |dto: BuzzSettingsDto| rsx! {
