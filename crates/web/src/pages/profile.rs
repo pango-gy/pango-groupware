@@ -66,10 +66,8 @@ pub fn Profile() -> Element {
                 }
             }
             dl { class: "detail-list",
-                dt { "아이디" }
-                dd { "{me.login_id}" }
                 dt { "이메일" }
-                dd { {me.email.clone().unwrap_or_else(|| "-".into())} }
+                dd { "{me.login_id}" }
                 dt { "전화번호" }
                 dd { {me.phone.clone().unwrap_or_else(|| "-".into())} }
             }

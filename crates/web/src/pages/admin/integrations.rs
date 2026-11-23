@@ -202,17 +202,17 @@ fn BuzzBulkLink(onlinked: EventHandler<()>) -> Element {
     rsx! {
         Card { title: "구성원 Buzz ID 일괄 등록",
             p { class: "field-hint",
-                "한 줄에 구성원 아이디와 Buzz ID(npub1… 또는 64자 16진수)를 쉼표·탭·공백으로 나눠 적어요. "
+                "한 줄에 구성원 이메일과 Buzz ID(npub1… 또는 64자 16진수)를 쉼표·탭·공백으로 나눠 적어요. "
                 "본인 확인 없이 바로 연결되고, 구성원에게 \u{201c}Buzz 알림이 연결됐어요\u{201d} 알림이 가요. "
                 "잘못 넣으면 다른 사람에게 알림이 가니 ID를 꼭 확인해 주세요."
             }
             form { class: "form", onsubmit: submit,
                 FormError { message: error() }
                 TextArea {
-                    label: "아이디와 Buzz ID",
+                    label: "이메일과 Buzz ID",
                     value: raw(),
                     rows: 8,
-                    placeholder: "kim npub1…\nlee npub1…",
+                    placeholder: "kim@example.com npub1…\nlee@example.com npub1…",
                     oninput: move |value| raw.set(value),
                 }
                 div { class: "panel-actions",
@@ -460,7 +460,7 @@ pub mod logic {
                 .collect();
             let [login_id, pubkey] = parts.as_slice() else {
                 return Err(format!(
-                    "{}번째 줄은 \u{2018}아이디 Buzz ID\u{2019} 두 칸이어야 해요.",
+                    "{}번째 줄은 \u{2018}이메일 Buzz ID\u{2019} 두 칸이어야 해요.",
                     index + 1
                 ));
             };
@@ -489,7 +489,7 @@ pub mod logic {
         match outcome {
             "linked" => "연결함",
             "unchanged" => "이미 연결됨",
-            "not_found" => "없는 아이디",
+            "not_found" => "없는 이메일",
             "forbidden" => "관리 권한 없음(관리자 계정은 최고 관리자만)",
             "member_inactive" => "재직 중이 아님",
             "invalid_pubkey" => "Buzz ID 형식이 아님",
@@ -535,8 +535,8 @@ pub mod logic {
         #[test]
         fn malformed_lines_are_pointed_out() {
             assert_eq!(
-                parse_bulk("kim npub1aaa\nlee"),
-                Err("2번째 줄은 \u{2018}아이디 Buzz ID\u{2019} 두 칸이어야 해요.".into())
+                parse_bulk("kim@example.com npub1aaa\nlee@example.com"),
+                Err("2번째 줄은 \u{2018}이메일 Buzz ID\u{2019} 두 칸이어야 해요.".into())
             );
             assert!(parse_bulk("a b c").is_err());
             assert!(parse_bulk("  \n# only comment").is_err());

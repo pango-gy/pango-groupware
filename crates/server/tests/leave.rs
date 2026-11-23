@@ -805,14 +805,14 @@ async fn new_grant_appears_on_the_anniversary_and_the_old_one_expires() {
 
     // 소멸 2주 전: 남은 13일이 곧 사라진다고 알려 준다.
     w.app.set_time("2027-02-15T00:00:00Z");
-    w.kim.token = w.app.login("kim", MEMBER_PASSWORD).await;
+    w.kim.token = w.app.login(&w.kim.login_id, MEMBER_PASSWORD).await;
     let soon = balance_of(&w.app, &w.kim.token).await;
     assert_eq!(soon.balance.remaining.quarters(), 52);
     assert_eq!(soon.expiring_soon.quarters(), 52);
 
     // 소멸일(2027-03-01) 당일까지는 유효하다.
     w.app.set_time("2027-03-01T14:59:59Z");
-    w.kim.token = w.app.login("kim", MEMBER_PASSWORD).await;
+    w.kim.token = w.app.login(&w.kim.login_id, MEMBER_PASSWORD).await;
     let last_day = balance_of(&w.app, &w.kim.token).await;
     assert_eq!(last_day.balance.remaining.quarters(), 52);
     assert_eq!(last_day.balance.expired, before.balance.expired);
@@ -2604,7 +2604,7 @@ async fn admin_balances_still_applies_grants_that_became_due() {
     assert_eq!(remaining_of(&after, "lead 님"), 64);
     assert_eq!(remaining_of(&after, "대표"), 60);
     // 원장에 실제로 들어갔고, 본인이 보는 잔여와 같다.
-    let kim = w.app.login("kim", MEMBER_PASSWORD).await;
+    let kim = w.app.login(&w.kim.login_id, MEMBER_PASSWORD).await;
     assert_eq!(
         balance_of(&w.app, &kim).await.balance.remaining.quarters(),
         64

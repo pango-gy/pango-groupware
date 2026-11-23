@@ -36,7 +36,15 @@ impl PlainPassword {
         }
         let lowered = raw.to_lowercase();
         let all_same = raw.chars().all(|c| raw.starts_with(c));
-        if all_same || lowered.contains(login_id.as_str()) {
+        let local_part = login_id
+            .as_str()
+            .split_once('@')
+            .map(|(local, _)| local)
+            .filter(|local| local.len() >= 4);
+        if all_same
+            || lowered.contains(login_id.as_str())
+            || local_part.is_some_and(|local| lowered.contains(local))
+        {
             return Err(err(ValidationReason::InvalidFormat));
         }
         Ok(Self(raw.to_owned()))
@@ -73,7 +81,7 @@ mod tests {
     use super::*;
 
     fn login() -> LoginId {
-        LoginId::parse("gildong").expect("login id")
+        LoginId::parse("gildong@example.com").expect("login id")
     }
 
     fn reason(raw: &str) -> ValidationReason {

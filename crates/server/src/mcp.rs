@@ -130,7 +130,7 @@ pub fn tools() -> Vec<Tool> {
         read(
             "search_members",
             "구성원 찾기",
-            "이름·아이디로 구성원을 찾는다(결재자·참조자 ID를 알 때 쓴다).",
+            "이름·이메일로 구성원을 찾는다(결재자·참조자 ID를 알 때 쓴다).",
             object(json!({ "search": { "type": "string" }, "department_id": id_prop("부서") }), &[]),
         ),
         read(

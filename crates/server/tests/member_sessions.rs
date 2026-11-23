@@ -18,7 +18,7 @@ async fn admins_list_and_sign_out_a_members_devices() {
     let app = TestApp::new().await;
     let admin = app.add_member("admin1", Role::Admin, None).await;
     let member = app.add_member("kim", Role::Member, None).await;
-    let phone = app.login("kim", MEMBER_PASSWORD).await;
+    let phone = app.login(&member.login_id, MEMBER_PASSWORD).await;
     let path = format!("/admin/members/{}/sessions", member.id);
 
     let list = app

@@ -222,7 +222,7 @@ async fn directory_search_is_literal_and_bounded() {
     create(
         &w.app,
         &w.owner,
-        &json!({ "login_id": "wild", "name": "100%_달성", "hired_on": "2026-03-02" }),
+        &json!({ "login_id": "wild@example.com", "name": "100%_달성", "hired_on": "2026-03-02" }),
     )
     .await;
     let search = |query: String| {
@@ -344,7 +344,7 @@ async fn admin_member_routes_are_forbidden_to_members_and_managers() {
                 w.app
                     .post("/admin/members")
                     .bearer(token)
-                    .json(&new_member("sneaky"))
+                    .json(&new_member("sneaky@example.com"))
                     .send()
                     .await,
                 update(&w.app, token, target, &profile(1, "탈취")).await,
@@ -529,7 +529,7 @@ async fn privileged_fields_smuggled_into_bodies_are_ignored() {
         &w.app,
         &w.admin.token,
         &json!({
-            "login_id": "smuggler", "name": "밀수", "hired_on": "2026-03-02",
+            "login_id": "smuggler@example.com", "name": "밀수", "hired_on": "2026-03-02",
             "role": "owner", "status": "suspended", "must_change_password": false,
             "password_hash": "$argon2id$forged", "id": forged_id, "version": 99
         }),
@@ -548,7 +548,7 @@ async fn privileged_fields_smuggled_into_bodies_are_ignored() {
         w.member.id,
         &json!({
             "version": 1, "name": "member 님", "hired_on": "2024-03-02",
-            "role": "owner", "status": "retired", "login_id": "hijack",
+            "role": "owner", "status": "retired", "login_id": "hijack@example.com",
             "retired_on": "2026-01-01", "must_change_password": true
         }),
     )
@@ -556,7 +556,7 @@ async fn privileged_fields_smuggled_into_bodies_are_ignored() {
     .expect(StatusCode::OK);
     assert_eq!(updated["role"], "member");
     assert_eq!(updated["status"], "active");
-    assert_eq!(updated["login_id"], "member");
+    assert_eq!(updated["login_id"], "member@example.com");
     assert_eq!(updated["retired_on"], Value::Null);
     let stored = row(&w.app, w.member.id).await;
     assert_eq!(
@@ -575,7 +575,7 @@ async fn created_member_must_change_temporary_password_first() {
         &w.app,
         &w.admin.token,
         &json!({
-            "login_id": "NewHire", "name": " 신입 ", "email": "New@Example.com",
+            "login_id": "NewHire@Example.com", "name": " 신입 ", "email": "New@Example.com",
             "phone": "010-1234-5678", "department_id": w.dept, "hired_on": "2026-03-02"
         }),
     )
@@ -586,7 +586,7 @@ async fn created_member_must_change_temporary_password_first() {
         .to_owned();
     assert_eq!(temporary.len(), 16);
     let member = &created["member"];
-    assert_eq!(member["login_id"], "newhire");
+    assert_eq!(member["login_id"], "newhire@example.com");
     assert_eq!(member["name"], "신입");
     assert_eq!(member["email"], "new@example.com");
     assert_eq!(member["phone"], "010-1234-5678");
@@ -595,7 +595,7 @@ async fn created_member_must_change_temporary_password_first() {
     assert_eq!(member["hired_on"], "2026-03-02");
     assert_eq!(member["must_change_password"], true);
 
-    let token = w.app.login("newhire", &temporary).await;
+    let token = w.app.login("newhire@example.com", &temporary).await;
     w.app
         .get("/members")
         .bearer(&token)
@@ -621,7 +621,7 @@ async fn created_member_must_change_temporary_password_first() {
     assert_eq!(audits.len(), 1);
     assert_eq!(audits[0].actor_id, Some(w.admin.id));
     let detail = audits[0].detail.as_ref().expect("detail");
-    assert_eq!(detail["login_id"], "newhire");
+    assert_eq!(detail["login_id"], "newhire@example.com");
     for entry in all_audit(&w.app).await {
         let text = serde_json::to_string(&entry.detail).expect("json");
         assert!(!text.contains(&temporary), "{}: {text}", entry.action);
@@ -643,7 +643,11 @@ async fn created_member_must_change_temporary_password_first() {
 async fn duplicate_login_id_is_rejected_without_changes() {
     let w = org_world().await;
     let before = snapshot(&w.app).await;
-    for login in ["member", "MEMBER", "owner"] {
+    for login in [
+        "member@example.com",
+        "MEMBER@EXAMPLE.COM",
+        "owner@example.com",
+    ] {
         w.app
             .post("/admin/members")
             .bearer(&w.owner)
@@ -665,7 +669,7 @@ async fn concurrent_creates_with_same_login_id_make_one_account() {
             tokio::spawn(async move {
                 app.post("/admin/members")
                     .bearer(&token)
-                    .json(&new_member("twin"))
+                    .json(&new_member("twin@example.com"))
                     .send()
                     .await
                     .status
@@ -719,12 +723,18 @@ async fn create_member_input_is_validated_without_side_effects() {
     let before = snapshot(&w.app).await;
 
     let with = |field: &str, value: Value| {
-        let mut body = new_member("valid.id");
+        let mut body = new_member("valid.id@example.com");
         body[field] = value;
         body
     };
     let bad = StatusCode::BAD_REQUEST;
     let cases: Vec<(Value, StatusCode, &str, Option<&str>)> = vec![
+        (
+            with("login_id", json!("plain-id")),
+            bad,
+            "validation_failed",
+            Some("login_id"),
+        ),
         (
             with("login_id", json!("ab")),
             bad,
@@ -829,7 +839,7 @@ async fn create_member_input_is_validated_without_side_effects() {
             None,
         ),
         (
-            json!({ "login_id": "nohire", "name": "이름" }),
+            json!({ "login_id": "nohire@example.com", "name": "이름" }),
             bad,
             "malformed_request",
             None,
@@ -893,7 +903,7 @@ async fn create_member_input_is_validated_without_side_effects() {
     w.app
         .post("/admin/members")
         .bearer(&w.owner)
-        .raw_body("text/plain", new_member("plain").to_string())
+        .raw_body("text/plain", new_member("plain@example.com").to_string())
         .send()
         .await
         .expect_error(StatusCode::UNSUPPORTED_MEDIA_TYPE, "unsupported_media_type");
@@ -906,10 +916,10 @@ async fn blank_optional_contacts_are_stored_as_none() {
     let created = create(
         &w.app,
         &w.owner,
-        &json!({ "login_id": "blank", "name": "빈칸", "email": "  ", "phone": "", "hired_on": "2026-03-02" }),
+        &json!({ "login_id": "blank@example.com", "name": "빈칸", "email": "  ", "phone": "", "hired_on": "2026-03-02" }),
     )
     .await;
-    assert_eq!(created["member"]["email"], Value::Null);
+    assert_eq!(created["member"]["email"], "blank@example.com");
     assert_eq!(created["member"]["phone"], Value::Null);
 }
 
@@ -1079,7 +1089,7 @@ async fn update_validates_references_and_dates() {
 #[tokio::test]
 async fn suspension_revokes_sessions_and_department_headship_immediately() {
     let w = org_world().await;
-    let second_session = w.app.login("manager", MEMBER_PASSWORD).await;
+    let second_session = w.app.login(&w.manager.login_id, MEMBER_PASSWORD).await;
     w.app
         .get("/team/members")
         .bearer(&w.manager.token)
@@ -1106,7 +1116,7 @@ async fn suspension_revokes_sessions_and_department_headship_immediately() {
             .expect_error(StatusCode::UNAUTHORIZED, "unauthenticated");
     }
     assert_eq!(
-        w.app.try_login("manager", MEMBER_PASSWORD).await,
+        w.app.try_login(&w.manager.login_id, MEMBER_PASSWORD).await,
         StatusCode::UNAUTHORIZED
     );
     let departments = w
@@ -1129,7 +1139,7 @@ async fn suspension_revokes_sessions_and_department_headship_immediately() {
     )
     .await
     .expect(StatusCode::OK);
-    let token = w.app.login("manager", MEMBER_PASSWORD).await;
+    let token = w.app.login(&w.manager.login_id, MEMBER_PASSWORD).await;
     w.app
         .get("/me")
         .bearer(&w.manager.token)
@@ -1413,10 +1423,10 @@ async fn password_reset_revokes_sessions_and_requires_change() {
         .await
         .expect_error(StatusCode::UNAUTHORIZED, "unauthenticated");
     assert_eq!(
-        w.app.try_login("member", MEMBER_PASSWORD).await,
+        w.app.try_login(&w.member.login_id, MEMBER_PASSWORD).await,
         StatusCode::UNAUTHORIZED
     );
-    let token = w.app.login("member", &temporary).await;
+    let token = w.app.login(&w.member.login_id, &temporary).await;
     w.app
         .get("/members")
         .bearer(&token)
@@ -1430,7 +1440,7 @@ async fn password_reset_revokes_sessions_and_requires_change() {
         .expect(StatusCode::OK);
     assert_ne!(second["temporary_password"], issued["temporary_password"]);
     assert_eq!(
-        w.app.try_login("member", &temporary).await,
+        w.app.try_login(&w.member.login_id, &temporary).await,
         StatusCode::UNAUTHORIZED
     );
 
@@ -1452,7 +1462,7 @@ async fn password_reset_revokes_sessions_and_requires_change() {
 #[tokio::test]
 async fn responses_never_expose_password_hashes() {
     let w = org_world().await;
-    let created = create(&w.app, &w.owner, &new_member("hashcheck")).await;
+    let created = create(&w.app, &w.owner, &new_member("hashcheck@example.com")).await;
     let id = created["member"]["id"].as_str().expect("id").to_owned();
     let bodies = [
         created,
@@ -1511,7 +1521,7 @@ async fn admin_member_list_filters_and_includes_inactive_on_request() {
         .await
         .expect(StatusCode::OK);
     assert_eq!(names(&list), ["manager 님", "member 님"]);
-    assert_eq!(list[0]["login_id"], "manager");
+    assert_eq!(list[0]["login_id"], "manager@example.com");
     let all = w
         .app
         .get(&format!(
@@ -1608,7 +1618,7 @@ async fn hire_dates_that_cannot_be_read_back_are_rejected_and_listings_keep_work
         "2027-03-03",
         "9999-12-31",
     ] {
-        let mut body = new_member("far");
+        let mut body = new_member("far@example.com");
         body["hired_on"] = json!(bad);
         let created = w
             .app
@@ -1629,7 +1639,10 @@ async fn hire_dates_that_cannot_be_read_back_are_rejected_and_listings_keep_work
     listings_work(&w).await;
 
     // 경계값은 받는다.
-    for (login_id, ok) in [("oldest", "1950-01-01"), ("newest", "2027-03-02")] {
+    for (login_id, ok) in [
+        ("oldest@example.com", "1950-01-01"),
+        ("newest@example.com", "2027-03-02"),
+    ] {
         let mut body = new_member(login_id);
         body["hired_on"] = json!(ok);
         assert_eq!(

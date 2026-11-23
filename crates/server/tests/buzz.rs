@@ -1085,11 +1085,11 @@ async fn bulk_linking_reports_each_line_and_links_the_good_ones() {
         .post("/admin/integrations/buzz/accounts")
         .bearer(&admin.token)
         .json(&json!({ "entries": [
-            { "login_id": " KIM ", "pubkey": BOB_HEX },
-            { "login_id": "lee", "pubkey": ALICE },
-            { "login_id": "ghost", "pubkey": carol },
-            { "login_id": "park", "pubkey": "not-a-key" },
-            { "login_id": "dup", "pubkey": carol },
+            { "login_id": " KIM@EXAMPLE.COM ", "pubkey": BOB_HEX },
+            { "login_id": "lee@example.com", "pubkey": ALICE },
+            { "login_id": "ghost@example.com", "pubkey": carol },
+            { "login_id": "park@example.com", "pubkey": "not-a-key" },
+            { "login_id": "dup@example.com", "pubkey": carol },
         ]}))
         .send()
         .await
@@ -1108,11 +1108,11 @@ async fn bulk_linking_reports_each_line_and_links_the_good_ones() {
     assert_eq!(
         outcomes,
         [
-            ("kim", "linked"),
-            ("lee", "unchanged"),
-            ("ghost", "duplicate"),
-            ("park", "invalid_pubkey"),
-            ("dup", "duplicate"),
+            ("kim@example.com", "linked"),
+            ("lee@example.com", "unchanged"),
+            ("ghost@example.com", "duplicate"),
+            ("park@example.com", "invalid_pubkey"),
+            ("dup@example.com", "duplicate"),
         ]
     );
     assert_eq!(
@@ -1125,7 +1125,7 @@ async fn bulk_linking_reports_each_line_and_links_the_good_ones() {
     let missing = app
         .post("/admin/integrations/buzz/accounts")
         .bearer(&admin.token)
-        .json(&json!({ "entries": [{ "login_id": "ghost", "pubkey": carol }] }))
+        .json(&json!({ "entries": [{ "login_id": "ghost@example.com", "pubkey": carol }] }))
         .send()
         .await
         .expect(StatusCode::OK);
@@ -1133,7 +1133,7 @@ async fn bulk_linking_reports_each_line_and_links_the_good_ones() {
 
     app.post("/admin/integrations/buzz/accounts")
         .bearer(&kim.token)
-        .json(&json!({ "entries": [{ "login_id": "kim", "pubkey": BOB_HEX }] }))
+        .json(&json!({ "entries": [{ "login_id": "kim@example.com", "pubkey": BOB_HEX }] }))
         .send()
         .await
         .expect_error(StatusCode::FORBIDDEN, "forbidden");
@@ -1160,8 +1160,8 @@ async fn admins_cannot_redirect_the_owners_or_other_admins_notifications() {
         .post("/admin/integrations/buzz/accounts")
         .bearer(&admin.token)
         .json(&json!({ "entries": [
-            { "login_id": "owner", "pubkey": BOB_HEX },
-            { "login_id": "admin2", "pubkey": BOT_HEX },
+            { "login_id": "owner@example.com", "pubkey": BOB_HEX },
+            { "login_id": "admin2@example.com", "pubkey": BOT_HEX },
         ]}))
         .send()
         .await

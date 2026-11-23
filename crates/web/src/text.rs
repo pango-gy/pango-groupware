@@ -19,7 +19,7 @@ use crate::ui::Tone;
 
 fn field_label(field: &str) -> &str {
     match field {
-        "login_id" => "아이디",
+        "login_id" => "이메일",
         "password" | "new_password" => "비밀번호",
         "current_password" => "현재 비밀번호",
         "name" => "이름",
@@ -95,7 +95,7 @@ fn validation_message(field: Option<&str>, reason: Option<&str>) -> String {
             "비밀번호는 10자 이상이어야 합니다.".into()
         }
         (Some("password" | "new_password"), Some("invalid_format")) => {
-            "아이디가 들어 있거나 같은 글자만 반복한 비밀번호는 쓸 수 없습니다.".into()
+            "이메일이 들어 있거나 같은 글자만 반복한 비밀번호는 쓸 수 없습니다.".into()
         }
         (Some("steps"), Some("empty")) => "결재자를 한 명 이상 지정해 주세요.".into(),
         (Some("steps"), Some("duplicate")) => "결재선에 중복된 결재자가 있습니다.".into(),
@@ -194,7 +194,7 @@ pub fn error_message(code: &str, field: Option<&str>, reason: Option<&str>) -> S
     let fixed = match code {
         "validation_failed" => return validation_message(field, reason),
         "network_error" => "서버에 연결할 수 없습니다. 네트워크를 확인해 주세요.",
-        "invalid_credentials" => "아이디 또는 비밀번호가 올바르지 않습니다.",
+        "invalid_credentials" => "이메일 또는 비밀번호가 올바르지 않습니다.",
         "mfa_required" => "인증 앱의 6자리 코드를 입력해 주세요.",
         "mfa_invalid" => "인증 코드가 맞지 않거나 이미 쓴 코드예요. 새 코드로 다시 입력해 주세요.",
         "too_many_attempts" => "시도가 너무 많습니다. 잠시 후 다시 시도해 주세요.",
@@ -205,7 +205,7 @@ pub fn error_message(code: &str, field: Option<&str>, reason: Option<&str>) -> S
         "version_conflict" => "다른 사람이 먼저 수정했습니다. 새로 고친 뒤 다시 시도해 주세요.",
         "already_exists" => "이미 있는 항목입니다.",
         "in_use" => "사용 중이라 처리할 수 없습니다.",
-        "login_id_taken" => "이미 사용 중인 아이디입니다.",
+        "login_id_taken" => "이미 사용 중인 이메일입니다.",
         "last_owner" => "최고 관리자는 최소 한 명 있어야 합니다.",
         "member_inactive" => "재직 중이 아닌 구성원이 포함되어 있습니다.",
         "password_reused" => "현재 비밀번호와 다른 비밀번호를 입력해 주세요.",

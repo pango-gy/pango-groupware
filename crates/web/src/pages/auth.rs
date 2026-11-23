@@ -37,7 +37,7 @@ pub fn Login() -> Element {
         busy.set(true);
         error.set(String::new());
         let request = LoginRequest {
-            login_id: login_id(),
+            login_id: login_id.read().trim().to_owned(),
             password: password(),
             // 앱은 토큰을 본문으로 받아 키체인 등에 둔다. 웹은 HttpOnly 쿠키.
             token_in_body: platform::BEARER,
@@ -88,11 +88,13 @@ pub fn Login() -> Element {
                 h1 { class: "auth-title", "로그인" }
                 FormError { message: error() }
                 TextField {
-                    label: "아이디",
+                    label: "이메일",
+                    kind: "email",
+                    placeholder: "name@example.com",
                     value: login_id(),
                     autocomplete: "username",
                     required: true,
-                    maxlength: 32,
+                    maxlength: 254,
                     oninput: move |value| login_id.set(value),
                 }
                 TextField {
@@ -280,7 +282,7 @@ pub fn ChangePassword() -> Element {
                     kind: "password",
                     value: new_password(),
                     autocomplete: "new-password",
-                    hint: "10자 이상이어야 하고, 아이디가 들어가면 안 돼요.",
+                    hint: "10자 이상이어야 하고, 이메일이 들어가면 안 돼요.",
                     required: true,
                     maxlength: 128,
                     oninput: move |value| new_password.set(value),

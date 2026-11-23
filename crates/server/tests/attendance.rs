@@ -1230,7 +1230,7 @@ async fn admin_list_paginates_and_filters() {
         .collect();
     assert_eq!(
         logins.into_iter().collect::<Vec<_>>(),
-        vec!["alice", "dana"],
+        vec!["alice@example.com", "dana@example.com"],
         "하위 부서 포함"
     );
 
@@ -1287,20 +1287,23 @@ async fn csv_export_is_excel_safe() {
     let lines: Vec<&str> = csv.trim_start_matches('\u{feff}').split("\r\n").collect();
     assert_eq!(
         lines[0],
-        "날짜,이름,아이디,부서,근무 형태,출근,퇴근,근무 분,상태"
+        "날짜,이름,이메일,부서,근무 형태,출근,퇴근,근무 분,상태"
     );
     assert!(csv.contains(
-        "2026-03-02,alice 님,alice,개발,office,2026-03-02 09:00,2026-03-02 18:00,480,normal"
+        "2026-03-02,alice 님,alice@example.com,개발,office,2026-03-02 09:00,2026-03-02 18:00,480,normal"
     ));
     assert!(
-        csv.contains(r#","'=HYPERLINK(""http://evil"",""x"")",evil,"#),
+        csv.contains(r#","'=HYPERLINK(""http://evil"",""x"")",evil@example.com,"#),
         "{csv}"
     );
-    assert!(csv.contains(",'+cmd,plus,"), "{csv}");
-    assert!(csv.contains("\"박,\"\"철\"\"\n수\",tricky,"), "{csv}");
+    assert!(csv.contains(",'+cmd,plus@example.com,"), "{csv}");
+    assert!(
+        csv.contains("\"박,\"\"철\"\"\n수\",tricky@example.com,"),
+        "{csv}"
+    );
     // 퇴근 전 기록은 빈 칸.
     assert!(
-        csv.contains(",'+cmd,plus,,office,2026-03-02 09:00,,0,working"),
+        csv.contains(",'+cmd,plus@example.com,,office,2026-03-02 09:00,,0,working"),
         "{csv}"
     );
     assert!(
@@ -1326,7 +1329,7 @@ async fn csv_export_range_rules() {
     let text = empty.body.as_str().expect("csv");
     assert_eq!(
         text,
-        "\u{feff}날짜,이름,아이디,부서,근무 형태,출근,퇴근,근무 분,상태\r\n"
+        "\u{feff}날짜,이름,이메일,부서,근무 형태,출근,퇴근,근무 분,상태\r\n"
     );
 
     app.get("/admin/attendance/export.csv?from=2026-01-01&to=2027-01-01")

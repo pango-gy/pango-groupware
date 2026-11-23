@@ -83,7 +83,7 @@ pub async fn initialize(state: &AppState, input: InitInput) -> ServiceResult<Ini
         id: MemberId::new(),
         login_id: login_id.as_str().to_owned(),
         name,
-        email: None,
+        email: Some(login_id.as_str().to_owned()),
         phone: None,
         department_id: None,
         position_id: None,

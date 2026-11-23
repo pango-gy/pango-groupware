@@ -1346,7 +1346,7 @@ async fn document_number_year_follows_company_local_time() {
     let mut w = world().await;
     // 2026-12-31 23:59 KST. 그동안 세션이 만료됐으므로 다시 로그인한다.
     w.app.set_time("2026-12-31T14:59:00Z");
-    w.drafter.token = w.app.login("drafter", MEMBER_PASSWORD).await;
+    w.drafter.token = w.app.login(&w.drafter.login_id, MEMBER_PASSWORD).await;
     let last = submitted(&w, &[&w.a1]).await;
     assert_eq!(
         w.app.document(&w.drafter.token, &last).await["doc_no"],
@@ -2065,7 +2065,7 @@ async fn admin_reject_ends_a_document_stranded_on_a_deactivated_approver() {
 
     // 복직한 결재자의 뒤늦은 승인, 기안자의 회수는 거부된다.
     w.app.set_status(w.a2.id, MemberStatus::Active).await;
-    let a2 = w.app.login("second", MEMBER_PASSWORD).await;
+    let a2 = w.app.login(&w.a2.login_id, MEMBER_PASSWORD).await;
     act(&w.app, &a2, &id, "approve", json!({}))
         .await
         .expect_error(StatusCode::CONFLICT, "document_already_closed");

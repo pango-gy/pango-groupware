@@ -112,7 +112,7 @@ async fn notification_is_queued_and_sent_with_the_documented_payload() {
             "body": "김팡고 님이 결재를 요청했어요.",
             // 공개 주소가 없으면 앱 안의 경로 그대로.
             "link": "/approval/documents/abc",
-            "recipient": { "login_id": "kim", "name": "kim 님", "email": "kim@example.com" },
+            "recipient": { "login_id": "kim@example.com", "name": "kim 님", "email": "kim@example.com" },
             "created_at": app.state.now().as_millis(),
         })
     );
@@ -141,7 +141,7 @@ async fn a_real_business_action_reaches_the_outbox() {
     let to_member: Vec<_> = fake
         .calls()
         .into_iter()
-        .filter(|d| d.payload.recipient.login_id == "kim")
+        .filter(|d| d.payload.recipient.login_id == member.login_id)
         .collect();
     assert_eq!(to_member.len(), 1);
     assert_eq!(to_member[0].payload.kind, "notice.new");
@@ -191,7 +191,7 @@ async fn members_who_opted_out_get_only_the_in_app_notification() {
         .into_iter()
         .map(|d| d.payload.recipient.login_id)
         .collect();
-    assert_eq!(recipients, ["lee"]);
+    assert_eq!(recipients, ["lee@example.com"]);
 }
 
 #[tokio::test]
@@ -849,7 +849,7 @@ async fn a_test_message_is_sent_to_the_admin_and_audited() {
     let calls = fake.calls();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].payload.event, "test");
-    assert_eq!(calls[0].payload.recipient.login_id, "admin1");
+    assert_eq!(calls[0].payload.recipient.login_id, "admin1@example.com");
     assert!(calls[0].payload.delivery_id.starts_with("test-"));
     assert!(app.outbox().await.is_empty(), "아웃박스를 거치지 않는다");
 

@@ -603,7 +603,7 @@ pub async fn decide(
     let outcome = match super::auth::login(state, &login, meta).await {
         Ok(outcome) => outcome,
         Err(ServiceError::InvalidCredentials) => {
-            return retry("아이디 또는 비밀번호가 맞지 않아요.", false)
+            return retry("이메일 또는 비밀번호가 맞지 않아요.", false)
         }
         Err(ServiceError::MfaRequired) => {
             return retry(

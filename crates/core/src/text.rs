@@ -157,36 +157,24 @@ text_type!(
     CompanyName, line("company_name", 1, 50)
 );
 
-/// 로그인 아이디. 소문자 영문·숫자와 `.`, `_`, `-`만 쓰며 영문·숫자로 시작한다.
+/// 로그인 아이디(이메일 주소). 별도 아이디를 두지 않고 이메일을 그대로 로그인에 쓴다.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LoginId(String);
 
 impl LoginId {
-    pub const MIN_LEN: usize = 3;
-    pub const MAX_LEN: usize = 32;
+    pub const MAX_LEN: usize = Email::MAX_LEN;
 
-    /// 대문자는 소문자로 바꿔 받는다. 그 외의 정규화는 하지 않는다.
+    /// 앞뒤 공백을 정리하고 소문자 이메일 주소로 정규화한다. 제어 문자는 거부한다.
     pub fn parse(raw: &str) -> DomainResult<Self> {
-        let err = |reason| DomainError::validation("login_id", reason);
-        if raw.len() > Self::MAX_LEN {
-            return Err(err(ValidationReason::TooLong { max: Self::MAX_LEN }));
+        if raw.chars().any(char::is_control) {
+            return Err(DomainError::validation(
+                "login_id",
+                ValidationReason::InvalidCharacter,
+            ));
         }
-        if raw.is_empty() {
-            return Err(err(ValidationReason::Empty));
-        }
-        if raw.len() < Self::MIN_LEN {
-            return Err(err(ValidationReason::TooShort { min: Self::MIN_LEN }));
-        }
-        let lowered = raw.to_ascii_lowercase();
-        let valid_char =
-            |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b);
-        if !lowered.bytes().all(valid_char) {
-            return Err(err(ValidationReason::InvalidCharacter));
-        }
-        if !lowered.as_bytes()[0].is_ascii_alphanumeric() {
-            return Err(err(ValidationReason::InvalidFormat));
-        }
-        Ok(Self(lowered))
+        Email::parse(raw)
+            .map(|email| Self(email.as_str().to_owned()))
+            .map_err(|error| error.with_field("login_id"))
     }
 
     pub fn as_str(&self) -> &str {
@@ -528,36 +516,38 @@ mod tests {
     #[test]
     fn login_id_rules() {
         assert_eq!(
-            LoginId::parse("Hong.GD-1").expect("valid").as_str(),
-            "hong.gd-1"
+            LoginId::parse(" Hong.GD-1@Pango-GY.com ")
+                .expect("valid")
+                .as_str(),
+            "hong.gd-1@pango-gy.com"
         );
+        assert!(LoginId::parse("a.b+tag@sub.example.com").is_ok());
         assert_eq!(reason(LoginId::parse("")), ValidationReason::Empty);
+        assert_eq!(reason(LoginId::parse("   ")), ValidationReason::Empty);
+        let too_long = format!("a@{}.com", "b".repeat(63).repeat(5));
         assert_eq!(
-            reason(LoginId::parse("ab")),
-            ValidationReason::TooShort { min: 3 }
+            reason(LoginId::parse(&too_long)),
+            ValidationReason::TooLong { max: 254 }
         );
-        assert_eq!(
-            reason(LoginId::parse(&"a".repeat(33))),
-            ValidationReason::TooLong { max: 32 }
-        );
-        assert!(LoginId::parse(&"a".repeat(32)).is_ok());
-        for bad in [
-            "홍길동",
-            "a b c",
-            "a@b.c",
-            "abc\n",
-            "abc\0",
-            "ａｂｃ",
-            "a/b",
-            "a%00",
-        ] {
+        for bad in ["abc\n@b.com", "a@b.com\n", "a@b.com\0"] {
             assert_eq!(
                 reason(LoginId::parse(bad)),
                 ValidationReason::InvalidCharacter,
                 "{bad:?}"
             );
         }
-        for bad in [".abc", "-abc", "_abc"] {
+        for bad in [
+            "plain",
+            "홍길동",
+            "a b@c.com",
+            "@example.com",
+            "a@",
+            "a@b",
+            "a@.com",
+            "a@b..com",
+            ".a@b.com",
+            "a/b@c.com",
+        ] {
             assert_eq!(
                 reason(LoginId::parse(bad)),
                 ValidationReason::InvalidFormat,
@@ -694,7 +684,7 @@ mod tests {
         }
 
         #[test]
-        fn login_id_parse_is_idempotent(raw in "[A-Za-z0-9._-]{0,40}") {
+        fn login_id_parse_is_idempotent(raw in "[A-Za-z0-9._%+-]{0,20}@[A-Za-z0-9.-]{0,20}") {
             if let Ok(id) = LoginId::parse(&raw) {
                 prop_assert_eq!(LoginId::parse(id.as_str()), Ok(id));
             }

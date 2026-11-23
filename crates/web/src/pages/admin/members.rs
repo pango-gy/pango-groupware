@@ -214,7 +214,7 @@ pub mod logic {
             Self {
                 login_id: detail.login_id.clone(),
                 name: s.name.clone(),
-                email: s.email.clone().unwrap_or_default(),
+                email: s.email.clone().unwrap_or_else(|| detail.login_id.clone()),
                 phone: s.phone.clone().unwrap_or_default(),
                 department_id: s.department_id.map(|id| id.to_string()).unwrap_or_default(),
                 position_id: s.position_id.map(|id| id.to_string()).unwrap_or_default(),
@@ -254,7 +254,7 @@ pub mod logic {
             Ok(CreateMemberRequest {
                 login_id: login_id.as_str().to_owned(),
                 name: p.name,
-                email: p.email,
+                email: p.email.or_else(|| Some(login_id.as_str().to_owned())),
                 phone: p.phone,
                 department_id: p.department_id,
                 position_id: p.position_id,
@@ -345,7 +345,7 @@ pub mod logic {
         fn me(role: Role) -> Me {
             Me {
                 id: MemberId::new(),
-                login_id: "me".into(),
+                login_id: "me@example.com".into(),
                 name: "나".into(),
                 email: None,
                 phone: None,
@@ -378,7 +378,7 @@ pub mod logic {
                     position_name: None,
                     status: MemberStatus::Active,
                 },
-                login_id: "target".into(),
+                login_id: "target@example.com".into(),
                 role,
                 hired_on: NaiveDate::from_ymd_opt(2024, 3, 2).unwrap_or_default(),
                 retired_on: None,
@@ -482,7 +482,7 @@ pub mod logic {
 
         fn filled() -> ProfileForm {
             ProfileForm {
-                login_id: " Gildong.Hong ".into(),
+                login_id: " Gildong.Hong@Pango-GY.com ".into(),
                 name: "  홍길동 ".into(),
                 email: "".into(),
                 phone: "   ".into(),
@@ -495,9 +495,9 @@ pub mod logic {
         #[test]
         fn create_request_normalizes_and_drops_empty_values() {
             let request = filled().to_create(today()).expect("valid");
-            assert_eq!(request.login_id, "gildong.hong");
+            assert_eq!(request.login_id, "gildong.hong@pango-gy.com");
             assert_eq!(request.name, "홍길동");
-            assert_eq!(request.email, None);
+            assert_eq!(request.email.as_deref(), Some("gildong.hong@pango-gy.com"));
             assert_eq!(request.phone, None);
             assert_eq!(request.department_id, None);
             assert_eq!(request.position_id, None);
@@ -519,28 +519,28 @@ pub mod logic {
             let cases: Vec<(ProfileForm, &str)> = vec![
                 (
                     ProfileForm {
-                        login_id: "ab".into(),
+                        login_id: "plain-id".into(),
                         ..filled()
                     },
                     "login_id",
                 ),
                 (
                     ProfileForm {
-                        login_id: "한글아이디".into(),
+                        login_id: "한글@example.com".into(),
                         ..filled()
                     },
                     "login_id",
                 ),
                 (
                     ProfileForm {
-                        login_id: "_abc".into(),
+                        login_id: "a@b".into(),
                         ..filled()
                     },
                     "login_id",
                 ),
                 (
                     ProfileForm {
-                        login_id: "a".repeat(33),
+                        login_id: format!("a@{}.com", "b".repeat(63).repeat(5)),
                         ..filled()
                     },
                     "login_id",
@@ -624,13 +624,13 @@ pub mod logic {
         #[test]
         fn boundary_lengths_are_accepted() {
             let ok = ProfileForm {
-                login_id: "abc".into(),
+                login_id: "a@b.co".into(),
                 name: "가".repeat(50),
                 ..filled()
             };
             assert!(ok.to_create(today()).is_ok());
             assert!(ProfileForm {
-                login_id: "a".repeat(32),
+                login_id: format!("{}@example.com", "a".repeat(64)),
                 ..filled()
             }
             .to_create(today())
@@ -876,7 +876,7 @@ pub fn AdminMembers() -> Element {
                         label: "검색",
                         value: search(),
                         kind: "search",
-                        placeholder: "이름 또는 아이디",
+                        placeholder: "이름 또는 이메일",
                         maxlength: 100,
                         oninput: move |value| search.set(value),
                     }
@@ -905,7 +905,7 @@ pub fn AdminMembers() -> Element {
                             thead {
                                 tr {
                                     th { "이름" }
-                                    th { "아이디" }
+                                    th { "이메일" }
                                     th { "부서" }
                                     th { "직책" }
                                     th { "역할" }
@@ -1041,12 +1041,14 @@ fn ProfileFields(
     rsx! {
         if with_login_id {
             TextField {
-                label: "아이디",
+                label: "이메일",
+                kind: "email",
+                placeholder: "name@example.com",
                 value: current.login_id.clone(),
                 autocomplete: "off",
-                hint: "영문 소문자·숫자와 . _ - 3~32자. 로그인할 때 써요.",
+                hint: "로그인 아이디로 써요.",
                 required: true,
-                maxlength: 32,
+                maxlength: 254,
                 oninput: move |value| form.write().login_id = value,
             }
         }
@@ -1058,23 +1060,13 @@ fn ProfileFields(
             maxlength: 50,
             oninput: move |value| form.write().name = value,
         }
-        div { class: "form-row",
-            TextField {
-                label: "이메일",
-                kind: "email",
-                value: current.email.clone(),
-                disabled,
-                maxlength: 254,
-                oninput: move |value| form.write().email = value,
-            }
-            TextField {
-                label: "전화번호",
-                kind: "tel",
-                value: current.phone.clone(),
-                disabled,
-                maxlength: 20,
-                oninput: move |value| form.write().phone = value,
-            }
+        TextField {
+            label: "전화번호",
+            kind: "tel",
+            value: current.phone.clone(),
+            disabled,
+            maxlength: 20,
+            oninput: move |value| form.write().phone = value,
         }
         div { class: "form-row",
             SelectField {

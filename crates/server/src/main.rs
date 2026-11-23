@@ -32,8 +32,8 @@ enum Command {
         company: String,
         #[arg(long, default_value = "Asia/Seoul")]
         timezone: String,
-        /// 최고 관리자 로그인 아이디.
-        #[arg(long, default_value = "admin")]
+        /// 최고 관리자 로그인 이메일.
+        #[arg(long, default_value = "admin@example.com")]
         owner_login: String,
         #[arg(long, default_value = "관리자")]
         owner_name: String,
@@ -55,7 +55,7 @@ enum Command {
     /// 최고 관리자가 비밀번호나 인증 앱을 잃었을 때 쓴다(웹에서는 다른 사람이 최고 관리자를
     /// 초기화할 수 없다). 서버가 도는 중에도 된다.
     ResetOwner {
-        /// 최고 관리자 로그인 아이디.
+        /// 최고 관리자 로그인 이메일.
         login_id: String,
     },
     /// 서버를 실행한다.
@@ -128,7 +128,7 @@ async fn run(cli: Cli) -> Result<(), AnyError> {
             )
             .await?;
             println!("초기화가 끝났습니다.");
-            println!("  로그인 아이디: {owner_login}");
+            println!("  로그인 이메일: {owner_login}");
             if let Some(password) = output.temporary_password {
                 println!("  임시 비밀번호: {password}");
                 println!("임시 비밀번호는 다시 볼 수 없습니다. 첫 로그인 때 바꿔야 합니다.");
@@ -153,7 +153,7 @@ async fn run(cli: Cli) -> Result<(), AnyError> {
             let state = open_state(&cli.data_dir, Config::default()).await?;
             let output = setup::recover_owner(&state, &login_id).await?;
             println!("최고 관리자 계정을 되살렸습니다.");
-            println!("  로그인 아이디: {login_id}");
+            println!("  로그인 이메일: {login_id}");
             println!("  임시 비밀번호: {}", output.temporary_password);
             if output.totp_removed {
                 println!("  2단계 인증을 껐습니다. 로그인한 뒤 다시 켜 주세요.");

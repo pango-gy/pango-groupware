@@ -60,7 +60,7 @@ const NOTE_RULE: TextRule = TextRule {
 const CSV_HEADER: [&str; 9] = [
     "날짜",
     "이름",
-    "아이디",
+    "이메일",
     "부서",
     "근무 형태",
     "출근",

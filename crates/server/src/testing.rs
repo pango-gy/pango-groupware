@@ -29,7 +29,7 @@ use crate::service::setup::{self, InitInput};
 use crate::service::{auth, AuthContext, RequestMeta};
 use crate::state::AppState;
 
-pub const OWNER_LOGIN: &str = "owner";
+pub const OWNER_LOGIN: &str = "owner@example.com";
 pub const OWNER_PASSWORD: &str = "correct-horse-123";
 /// 기본 시작 시각: 2026-03-02(월) 09:00 KST.
 pub const START: &str = "2026-03-02T00:00:00Z";
@@ -370,11 +370,16 @@ impl TestApp {
         department_id: Option<DepartmentId>,
         created_at: Timestamp,
     ) -> TestMember {
+        let email = if login_id.contains('@') {
+            login_id.to_ascii_lowercase()
+        } else {
+            format!("{}@example.com", login_id.to_ascii_lowercase())
+        };
         let member = Member {
             id: MemberId::new(),
-            login_id: login_id.to_owned(),
+            login_id: email.clone(),
             name: format!("{login_id} 님"),
-            email: None,
+            email: Some(email),
             phone: None,
             department_id,
             position_id: None,
@@ -393,10 +398,10 @@ impl TestApp {
             .await
             .expect("member");
         tx.commit().await.expect("commit");
-        let token = self.login(login_id, MEMBER_PASSWORD).await;
+        let token = self.login(&member.login_id, MEMBER_PASSWORD).await;
         TestMember {
             id: member.id,
-            login_id: login_id.to_owned(),
+            login_id: member.login_id,
             token,
         }
     }

@@ -74,12 +74,12 @@ async fn setup_needs_the_password_and_a_working_code() {
         .await
         .expect_error(StatusCode::BAD_REQUEST, "validation_failed");
     // 켜는 중에는 로그인에 쓰지 않는다.
-    login(&app, "kim", MEMBER_PASSWORD, None)
+    login(&app, "kim@example.com", MEMBER_PASSWORD, None)
         .await
         .expect(StatusCode::OK);
 
     let member = TestMember {
-        token: login(&app, "kim", MEMBER_PASSWORD, None)
+        token: login(&app, "kim@example.com", MEMBER_PASSWORD, None)
             .await
             .expect(StatusCode::OK)["token"]
             .as_str()
@@ -115,14 +115,14 @@ async fn login_requires_a_fresh_code_or_an_unused_recovery_code() {
     let (secret, codes) = enable(&app, &member).await;
     let sessions_before = app.count("SELECT COUNT(*) FROM sessions").await;
 
-    login(&app, "kim", MEMBER_PASSWORD, None)
+    login(&app, "kim@example.com", MEMBER_PASSWORD, None)
         .await
         .expect_error(StatusCode::UNAUTHORIZED, "mfa_required");
-    login(&app, "kim", MEMBER_PASSWORD, Some("000000"))
+    login(&app, "kim@example.com", MEMBER_PASSWORD, Some("000000"))
         .await
         .expect_error(StatusCode::UNAUTHORIZED, "mfa_invalid");
     // 비밀번호가 틀리면 코드가 필요한지 알려 주지 않는다.
-    login(&app, "kim", "wrong-password", None)
+    login(&app, "kim@example.com", "wrong-password", None)
         .await
         .expect_error(StatusCode::UNAUTHORIZED, "invalid_credentials");
     assert_eq!(
@@ -133,19 +133,19 @@ async fn login_requires_a_fresh_code_or_an_unused_recovery_code() {
     // 한 단계 뒤의 코드로 로그인하고, 같은 코드는 다시 쓸 수 없다.
     app.advance(Duration::seconds(30));
     let code = current_code(&secret, app.state.now());
-    login(&app, "kim", MEMBER_PASSWORD, Some(&code))
+    login(&app, "kim@example.com", MEMBER_PASSWORD, Some(&code))
         .await
         .expect(StatusCode::OK);
-    login(&app, "kim", MEMBER_PASSWORD, Some(&code))
+    login(&app, "kim@example.com", MEMBER_PASSWORD, Some(&code))
         .await
         .expect_error(StatusCode::UNAUTHORIZED, "mfa_invalid");
 
     // 복구 코드는 한 번만.
     let recovery = codes[0].to_uppercase();
-    login(&app, "kim", MEMBER_PASSWORD, Some(&recovery))
+    login(&app, "kim@example.com", MEMBER_PASSWORD, Some(&recovery))
         .await
         .expect(StatusCode::OK);
-    login(&app, "kim", MEMBER_PASSWORD, Some(&recovery))
+    login(&app, "kim@example.com", MEMBER_PASSWORD, Some(&recovery))
         .await
         .expect_error(StatusCode::UNAUTHORIZED, "mfa_invalid");
     let status: Value = app
@@ -163,11 +163,11 @@ async fn wrong_codes_count_toward_the_login_lockout() {
     let member = app.add_member("kim", Role::Member, None).await;
     let (secret, _) = enable(&app, &member).await;
     for _ in 0..5 {
-        login(&app, "kim", MEMBER_PASSWORD, Some("000000")).await;
+        login(&app, "kim@example.com", MEMBER_PASSWORD, Some("000000")).await;
     }
     app.advance(Duration::seconds(30));
     let code = current_code(&secret, app.state.now());
-    login(&app, "kim", MEMBER_PASSWORD, Some(&code))
+    login(&app, "kim@example.com", MEMBER_PASSWORD, Some(&code))
         .await
         .expect_error(StatusCode::TOO_MANY_REQUESTS, "too_many_attempts");
 }
@@ -196,7 +196,7 @@ async fn disabling_needs_password_and_code_and_admins_can_reset() {
         .await
         .expect(StatusCode::OK);
     assert_eq!(off["enabled"], false);
-    login(&app, "kim", MEMBER_PASSWORD, None)
+    login(&app, "kim@example.com", MEMBER_PASSWORD, None)
         .await
         .expect(StatusCode::OK);
 
@@ -221,7 +221,7 @@ async fn disabling_needs_password_and_code_and_admins_can_reset() {
         .send()
         .await
         .expect(StatusCode::NO_CONTENT);
-    login(&app, "kim", MEMBER_PASSWORD, None)
+    login(&app, "kim@example.com", MEMBER_PASSWORD, None)
         .await
         .expect(StatusCode::OK);
     assert_eq!(app.audit_entries("member.totp_reset").await.len(), 1);

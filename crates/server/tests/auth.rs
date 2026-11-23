@@ -99,7 +99,10 @@ async fn login_returns_token_and_profile() {
 #[tokio::test]
 async fn login_id_is_case_insensitive() {
     let app = TestApp::new().await;
-    assert_eq!(app.try_login("OWNER", OWNER_PASSWORD).await, StatusCode::OK);
+    assert_eq!(
+        app.try_login("OWNER@EXAMPLE.COM", OWNER_PASSWORD).await,
+        StatusCode::OK
+    );
 }
 
 // ── 실패는 구분되지 않는다 ───────────────────────────────────────────────
@@ -183,7 +186,7 @@ async fn account_locks_after_repeated_failures_even_for_correct_password() {
 
     // 다른 계정은 영향받지 않는다.
     assert_eq!(
-        app.try_login("someone-else", "x").await,
+        app.try_login("someone-else@example.com", "x").await,
         StatusCode::UNAUTHORIZED
     );
 
@@ -228,7 +231,10 @@ async fn unknown_accounts_lock_the_same_way_so_existence_is_not_revealed() {
     let mut unknown = Vec::new();
     for _ in 0..7 {
         known.push(app.try_login(OWNER_LOGIN, "wrong-password-123").await);
-        unknown.push(app.try_login("ghost", "wrong-password-123").await);
+        unknown.push(
+            app.try_login("ghost@example.com", "wrong-password-123")
+                .await,
+        );
     }
     assert_eq!(known, unknown);
     assert_eq!(known[5], StatusCode::TOO_MANY_REQUESTS);
@@ -247,7 +253,10 @@ async fn ip_rate_limit_applies_across_accounts() {
         async move {
             app.post("/auth/login")
                 .header("x-forwarded-for", ip)
-                .json(&credentials(&format!("user{n}"), "wrong-password-123"))
+                .json(&credentials(
+                    &format!("user{n}@example.com"),
+                    "wrong-password-123",
+                ))
                 .send()
                 .await
                 .status
@@ -783,7 +792,7 @@ async fn temporary_password_blocks_everything_until_changed() {
         InitInput {
             company_name: "팡고".into(),
             timezone: "Asia/Seoul".into(),
-            owner_login_id: "owner".into(),
+            owner_login_id: "owner@example.com".into(),
             owner_name: "대표".into(),
             owner_password: None,
         },
@@ -791,7 +800,7 @@ async fn temporary_password_blocks_everything_until_changed() {
     .await
     .expect("initialize");
     let temporary = output.temporary_password.expect("temporary password");
-    let token = app.login("owner", &temporary).await;
+    let token = app.login("owner@example.com", &temporary).await;
 
     let me = app
         .get("/me")
@@ -832,7 +841,7 @@ fn init_input() -> InitInput {
     InitInput {
         company_name: "팡고".into(),
         timezone: "Asia/Seoul".into(),
-        owner_login_id: "second".into(),
+        owner_login_id: "second@example.com".into(),
         owner_name: "두번째".into(),
         owner_password: Some("valid-password-123".into()),
     }
@@ -848,7 +857,8 @@ async fn initialization_runs_once() {
         .expect("must fail");
     assert_eq!(error.code(), "already_exists");
     assert_eq!(
-        app.try_login("second", "valid-password-123").await,
+        app.try_login("second@example.com", "valid-password-123")
+            .await,
         StatusCode::UNAUTHORIZED
     );
 }
@@ -1029,12 +1039,14 @@ async fn the_host_command_recovers_an_owner_but_no_one_else() {
     app.add_member("plain", pango_core::authz::Role::Member, None)
         .await;
     assert!(matches!(
-        setup::recover_owner(&app.state, "plain").await,
+        setup::recover_owner(&app.state, "plain@example.com").await,
         Err(pango_server::ServiceError::Domain(
             pango_core::DomainError::Forbidden
         ))
     ));
-    assert!(setup::recover_owner(&app.state, "nobody").await.is_err());
+    assert!(setup::recover_owner(&app.state, "nobody@example.com")
+        .await
+        .is_err());
 
     let output = setup::recover_owner(&app.state, OWNER_LOGIN)
         .await

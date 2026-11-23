@@ -236,7 +236,7 @@ fn consent_page(
 {error}\
 <form method=\"post\" action=\"/oauth/authorize\">\
 <input type=\"hidden\" name=\"request_id\" value=\"{request}\">\
-<label for=\"login_id\">아이디</label><input id=\"login_id\" name=\"login_id\" autocomplete=\"username\" required value=\"{login}\"{focus_login}>\
+<label for=\"login_id\">이메일</label><input id=\"login_id\" name=\"login_id\" type=\"email\" autocomplete=\"username\" placeholder=\"name@example.com\" maxlength=\"254\" required value=\"{login}\"{focus_login}>\
 <label for=\"password\">비밀번호</label><input id=\"password\" name=\"password\" type=\"password\" autocomplete=\"current-password\" required{focus_password}>\
 <label for=\"totp_code\">{code_hint}</label><input id=\"totp_code\" name=\"totp_code\" autocomplete=\"one-time-code\" inputmode=\"text\"{code_required}>\
 <div class=\"actions\"><button class=\"deny\" name=\"action\" value=\"deny\" formnovalidate>거부</button>\

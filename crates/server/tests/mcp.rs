@@ -434,7 +434,7 @@ async fn consent_rejections_keep_the_flow_safe() {
     assert_eq!(params["error"], "access_denied");
     assert_eq!(params["state"], "st-1");
 
-    // 틀린 비밀번호는 같은 화면을 다시 그린다(입력한 아이디는 남긴다).
+    // 틀린 비밀번호는 같은 화면을 다시 그린다(입력한 이메일은 남긴다).
     let (request_id, nonce) = open_consent(&app, &client_id, "groupware:read").await;
     let wrong = decide(
         &app,
@@ -442,14 +442,17 @@ async fn consent_rejections_keep_the_flow_safe() {
         &nonce,
         &[
             ("action", "approve"),
-            ("login_id", "kim"),
+            ("login_id", "kim@example.com"),
             ("password", "wrong-password"),
         ],
     )
     .await;
     assert_eq!(wrong.status, StatusCode::OK);
     let html = wrong.body.as_str().expect("html");
-    assert!(html.contains("아이디 또는 비밀번호가 맞지 않아요") && html.contains("value=\"kim\""));
+    assert!(
+        html.contains("이메일 또는 비밀번호가 맞지 않아요")
+            && html.contains("value=\"kim@example.com\"")
+    );
 
     // 다른 브라우저(쿠키 없음)나 Origin: null은 승인하지 못한다.
     let no_cookie = app
@@ -460,7 +463,7 @@ async fn consent_rejections_keep_the_flow_safe() {
             form(&[
                 ("request_id", &request_id),
                 ("action", "approve"),
-                ("login_id", "kim"),
+                ("login_id", "kim@example.com"),
                 ("password", MEMBER_PASSWORD),
             ]),
         )
@@ -521,7 +524,7 @@ async fn codes_and_refresh_tokens_are_single_use_and_sessions_cut_access() {
         &nonce,
         &[
             ("action", "approve"),
-            ("login_id", "kim"),
+            ("login_id", &member.login_id),
             ("password", MEMBER_PASSWORD),
         ],
     )

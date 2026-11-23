@@ -320,9 +320,15 @@ pub async fn create_member(
 ) -> ServiceResult<IssuedCredentials> {
     authz::require_admin(&ctx.actor)?;
     let login_id = LoginId::parse(&request.login_id)?;
+    let email = request
+        .email
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or(Some(login_id.as_str()));
     let profile = Profile::parse(
         &request.name,
-        request.email.as_deref(),
+        email,
         request.phone.as_deref(),
         request.department_id,
         request.position_id,

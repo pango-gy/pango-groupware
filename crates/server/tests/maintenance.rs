@@ -225,7 +225,7 @@ async fn daily_accrual_picks_up_new_grants_as_days_pass() {
     // 잔여 조회가 보는 값과 같다(조회가 새로 넣을 부여가 남아 있지 않다).
     let rows = ledger_rows(&app).await;
     let token = app
-        .login("kim", pango_server::testing::MEMBER_PASSWORD)
+        .login("kim@example.com", pango_server::testing::MEMBER_PASSWORD)
         .await;
     app.get("/leave/balance")
         .bearer(&token)

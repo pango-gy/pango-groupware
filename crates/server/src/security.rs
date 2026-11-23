@@ -396,7 +396,7 @@ mod tests {
 
     #[tokio::test]
     async fn hashes_policy_checked_passwords() {
-        let login = LoginId::parse("gildong").expect("login");
+        let login = LoginId::parse("gildong@example.com").expect("login");
         let password = PlainPassword::parse_new("유니코드 비밀번호 🔐 ok", &login).expect("valid");
         let hasher = hasher();
         let hash = hasher.hash(&password).await.expect("hash");
@@ -445,7 +445,7 @@ mod tests {
 
     #[test]
     fn temporary_passwords_satisfy_policy_and_vary() {
-        let login = LoginId::parse("gildong").expect("login");
+        let login = LoginId::parse("gildong@example.com").expect("login");
         let generated: HashSet<_> = (0..50)
             .map(|_| generate_temporary_password().expect("password"))
             .collect();
