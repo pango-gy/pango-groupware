@@ -35,9 +35,11 @@ const REFRESH_TTL: chrono::Duration = chrono::Duration::days(30);
 const CODE_TTL: chrono::Duration = chrono::Duration::seconds(60);
 /// 같은 갱신 토큰이 이 시간 안에 다시 오면 병렬 갱신·재시도로 보고 연결을 끊지 않는다.
 const REFRESH_REUSE_GRACE: chrono::Duration = chrono::Duration::seconds(30);
-/// 등록·인가 요청의 IP당 한도(1분).
+/// 등록·인가·토큰 요청의 IP당 한도(1분).
 const REGISTER_PER_MINUTE: i64 = 30;
 const AUTHORIZE_PER_MINUTE: i64 = 60;
+/// 공용 출구 IP를 여러 사용자가 나눠 쓸 수 있으므로(claude.ai 커넥터) 여유 있게 둔다.
+const TOKEN_PER_MINUTE: i64 = 120;
 
 /// 동의 화면을 열어 둘 수 있는 시간(브라우저 쿠키 `Max-Age`와 같다).
 pub const REQUEST_TTL: chrono::Duration = chrono::Duration::minutes(10);
@@ -121,7 +123,7 @@ async fn within_limit(
     let Some(ip) = ip else {
         return Ok(true);
     };
-    let bucket = format!("oauth-{kind}:{ip}");
+    let bucket = format!("oauth-{kind}:{}", super::auth::ip_bucket(ip));
     let now = state.now();
     let hit = state
         .write(async |conn: &mut Conn| {
@@ -846,8 +848,18 @@ async fn issue_tx(
     }))
 }
 
-pub async fn token(state: &AppState, request: &TokenRequest) -> Result<TokenResponse, OAuthError> {
+pub async fn token(
+    state: &AppState,
+    request: &TokenRequest,
+    ip: Option<&str>,
+) -> Result<TokenResponse, OAuthError> {
     let config = config(state)?;
+    if !within_limit(state, "token", ip, TOKEN_PER_MINUTE)
+        .await
+        .map_err(internal)?
+    {
+        return Err(OAuthError::new(429, "slow_down", "요청이 너무 많습니다"));
+    }
     if request
         .resource
         .as_deref()

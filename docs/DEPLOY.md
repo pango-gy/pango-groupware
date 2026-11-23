@@ -66,6 +66,8 @@ gw.example.com {
 
 nginx라면 `client_max_body_size 12m;`와 `proxy_set_header X-Forwarded-For $remote_addr;`를 넣습니다(서버는 `X-Forwarded-For`의 **마지막** 값만 믿습니다).
 
+로드밸런서(AWS ALB 등)의 상태 확인 경로는 `GET /api/v1/health`입니다(SQLite 읽기 풀 연결까지 확인해 정상이면 200, 장애면 503). 정적 웹 파일(WASM·JS·CSS)은 클라이언트가 `Accept-Encoding: gzip`을 보내면 서버가 직접 압축해 응답합니다.
+
 ## 4. systemd로 돌리기
 
 ```ini

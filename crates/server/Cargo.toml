@@ -39,6 +39,8 @@ clap.workspace = true
 # 외부 알림 웹훅 발송. 리다이렉트는 따라가지 않는다(코드에서 끈다).
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 rust-embed = { version = "8", features = ["interpolate-folder-path"] }
+# 웹 UI 정적 파일(WASM·JS·CSS) gzip 압축. 앞단에 ALB만 두는 환경에서도 전송 크기를 줄인다.
+flate2 = "1"
 tempfile = { workspace = true, optional = true }
 sqlx = { workspace = true, optional = true }
 

@@ -215,31 +215,75 @@ async fn run(cli: Cli) -> Result<(), AnyError> {
             if !added.is_empty() {
                 tracing::info!(count = added.len(), "added default approval forms");
             }
-            tokio::spawn(pango_server::service::maintenance::run_forever(
-                state.clone(),
-                std::time::Duration::from_secs(3600),
-            ));
-            // 퇴근 누락 알림(업무 종료 1시간 뒤). 5분마다 확인한다.
-            tokio::spawn(pango_server::service::reminders::run_forever(
-                state.clone(),
-                std::time::Duration::from_secs(300),
-            ));
-            // 외부 알림(웹훅) 발송. 연동이 꺼져 있으면 보낼 일이 생기지 않는다.
-            tokio::spawn(pango_server::service::outbound::run_forever(
-                state.clone(),
-                std::time::Duration::from_secs(5),
-            ));
+            let tasks = [
+                tokio::spawn(pango_server::service::maintenance::run_forever(
+                    state.clone(),
+                    std::time::Duration::from_secs(3600),
+                )),
+                // 퇴근 누락 알림(업무 종료 1시간 뒤). 5분마다 확인한다.
+                tokio::spawn(pango_server::service::reminders::run_forever(
+                    state.clone(),
+                    std::time::Duration::from_secs(300),
+                )),
+                // 외부 알림(웹훅) 발송. 연동이 꺼져 있으면 보낼 일이 생기지 않는다.
+                tokio::spawn(pango_server::service::outbound::run_forever(
+                    state.clone(),
+                    std::time::Duration::from_secs(5),
+                )),
+            ];
+            let db = state.db.clone();
             let app = pango_server::http::router(state)
                 .into_make_service_with_connect_info::<SocketAddr>();
             let listener = tokio::net::TcpListener::bind(bind).await?;
             tracing::info!(%bind, "listening");
-            axum::serve(listener, app)
-                .with_graceful_shutdown(async {
-                    let _ = tokio::signal::ctrl_c().await;
-                })
-                .await?;
+            let served = axum::serve(listener, app)
+                .with_graceful_shutdown(shutdown_signal())
+                .await;
+            for task in &tasks {
+                task.abort();
+            }
+            for task in tasks {
+                let _ = task.await;
+            }
+            db.close().await;
+            tracing::info!("shutdown complete");
+            served?;
             Ok(())
         }
+    }
+}
+
+/// 종료 신호(Ctrl-C 또는 Unix의 SIGTERM)를 기다린다.
+///
+/// Docker(`docker stop`), systemd(`systemctl stop`), AWS ECS 태스크 종료는 모두 SIGTERM을
+/// 보낸다. 이 신호를 받아 진행 중인 요청을 마친 뒤 DB 연결을 닫고 내려간다.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            tracing::warn!(%error, "failed to listen for Ctrl-C");
+            std::future::pending::<()>().await;
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(error) => {
+                tracing::warn!(%error, "failed to listen for SIGTERM");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => tracing::info!("received SIGINT, shutting down"),
+        () = terminate => tracing::info!("received SIGTERM, shutting down"),
     }
 }
 

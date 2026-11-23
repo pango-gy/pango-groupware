@@ -21,7 +21,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 10001 --home-dir /data --shell /usr/sbin/nologin pango \
- && mkdir -p /data && chown pango:pango /data
+ && mkdir -p /data && chown pango:pango /data && chmod 700 /data
 COPY --from=build /pango-groupware /usr/local/bin/pango-groupware
 USER pango
 ENV PANGO_DATA_DIR=/data \

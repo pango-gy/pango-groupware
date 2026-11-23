@@ -41,10 +41,21 @@ async fn health_needs_no_auth_and_has_security_headers() {
     let app = TestApp::new().await;
     let response = app.get("/health").send().await;
     assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(response.body, json!({ "status": "ok" }));
     assert_eq!(response.headers["x-content-type-options"], "nosniff");
     assert_eq!(response.headers["x-frame-options"], "DENY");
     assert_eq!(response.headers["cache-control"], "no-store");
     assert!(response.headers.contains_key("content-security-policy"));
+}
+
+#[tokio::test]
+async fn health_returns_503_when_database_is_unavailable() {
+    let app = TestApp::new().await;
+    app.state.db.close().await;
+    let response = app.get("/health").send().await;
+    assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.body, json!({ "status": "unavailable" }));
+    assert_eq!(response.headers["cache-control"], "no-store");
 }
 
 #[tokio::test]

@@ -99,8 +99,12 @@ async fn register(
     }
 }
 
-async fn token(State(state): State<AppState>, Form(request): Form<TokenRequest>) -> Response {
-    match oauth::token(&state, &request).await {
+async fn token(
+    State(state): State<AppState>,
+    ClientMeta(meta): ClientMeta,
+    Form(request): Form<TokenRequest>,
+) -> Response {
+    match oauth::token(&state, &request, meta.ip.as_deref()).await {
         Ok(tokens) => (no_store(), Json(tokens)).into_response(),
         Err(error) => oauth_error(error),
     }

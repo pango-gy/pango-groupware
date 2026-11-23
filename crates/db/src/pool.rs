@@ -89,6 +89,13 @@ impl Db {
         Ok(self.writer.begin().await?)
     }
 
+    /// 읽기 풀이 DB에 닿는지 가볍게 확인한다(헬스체크용). 쓰기 락과 경합하지 않는다.
+    pub async fn ping(&self) -> DbResult<()> {
+        let mut conn = self.reader.acquire().await?;
+        sqlx::query("SELECT 1").execute(&mut *conn).await?;
+        Ok(())
+    }
+
     pub async fn close(&self) {
         self.reader.close().await;
         self.writer.close().await;

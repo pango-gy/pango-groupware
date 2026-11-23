@@ -18,11 +18,11 @@ pub mod oauth;
 pub mod org;
 pub mod web;
 
-use axum::extract::DefaultBodyLimit;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
-use http::{header, HeaderName, HeaderValue};
+use http::{header, HeaderName, HeaderValue, StatusCode};
 use pango_api::API_PREFIX;
 use pango_core::DomainError;
 use tower_http::catch_panic::CatchPanicLayer;
@@ -51,8 +51,18 @@ fn api_routes(state: &AppState) -> Router<AppState> {
         .fallback(not_found)
 }
 
-async fn health() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "status": "ok" }))
+async fn health(State(state): State<AppState>) -> Response {
+    match state.db.ping().await {
+        Ok(()) => Json(serde_json::json!({ "status": "ok" })).into_response(),
+        Err(error) => {
+            tracing::error!(%error, "health check failed");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "status": "unavailable" })),
+            )
+                .into_response()
+        }
+    }
 }
 
 async fn not_found() -> ServiceError {

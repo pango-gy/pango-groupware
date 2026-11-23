@@ -63,7 +63,8 @@ fn build_web(dev: bool) -> AnyResult<()> {
     let root = root();
     let profile = if dev { "dev" } else { "wasm-release" };
     let profile_dir = if dev { "debug" } else { "wasm-release" };
-    run(Command::new("cargo").current_dir(&root).args([
+    let mut build = Command::new("cargo");
+    build.current_dir(&root).args([
         "build",
         "--package",
         "pango-web",
@@ -71,7 +72,11 @@ fn build_web(dev: bool) -> AnyResult<()> {
         "wasm32-unknown-unknown",
         "--profile",
         profile,
-    ]))?;
+    ]);
+    if !dev {
+        build.arg("--locked");
+    }
+    run(&mut build)?;
 
     let dist = root.join("crates/server/web-dist");
     let assets = dist.join("assets");

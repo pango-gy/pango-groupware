@@ -659,3 +659,49 @@ async fn cleanup_keeps_clients_that_were_granted() {
         .expect("find")
         .is_none());
 }
+
+#[tokio::test]
+async fn token_endpoint_is_rate_limited_per_ip_and_recovers_after_window() {
+    let app = TestApp::with_config(Config {
+        trust_proxy: true,
+        mcp: Some(McpConfig::from_public_origin(Some(ISSUER), false).expect("mcp")),
+        ..Config::for_tests()
+    })
+    .await;
+    let body = form(&[
+        ("grant_type", "authorization_code"),
+        ("code", "0".repeat(64).as_str()),
+        ("client_id", "pgw_test"),
+    ]);
+    let send_from = |ip: &'static str| {
+        let app = &app;
+        let body = body.clone();
+        async move {
+            app.root(Method::POST, "/oauth/token")
+                .header("x-forwarded-for", ip)
+                .raw_body("application/x-www-form-urlencoded", body)
+                .send()
+                .await
+        }
+    };
+    for _ in 0..120 {
+        assert_eq!(
+            send_from("203.0.113.10").await.status,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let limited = send_from("203.0.113.10").await;
+    assert_eq!(limited.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(limited.body["error"], "slow_down");
+    // 다른 IP는 영향받지 않는다.
+    assert_eq!(
+        send_from("203.0.113.11").await.status,
+        StatusCode::BAD_REQUEST
+    );
+    // 1분 창이 지나면 다시 받을 수 있다.
+    app.advance(chrono::Duration::seconds(60));
+    assert_eq!(
+        send_from("203.0.113.10").await.status,
+        StatusCode::BAD_REQUEST
+    );
+}

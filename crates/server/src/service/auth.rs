@@ -48,7 +48,7 @@ fn check_limit(
 }
 
 /// IP별 제한의 키. IPv6는 /64 단위로 묶는다(한 가입자가 주소를 바꿔 가며 제한을 피하지 못하게).
-fn ip_bucket(ip: &str) -> String {
+pub(crate) fn ip_bucket(ip: &str) -> String {
     // IPv4-매핑 주소(`::ffff:1.2.3.4`)는 IPv4로 되돌린다. 그대로 /64로 묶으면 모든 IPv4
     // 클라이언트가 한 버킷을 나눠 써서, 한 명이 전체의 로그인을 막을 수 있다.
     match ip
