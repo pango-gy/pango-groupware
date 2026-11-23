@@ -505,17 +505,6 @@ html,
 .ink-success { color: var(--green-strong); }
 .ink-warning { color: var(--orange-strong); }
 .ink-danger { color: var(--red-strong); }
-.avatar {
-  display: inline-grid; place-items: center; flex: none; width: 36px; height: 36px;
-  border-radius: 50%; font-weight: 600; font-size: 14px; line-height: 1;
-}
-.avatar-lg { width: 64px; height: 64px; font-size: 24px; }
-.avatar-0 { background: var(--blue-weak); color: var(--blue-strong); }
-.avatar-1 { background: var(--green-weak); color: var(--green-strong); }
-.avatar-2 { background: var(--orange-weak); color: var(--orange-strong); }
-.avatar-3 { background: var(--red-weak); color: var(--red-strong); }
-.avatar-4 { background: var(--violet-weak); color: var(--violet-strong); }
-.avatar-5 { background: var(--teal-weak); color: var(--teal-strong); }
 .meta { display: inline-flex; flex-wrap: wrap; gap: 0 12px; min-width: 0; font-size: 13px; color: var(--grey-600); }
 .meta-item { min-width: 0; overflow-wrap: anywhere; }
 .mono { font-family: var(--font-mono); font-size: 13px; }
@@ -823,7 +812,7 @@ body:has(.action-bar) .toasts { bottom: calc(24px + var(--action-bar-h) + env(sa
 }
 .picker-empty { padding: 12px; color: var(--grey-600); font-size: 14px; }
 .picker-option {
-  width: 100%; display: flex; align-items: center; gap: 10px; padding: 8px;
+  width: 100%; display: flex; align-items: center; gap: 10px; padding: 8px 10px;
   border: 0; border-radius: 8px; background: none; text-align: left; cursor: pointer;
 }
 .picker-option:hover { background: var(--grey-100); }
@@ -831,7 +820,7 @@ body:has(.action-bar) .toasts { bottom: calc(24px + var(--action-bar-h) + env(sa
 .picker-option-text { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.35; }
 .picker-option-text strong { font-weight: 600; }
 .picked-member {
-  display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 2px 2px 2px 10px;
+  display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 2px 2px 2px 14px;
   border-radius: var(--radius-control); background: var(--grey-100); min-width: 0;
 }
 .picked-member-name { flex: 1; min-width: 0; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

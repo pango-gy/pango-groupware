@@ -25,9 +25,9 @@ use crate::route::Route;
 use crate::session::use_session;
 use crate::text;
 use crate::ui::{
-    loaded_or_empty, now, report_error, report_success, resource_view, today, Avatar, Badge,
-    Button, ButtonKind, ConfirmModal, EmptyState, ErrorState, Icon, IconName, Meta, Modal,
-    MonthCalendar, MonthSwitcher,
+    loaded_or_empty, now, report_error, report_success, resource_view, today, Badge, Button,
+    ButtonKind, ConfirmModal, EmptyState, ErrorState, Icon, IconName, Meta, Modal, MonthCalendar,
+    MonthSwitcher,
 };
 
 use logic::{Filter, Mode, Prepared, Range};
@@ -1193,7 +1193,6 @@ fn DetailBody(event: EventDetail, #[props(into)] calendar: String) -> Element {
                 ul { class: "list",
                     for attendee in event.attendees.iter() {
                         li { key: "{attendee.member_id}", class: "list-row",
-                            Avatar { name: attendee.name.clone(), seed: attendee.member_id.to_string() }
                             div { class: "list-row-main",
                                 strong { "{attendee.name}" }
                             }

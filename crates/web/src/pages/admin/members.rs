@@ -17,9 +17,9 @@ use crate::org_tree;
 use crate::session::use_session;
 use crate::text;
 use crate::ui::{
-    loaded_or_empty, report_error, report_success, resource_view, today, Avatar, Badge, Button,
-    ButtonKind, Card, Checkbox, ConfirmModal, DateField, EmptyState, FormError, Icon, IconName,
-    Meta, Modal, PageHeader, SecretReveal, SelectField, TextField, Tone,
+    loaded_or_empty, report_error, report_success, resource_view, today, Badge, Button, ButtonKind,
+    Card, Checkbox, ConfirmModal, DateField, EmptyState, FormError, Icon, IconName, Meta, Modal,
+    PageHeader, SecretReveal, SelectField, TextField, Tone,
 };
 
 use self::logic::{FormErrors, MemberActions, ProfileForm, StatusForm};
@@ -954,7 +954,6 @@ pub fn AdminMembers() -> Element {
                                         let member = member.clone();
                                         move |_| selected.set(Some(member.clone()))
                                     },
-                                    Avatar { name: member.summary.name.clone(), seed: member.summary.id.to_string() }
                                     span { class: "list-row-main",
                                         strong { "{member.summary.name}" }
                                         Meta {
@@ -1342,7 +1341,6 @@ fn MemberDetailModal(
         Modal { title: "{detail.summary.name}", onclose,
             div { class: "member-detail",
                 div { class: "member-detail-head",
-                    Avatar { name: detail.summary.name.clone(), seed: detail.summary.id.to_string(), large: true }
                     div {
                         p { class: "mono", "{detail.login_id}" }
                         div { class: "badge-row",

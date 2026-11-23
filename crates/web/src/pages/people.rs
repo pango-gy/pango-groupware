@@ -9,8 +9,8 @@ use pango_api::org::{DepartmentDto, MemberSummary};
 use crate::api;
 use crate::org_tree::{self, DepartmentRow};
 use crate::ui::{
-    loaded_or_empty, resource_view, Avatar, Card, EmptyState, IconName, Meta, PageHeader,
-    SelectField, TextField,
+    loaded_or_empty, resource_view, Card, EmptyState, IconName, Meta, PageHeader, SelectField,
+    TextField,
 };
 
 #[component]
@@ -66,7 +66,6 @@ pub fn People() -> Element {
                             ul { class: "list",
                                 for member in list {
                                     li { key: "{member.id}", class: "list-row",
-                                        Avatar { name: member.name.clone(), seed: member.id.to_string() }
                                         div { class: "list-row-main",
                                             strong { "{member.name}" }
                                             Meta {

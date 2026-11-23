@@ -207,31 +207,6 @@ pub fn Badge(#[props(default)] tone: Tone, children: Element) -> Element {
     rsx! { span { class: "badge {tone.class()}", {children} } }
 }
 
-/// 아바타 바탕색의 가짓수.
-pub const AVATAR_COLORS: u32 = 6;
-
-/// 구성원마다 고정된 아바타 색 번호(0~5). 같은 키는 언제나 같은 색이다(FNV-1a).
-pub fn avatar_color(key: &str) -> u32 {
-    let hash = key.bytes().fold(0x811c_9dc5_u32, |hash, byte| {
-        (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
-    });
-    hash % AVATAR_COLORS
-}
-
-/// 이름 첫 글자 아바타. 색은 `seed`(구성원 ID)로 정하고, 없으면 이름으로 정한다.
-#[component]
-pub fn Avatar(
-    #[props(into)] name: String,
-    #[props(into, default)] seed: String,
-    #[props(default)] large: bool,
-) -> Element {
-    let color = avatar_color(if seed.is_empty() { &name } else { &seed });
-    let size = if large { " avatar-lg" } else { "" };
-    rsx! {
-        span { class: "avatar avatar-{color}{size}", "aria-hidden": "true", "{format::initial(&name)}" }
-    }
-}
-
 /// 골격 한 줄의 폭(%). 글줄처럼 보이도록 줄마다 길이를 달리한다.
 pub fn skeleton_width(index: usize) -> u32 {
     const WIDTHS: [u32; 4] = [92, 100, 76, 58];
@@ -1273,26 +1248,6 @@ mod tests {
         // 목록이 줄어 위치가 범위를 벗어났으면 끝으로 본다.
         assert_eq!(tab_move(2, Some(5), false), TabMove::Focus(0));
         assert_eq!(tab_move(2, Some(5), true), TabMove::Focus(1));
-    }
-
-    #[test]
-    fn avatar_color_is_stable_and_in_range() {
-        let id = "018f3c1e-7b2a-7c3d-9e4f-0a1b2c3d4e5f";
-        assert_eq!(avatar_color(id), avatar_color(id), "같은 구성원은 같은 색");
-        assert_eq!(avatar_color(""), 0x811c_9dc5_u32 % AVATAR_COLORS);
-        // 알려진 FNV-1a 값: "a" → 0xe40c292c.
-        assert_eq!(avatar_color("a"), 0xe40c_292c_u32 % AVATAR_COLORS);
-        let keys: Vec<String> = (0..200).map(|n| format!("member-{n}")).collect();
-        let mut seen = [0_u32; AVATAR_COLORS as usize];
-        for key in &keys {
-            let color = avatar_color(key);
-            assert!(color < AVATAR_COLORS);
-            seen[color as usize] += 1;
-        }
-        assert!(
-            seen.iter().all(|count| *count > 0),
-            "여섯 색을 모두 쓴다: {seen:?}"
-        );
     }
 
     #[test]

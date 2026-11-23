@@ -9,7 +9,7 @@ use crate::company::use_company;
 use crate::route::Route;
 use crate::session::{self, use_session, SessionState};
 use crate::text;
-use crate::ui::{Avatar, EmptyState, ErrorState, Icon, IconName, Skeleton};
+use crate::ui::{EmptyState, ErrorState, Icon, IconName, Skeleton};
 
 /// 메뉴 한 줄.
 #[derive(Clone, PartialEq)]
@@ -136,7 +136,6 @@ fn Sidebar(me: Me) -> Element {
                 NavLink { item: item(Route::Notifications {}, "알림", IconName::Bell) }
                 div { class: "sidebar-account",
                     Link { class: "profile-chip", to: Route::Profile {},
-                        Avatar { name: me.name.clone(), seed: me.id.to_string() }
                         span { class: "profile-chip-text",
                             strong { "{me.name}" }
                             small {
@@ -170,7 +169,7 @@ fn AppBar(me: Me) -> Element {
                     }
                 }
                 Link { class: "icon-btn", to: Route::Profile {}, "aria-label": "내 정보",
-                    Avatar { name: me.name.clone(), seed: me.id.to_string() }
+                    Icon { name: IconName::Person }
                 }
             }
         }

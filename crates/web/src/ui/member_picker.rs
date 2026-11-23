@@ -4,7 +4,7 @@ use dioxus::prelude::*;
 use pango_api::org::MemberSummary;
 use pango_core::id::MemberId;
 
-use super::{Avatar, Icon, IconName, Meta};
+use super::{Icon, IconName, Meta};
 use crate::api;
 
 /// 이름으로 찾아 한 명을 고른다. 고르면 `onpick`이 불리고 검색어가 비워진다.
@@ -72,7 +72,6 @@ pub fn MemberPicker(
                                             onpick.call(member.clone());
                                         }
                                     },
-                                    Avatar { name: member.name.clone(), seed: member.id.to_string() }
                                     span { class: "picker-option-text",
                                         strong { "{member.name}" }
                                         Meta {
@@ -104,7 +103,6 @@ pub fn PickedMember(
 ) -> Element {
     rsx! {
         div { class: "picked-member",
-            Avatar { name: name.clone() }
             span { class: "picked-member-name", "{name}" }
             button {
                 class: "icon-btn",

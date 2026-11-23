@@ -12,7 +12,7 @@ use pango_api::org::MemberSummary;
 use pango_core::approval::{StepKind, MAX_STEPS};
 use pango_core::id::MemberId;
 
-use super::{report_error, Avatar, Button, ButtonKind, Icon, IconName, MemberPicker};
+use super::{report_error, Button, ButtonKind, Icon, IconName, MemberPicker};
 use crate::api;
 use crate::session::use_toasts;
 use crate::text;
@@ -253,7 +253,6 @@ pub fn ApprovalLineEditor(
                     for (index , step) in steps.iter().enumerate() {
                         li { key: "{step.approver_id}", class: "line-step",
                             span { class: "line-step-order", "aria-hidden": "true", "{index + 1}" }
-                            Avatar { name: step.approver_name.clone(), seed: step.approver_id.to_string() }
                             span { class: "line-step-name",
                                 span { class: "sr-only", "{index + 1}번째 " }
                                 "{step.approver_name}"

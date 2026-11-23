@@ -13,8 +13,8 @@ use crate::pages::attendance::{logic as attendance_logic, MonthAttendance};
 use crate::pages::leave::RequestRow;
 use crate::session::use_session;
 use crate::ui::{
-    now, resource_view, today, workday_bar, Avatar, Badge, Button, ButtonKind, Card, EmptyState,
-    IconName, Meta, MonthSwitcher, PageHeader, Skeleton, Stat, Tabs, TextField, WorkdayBar,
+    now, resource_view, today, workday_bar, Badge, Button, ButtonKind, Card, EmptyState, IconName,
+    Meta, MonthSwitcher, PageHeader, Skeleton, Stat, Tabs, TextField, WorkdayBar,
 };
 
 use logic::TeamTab;
@@ -118,7 +118,6 @@ pub fn Team() -> Element {
                                     (entry, cells, bar)
                                 }) {
                                     li { key: "{entry.member_id}", class: "list-row",
-                                        Avatar { name: entry.name.clone(), seed: entry.member_id.to_string() }
                                         div { class: "list-row-main",
                                             button {
                                                 class: "link-btn",

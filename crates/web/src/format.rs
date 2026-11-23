@@ -171,15 +171,6 @@ pub fn file_size(bytes: u64) -> String {
     format!("{value:.1} {}", UNITS[unit])
 }
 
-/// 이름의 첫 글자(아바타용).
-pub fn initial(name: &str) -> String {
-    name.trim()
-        .chars()
-        .next()
-        .map(|c| c.to_string())
-        .unwrap_or_else(|| "?".into())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -370,12 +361,5 @@ mod tests {
         assert_eq!(elapsed_minutes(start, ts("2026-03-02T00:00:59Z")), 0);
         assert_eq!(elapsed_minutes(start, ts("2026-03-02T03:12:00Z")), 192);
         assert_eq!(elapsed_minutes(start, ts("2026-03-01T23:00:00Z")), 0);
-    }
-
-    #[test]
-    fn initial_handles_empty_and_multibyte() {
-        assert_eq!(initial("홍길동"), "홍");
-        assert_eq!(initial("  "), "?");
-        assert_eq!(initial("😀 kim"), "😀");
     }
 }

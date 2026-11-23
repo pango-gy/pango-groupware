@@ -14,8 +14,8 @@ use crate::route::Route;
 use crate::session::{self, use_session};
 use crate::text;
 use crate::ui::{
-    report_error, report_form_error, report_success, resource_view, Avatar, Badge, Button,
-    ButtonKind, Card, Checkbox, ConfirmModal, FormError, Meta, PageHeader, TextField, Tone,
+    report_error, report_form_error, report_success, resource_view, Badge, Button, ButtonKind,
+    Card, Checkbox, ConfirmModal, FormError, Meta, PageHeader, TextField, Tone,
 };
 
 #[component]
@@ -51,7 +51,6 @@ pub fn Profile() -> Element {
         PageHeader { title: "내 정보" }
         Card {
             div { class: "profile",
-                Avatar { name: me.name.clone(), seed: me.id.to_string(), large: true }
                 div { class: "profile-text",
                     h2 { class: "profile-name",
                         "{me.name}"
